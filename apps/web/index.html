@@ -422,18 +422,36 @@ function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
   $('#dx').onclick=()=>disconnectMode(e);
   return;
  }
- md(`<h3>Connect ${N} wallet</h3><p class="mu">${e==='sol'?'Opens the Solana Reown list (Phantom, Solflare, Trust, All Wallets QR, …).':'Opens the EVM wallet list via Wagmi + WalletConnect (MetaMask, Trust, Coinbase, OKX, All Wallets QR, …).'} After you pick a wallet, approve the one-time sign-in — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+ // Official Reown formula: mount <appkit-button> (modern <w3m-core-button>) in the modal.
+ md(`<h3>Connect ${N} wallet</h3>
+<p class="mu">Tap the WalletConnect button below. The Reown list shows <b>all wallets</b> (MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, WalletConnect QR, All Wallets…). Pick any one — not only the injected extension.</p>
+<div id="akhost" style="width:100%;margin:14px 0;min-height:48px"></div>
+<button class="btn pri" id="bw" style="width:100%">Open full wallet list</button>
+<p class="mu" id="ws">Loading AppKit…</p>
+<p class="rd" id="ae"></p>
+<div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
  (async()=>{
   try{
     const w=await waitWallet();
     if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, redeploy, then hard-refresh.');
-    $('#ws').textContent=e==='evm'?'Connecting… choose a wallet in the popup.':'Choose a wallet in the popup…';
-    const connected=await w.connect(e);
-    $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
-    await finishConnect(e,N,connected);
+    const host=$('#akhost');
+    if(host&&w.mountConnectButton)w.mountConnectButton(host,e);
+    $('#ws').textContent='Choose any wallet from the AppKit list (All Wallets / QR included)…';
+    const start=()=>w.connect(e).then(async(connected)=>{
+      $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
+      await finishConnect(e,N,connected);
+    }).catch(err=>{
+      const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
+      $('#ae').textContent=msg;
+      $('#ws').textContent='Tap Connect again to reopen the full list.';
+    });
+    $('#bw').onclick=()=>{ $('#ae').textContent=''; start(); };
+    // Auto-open the full multi-wallet modal (same as clicking <appkit-button>).
+    start();
   }catch(err){
     const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
-    md(`<h3>Connect ${N} wallet</h3><p class="mu">Tap Connect Wallet to open the ${e==='sol'?'Solana':'EVM'} wallet list.</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+    $('#ae').textContent=msg;
+    $('#ws').textContent='';
     $('#bw').onclick=()=>{cl();conn()};
   }
  })();
