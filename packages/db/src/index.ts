@@ -8,8 +8,33 @@ declare global {
   var __copyraPrisma: PrismaClient | undefined;
 }
 
+/**
+ * Cap pool size per process. App Platform runs API + worker as two Node
+ * processes against a small managed Postgres; Prisma's default
+ * (num_cpus*2+1 each) exhausts DO connection slots and surfaces as
+ * intermittent /api/funds 504s and "remaining connection slots are reserved".
+ */
+function datasourceUrl(): string | undefined {
+  const raw = process.env.DATABASE_URL?.trim();
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (!url.searchParams.has('connection_limit')) {
+      url.searchParams.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT?.trim() || '5');
+    }
+    if (!url.searchParams.has('pool_timeout')) {
+      url.searchParams.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT?.trim() || '10');
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function create(): PrismaClient {
+  const url = datasourceUrl();
   return new PrismaClient({
+    datasources: url ? { db: { url } } : undefined,
     log:
       process.env.PRISMA_LOG === 'query'
         ? ['query', 'warn', 'error']
