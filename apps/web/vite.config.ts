@@ -24,6 +24,11 @@ export default defineConfig(({ mode }) => {
     preview: {
       host: '0.0.0.0',
       port: 43127,
+      // Same-origin proxy when previewing the UI alone (local / optional web component).
+      proxy: {
+        '/api': { target: 'http://127.0.0.1:41717', changeOrigin: true, ws: true },
+        '/health': { target: 'http://127.0.0.1:41717', changeOrigin: true },
+      },
     },
   };
 });

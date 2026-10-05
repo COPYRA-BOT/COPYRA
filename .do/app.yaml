@@ -2,10 +2,11 @@
 #
 # Source Directory MUST be blank / repository root.
 # Dockerfile path: Dockerfile
-# Branch: dev
+# Branch: main (Autodeploy on push)
 #
-# Do not put secrets in this file. Set them in the App Platform
-# "App-Level Environment Variables" / encrypted vars UI.
+# Secrets stay in the App Platform encrypted env UI — never in this file.
+# Non-secret public URLs for copyra.fun are set below so the live domain
+# talks to the API on the same origin.
 
 name: copyra
 region: nyc
@@ -15,6 +16,32 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
+# Primary domain. In the DO UI, also attach copyra.fun to this app and
+# point Cloudflare DNS (orange-cloud or grey) at the App Platform target.
+domains:
+  - domain: copyra.fun
+    type: PRIMARY
+
+# Same-origin routing: dashboard + /api + /health on https://copyra.fun
+# The API also serves apps/web/dist, so the domain can target `api` alone.
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /health
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /
+      component:
+        name: api
+
 services:
   - name: api
     dockerfile_path: Dockerfile
@@ -23,8 +50,7 @@ services:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    # Must match process listen port (PORT / API_PORT). App Platform sets PORT
-    # from this value and probes http_path until it returns 200.
+    # Must match process listen port (PORT / API_PORT).
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
@@ -45,37 +71,26 @@ services:
         value: "8080"
       - key: API_PORT
         value: "8080"
-      # Set the rest as encrypted App-Level secrets in the DO UI — never commit:
-      # DATABASE_URL (public Postgres), REDIS_URL (public rediss://, not private-),
-      # SESSION_SECRET (>=32 chars), SOLANA_RPC_URL, SOLANA_WS_URL,
-      # SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY, EVM_*_RPC_URL, EVM_*_WS_URL,
-      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN, PUBLIC_API_URL,
-      # PUBLIC_WEB_URL, CORS_ORIGINS, TRADING_ENABLED=false,
-      # SOL_TRADING_ENABLED=false, EVM_TRADING_ENABLED=false,
-      # VITE_REOWN_PROJECT_ID, NEXT_PUBLIC_REOWN_PROJECT_ID
-      # Bot keys only if you intend to trade:
-      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
+      - key: PUBLIC_WEB_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_API_URL
+        value: "https://copyra.fun"
+      - key: CORS_ORIGINS
+        value: "https://copyra.fun"
       - key: TRADING_ENABLED
         value: "false"
       - key: SOL_TRADING_ENABLED
         value: "false"
       - key: EVM_TRADING_ENABLED
         value: "false"
-
-  - name: web
-    dockerfile_path: Dockerfile
-    source_dir: /
-    github:
-      repo: COPYRA-BOT/COPYRA
-      branch: main
-      deploy_on_push: true
-    http_port: 43127
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    run_command: npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127
-    envs:
-      - key: NODE_ENV
-        value: production
+      # Encrypted App-Level secrets in the DO UI — never commit:
+      # DATABASE_URL (public Postgres; real password — not the UI label "show-password"),
+      # REDIS_URL (public rediss://, not private-), SESSION_SECRET (>=32 chars),
+      # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
+      # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN,
+      # VITE_REOWN_PROJECT_ID, NEXT_PUBLIC_REOWN_PROJECT_ID
+      # Bot keys only if you intend to trade:
+      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
 
 workers:
   - name: worker
@@ -91,3 +106,13 @@ workers:
     envs:
       - key: NODE_ENV
         value: production
+      - key: PUBLIC_WEB_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_API_URL
+        value: "https://copyra.fun"
+      - key: TRADING_ENABLED
+        value: "false"
+      - key: SOL_TRADING_ENABLED
+        value: "false"
+      - key: EVM_TRADING_ENABLED
+        value: "false"

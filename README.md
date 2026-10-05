@@ -17,6 +17,12 @@ The UI is the original COPYRA `copyra.` frontend (Trading / Monitor / Leaderboar
 
 Trading does **not** happen in the browser. The dashboard never receives `SOLANA_BOT_PRIVATE_KEY` or `EVM_BOT_PRIVATE_KEY`. Those exist only on the server, if you set them.
 
+## Live site
+
+**https://copyra.fun** — DigitalOcean App Platform, auto-deploys from GitHub `main` (`COPYRA-BOT/COPYRA`). After each fix is pushed, wait for the DO deployment to go Healthy, then re-test that URL.
+
+The API serves the dashboard and `/api` on the same origin so wallet session cookies work on the main domain.
+
 ## Requirements
 
 - Node.js 20.11+
