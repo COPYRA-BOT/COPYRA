@@ -69,12 +69,12 @@ Set `TRADING_ENABLED=true` **and** a dedicated bot key only when you intend to s
 ## Repo layout
 
 ```
-apps/api       Fastify HTTP + WebSocket API
-apps/worker    Solana log monitor and heartbeat
-apps/web       Vite + React + Tailwind dashboard
-packages/core  RPC, decode, qualify, size, exits, Jupiter, KyberSwap, Telegram
+apps/api       Fastify HTTP + WebSocket API (SIWE/SIWS, Jupiter user-sign, snapshot)
+apps/worker    Solana logs, EVM transfer polls, TP/SL marks, reconciliation
+apps/web       Uploaded copyra. UI + Reown AppKit (Vite)
+packages/core  RPC, decode, qualify, size, execute, exits, Jupiter, KyberSwap, Telegram
 packages/db    Prisma schema and client
-docs/          Audit and readiness evidence
+docs/          Audit, migration plan, readiness, deploy
 ```
 
 ## Socials

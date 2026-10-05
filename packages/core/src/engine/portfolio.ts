@@ -155,7 +155,7 @@ export async function buildPortfolioState(
     prisma.position.findFirst({
       where: {
         chain,
-        tokenAddress: tokenAddress.toLowerCase(),
+        tokenAddress: chain === Chain.SOLANA ? tokenAddress : tokenAddress.toLowerCase(),
         status: { in: LIVE_POSITION_STATUSES },
       },
       select: { id: true },

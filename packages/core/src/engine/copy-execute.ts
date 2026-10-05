@@ -1,0 +1,518 @@
+import {
+  Chain,
+  PositionStatus,
+  prisma,
+  SignalStatus,
+  SkipReason,
+  TradeReason,
+  TradeSide,
+  TxStatus,
+  type Token,
+  type Trader,
+} from '@copyra/db';
+import { chainConfig } from '../config/chains.js';
+import { env } from '../config/env.js';
+import { NATIVE_SENTINEL } from '../evm/kyberswap.js';
+import { executeEvmSwap } from '../evm/executor.js';
+import { getMarketSnapshot, type TokenMarketData } from '../market/index.js';
+import { componentLogger } from '../obs/logger.js';
+import { reportError } from '../obs/sentry.js';
+import { evmSigner, solanaSigner } from '../security/signer.js';
+import { executeSolanaSwap, lamportsFromSol, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
+import { LockHeldError, withLock } from '../util/redis.js';
+import { renderBuy, renderFailure, renderSkip, renderSubmitted } from '../notify/messages.js';
+import { telegram } from '../notify/telegram.js';
+import { computeExitLevels } from './exits.js';
+import { executionGate, wholeUnits } from './execution-gate.js';
+import { buildPortfolioState, getPnlSummary, NoTradingWalletError, snapshotBalance } from './portfolio.js';
+import { calculatePositionSize } from './sizing.js';
+import { getSettings, getStrategyConfig } from './settings.js';
+import { TelemetryTracker } from './telemetry.js';
+import type { DecodedTransaction, MarketCapTier } from './types.js';
+
+const log = componentLogger('copy-execute');
+
+export interface QualifiedCopyInput {
+  chain: Chain;
+  trader: Trader;
+  token: Token;
+  tokenAddress: string;
+  decoded: DecodedTransaction;
+  market: TokenMarketData;
+  signalStrength: number;
+  marketCapTier: MarketCapTier;
+  detectionId: string;
+  sourceTxHash: string;
+  observedAt: Date;
+}
+
+export interface QualifiedCopyResult {
+  status: SignalStatus;
+  signalId: string | null;
+  positionId: string | null;
+  tradeId: string | null;
+  txHash: string | null;
+}
+
+function signerFor(chain: Chain): { available: boolean; address: string | null } {
+  return chain === Chain.SOLANA
+    ? { available: solanaSigner.available, address: solanaSigner.address }
+    : { available: evmSigner.available, address: evmSigner.address };
+}
+
+async function recordFirstBuy(input: QualifiedCopyInput, signalId: string | null): Promise<void> {
+  const existing = await prisma.tokenFirstBuy.findUnique({
+    where: { chain_tokenAddress: { chain: input.chain, tokenAddress: input.tokenAddress } },
+  });
+  if (existing) {
+    await prisma.tokenFirstBuy.update({
+      where: { id: existing.id },
+      data: { correlatedBuys: { increment: 1 }, lastCorrelatedAt: new Date() },
+    });
+    return;
+  }
+  await prisma.tokenFirstBuy.create({
+    data: {
+      chain: input.chain,
+      tokenAddress: input.tokenAddress,
+      tokenId: input.token.id,
+      firstTraderId: input.trader.id,
+      firstSignalId: signalId,
+      firstSourceTx: input.sourceTxHash,
+    },
+  });
+}
+
+/**
+ * After a signal has passed market qualification: persist it, then execute only
+ * when a real signer, live balance, and fresh quote all exist. Confirmation is
+ * the only path to OPEN / EXECUTED.
+ */
+export async function handleQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCopyResult> {
+  const lockKey = `copy:${input.chain}:${input.tokenAddress}`;
+  try {
+    return await withLock(lockKey, 120_000, () => runQualifiedCopy(input));
+  } catch (error) {
+    if (error instanceof LockHeldError) {
+      const signal = await prisma.signal.create({
+        data: {
+          chain: input.chain,
+          traderId: input.trader.id,
+          tokenId: input.token.id,
+          tokenAddress: input.tokenAddress,
+          detectionId: input.detectionId,
+          sourceTxHash: input.sourceTxHash,
+          status: SignalStatus.SKIPPED,
+          skipReason: SkipReason.DUPLICATE_SIGNAL,
+          skipDetail: 'Another worker is already executing this token.',
+          signalStrength: input.signalStrength,
+          marketCapUsdAtSignal: input.market.marketCapUsd,
+          liquidityUsdAtSignal: input.market.liquidityUsd,
+          priceUsdAtSignal: input.market.priceUsd,
+          decodedAt: new Date(),
+          qualifiedAt: new Date(),
+        },
+      });
+      return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
+    }
+    throw error;
+  }
+}
+
+async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCopyResult> {
+  const settings = await getSettings();
+  const config = await getStrategyConfig();
+  const signer = signerFor(input.chain);
+  const telemetry = new TelemetryTracker(input.observedAt);
+  telemetry.mark('decoded');
+  telemetry.mark('qualified');
+
+  const open = await prisma.position.findFirst({
+    where: {
+      chain: input.chain,
+      tokenAddress: input.tokenAddress,
+      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
+    },
+  });
+  const firstBuy = await prisma.tokenFirstBuy.findUnique({
+    where: { chain_tokenAddress: { chain: input.chain, tokenAddress: input.tokenAddress } },
+  });
+
+  if (open) {
+    const signal = await prisma.signal.create({
+      data: {
+        chain: input.chain,
+        traderId: input.trader.id,
+        tokenId: input.token.id,
+        tokenAddress: input.tokenAddress,
+        detectionId: input.detectionId,
+        sourceTxHash: input.sourceTxHash,
+        status: SignalStatus.SKIPPED,
+        skipReason: SkipReason.POSITION_ALREADY_OPEN,
+        skipDetail: 'A COPYRA position in this token is already open.',
+        signalStrength: input.signalStrength,
+        marketCapUsdAtSignal: input.market.marketCapUsd,
+        liquidityUsdAtSignal: input.market.liquidityUsd,
+        priceUsdAtSignal: input.market.priceUsd,
+        decodedAt: new Date(),
+        qualifiedAt: new Date(),
+      },
+    });
+    return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
+  }
+
+  const gate = executionGate({
+    signerAvailable: signer.available,
+    tradingEnabled: config.tradingEnabled,
+    emergencyStop: settings.emergencyStop,
+    emergencyStopReason: settings.emergencyStopReason,
+  });
+
+  const signal = await prisma.signal.create({
+    data: {
+      chain: input.chain,
+      traderId: input.trader.id,
+      tokenId: input.token.id,
+      tokenAddress: input.tokenAddress,
+      detectionId: input.detectionId,
+      sourceTxHash: input.sourceTxHash,
+      status: gate.ok ? SignalStatus.QUALIFIED : gate.status,
+      skipReason: gate.ok ? null : gate.reason,
+      skipDetail: gate.ok ? null : gate.detail,
+      signalStrength: input.signalStrength,
+      marketCapUsdAtSignal: input.market.marketCapUsd,
+      liquidityUsdAtSignal: input.market.liquidityUsd,
+      priceUsdAtSignal: input.market.priceUsd,
+      decodedAt: new Date(),
+      qualifiedAt: new Date(),
+    },
+  });
+  await recordFirstBuy(input, signal.id);
+
+  if (!gate.ok) {
+    log.info({ token: input.tokenAddress, status: gate.status }, 'Qualified signal held — no broadcast');
+    return { status: gate.status, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
+  }
+
+  let portfolio;
+  try {
+    portfolio = await buildPortfolioState(input.chain, input.tokenAddress);
+    await snapshotBalance(input.chain, portfolio.balance);
+  } catch (error) {
+    if (error instanceof NoTradingWalletError) {
+      await prisma.signal.update({
+        where: { id: signal.id },
+        data: {
+          status: SignalStatus.BLOCKED_NO_SIGNER,
+          skipReason: SkipReason.TRADER_DISABLED,
+          skipDetail: error.message,
+        },
+      });
+      return {
+        status: SignalStatus.BLOCKED_NO_SIGNER,
+        signalId: signal.id,
+        positionId: null,
+        tradeId: null,
+        txHash: null,
+      };
+    }
+    throw error;
+  }
+
+  telemetry.mark('riskChecked');
+  const sizing = calculatePositionSize({
+    config,
+    portfolio: portfolio.state,
+    market: input.market,
+    tier: input.marketCapTier,
+    signalStrength: input.signalStrength,
+    absoluteMaxUsd: env.MAX_TRADE_USD,
+  });
+
+  if (!sizing.ok) {
+    await prisma.signal.update({
+      where: { id: signal.id },
+      data: {
+        status: SignalStatus.SKIPPED,
+        skipReason: sizing.reason,
+        skipDetail: sizing.detail,
+        sizingBasis: sizing.basis as object,
+        plannedSizeQuote: sizing.basis.chosenUsd / Math.max(portfolio.state.quotePriceUsd, 1e-12),
+        plannedSizeUsd: sizing.basis.chosenUsd,
+      },
+    });
+    telegram.send(
+      renderSkip({
+        chain: input.chain,
+        tokenSymbol: input.market.symbol ?? input.token.symbol,
+        tokenAddress: input.tokenAddress,
+        traderLabel: input.trader.label,
+        traderAddress: input.trader.address,
+        reason: sizing.reason,
+        detail: sizing.detail,
+        marketCapUsd: input.market.marketCapUsd,
+        liquidityUsd: input.market.liquidityUsd,
+        sourceTxHash: input.sourceTxHash,
+      }),
+      { kind: 'skip' },
+    );
+    return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
+  }
+
+  const chainMeta = chainConfig(input.chain);
+  const levels = computeExitLevels(input.market.priceUsd, config);
+  const requestedRaw =
+    input.chain === Chain.SOLANA
+      ? lamportsFromSol(sizing.sizeQuote)
+      : BigInt(Math.floor(sizing.sizeQuote * 10 ** chainMeta.nativeDecimals)).toString();
+
+  const position = await prisma.position.create({
+    data: {
+      chain: input.chain,
+      tokenId: input.token.id,
+      tokenAddress: input.tokenAddress,
+      tokenSymbol: input.market.symbol ?? input.token.symbol,
+      status: PositionStatus.PENDING_OPEN,
+      quoteAsset: chainMeta.quoteAsset,
+      quoteAssetSymbol: chainMeta.quoteAssetSymbol,
+      exitStrategy: config.exitStrategy,
+      requestedQuoteRaw: requestedRaw,
+      entryMarketCapUsd: input.market.marketCapUsd,
+      entryLiquidityUsd: input.market.liquidityUsd,
+      stopLossPriceUsd: levels.stopLossPriceUsd,
+      takeProfitPriceUsd: levels.takeProfitPriceUsd,
+      correlatedTraders: firstBuy ? firstBuy.correlatedBuys + 1 : 1,
+      signalStrength: input.signalStrength,
+    },
+  });
+
+  const idempotencyKey = `copy:${input.chain}:${input.sourceTxHash}:${input.trader.id}`;
+  const trade = await prisma.trade.create({
+    data: {
+      idempotencyKey,
+      positionId: position.id,
+      signalId: signal.id,
+      chain: input.chain,
+      side: TradeSide.BUY,
+      reason: TradeReason.COPY,
+      tokenAddress: input.tokenAddress,
+      tokenSymbol: input.market.symbol ?? input.token.symbol,
+      tokenDecimals: input.decoded.tokenOut?.decimals ?? input.token.decimals,
+      quoteAsset: chainMeta.quoteAsset,
+      quoteAssetSymbol: chainMeta.quoteAssetSymbol,
+      quoteDecimals: chainMeta.quoteAssetDecimals,
+      status: TxStatus.BUILDING,
+      requestedAmountRaw: requestedRaw,
+      requestedSlippageBps: config.maxSlippageBps,
+      maxAttempts: config.maxExecutionAttempts,
+      quoteAssetPriceUsd: portfolio.balance.quotePriceUsd,
+    },
+  });
+
+  await prisma.signal.update({
+    where: { id: signal.id },
+    data: {
+      status: SignalStatus.EXECUTING,
+      positionId: position.id,
+      plannedSizeQuote: sizing.sizeQuote,
+      plannedSizeUsd: sizing.sizeUsd,
+      sizingBasis: sizing.basis as object,
+    },
+  });
+
+  const outcome =
+    input.chain === Chain.SOLANA
+      ? await executeSolanaSwap({
+          inputMint: WRAPPED_SOL_MINT_STR,
+          outputMint: input.tokenAddress,
+          amountRaw: requestedRaw,
+          slippageBps: config.maxSlippageBps,
+          maxPriceImpactPct: config.maxPriceImpactPct,
+          quoteMaxAgeMs: config.quoteMaxAgeMs,
+          confirmTimeoutMs: config.confirmTimeoutMs,
+          maxAttempts: config.maxExecutionAttempts,
+          telemetry,
+          idempotencyKey,
+        })
+      : await executeEvmSwap({
+          chain: input.chain,
+          tokenIn: NATIVE_SENTINEL,
+          tokenOut: input.tokenAddress,
+          amountInRaw: requestedRaw,
+          slippageBps: config.maxSlippageBps,
+          maxPriceImpactPct: config.maxPriceImpactPct,
+          quoteMaxAgeMs: config.quoteMaxAgeMs,
+          confirmTimeoutMs: config.confirmTimeoutMs,
+          maxAttempts: config.maxExecutionAttempts,
+          telemetry,
+          idempotencyKey,
+        });
+
+  const fields = telemetry.toTradeFields();
+  await prisma.trade.update({
+    where: { id: trade.id },
+    data: {
+      status: outcome.status,
+      txHash: outcome.txHash,
+      explorerUrl: outcome.explorerUrl,
+      blockNumber: outcome.slot,
+      confirmations: outcome.confirmations,
+      quotedAmountRaw: outcome.quotedAmountRaw,
+      actualAmountRaw: outcome.actualAmountRaw,
+      fillRatio: outcome.fillRatio,
+      realizedSlippagePct: outcome.realizedSlippagePct,
+      priceImpactPct: outcome.priceImpactPct,
+      networkFeeRaw: outcome.networkFeeRaw,
+      routeProvider: outcome.routeProvider,
+      routeSummary: outcome.routeSummary as object | undefined,
+      attempt: outcome.attempts,
+      attemptLog: outcome.attemptLog as object,
+      errorCode: outcome.errorCode,
+      errorMessage: outcome.errorMessage,
+      blockhash: outcome.blockhash,
+      lastValidBlockHeight: outcome.lastValidBlockHeight,
+      ...fields,
+      failedAt: outcome.status === TxStatus.CONFIRMED ? null : new Date(),
+    },
+  });
+  await prisma.signal.update({
+    where: { id: signal.id },
+    data: {
+      status: outcome.status === TxStatus.CONFIRMED ? SignalStatus.EXECUTED : SignalStatus.FAILED,
+      ...telemetry.toSignalFields(),
+    },
+  });
+
+  if (outcome.txHash && outcome.status !== TxStatus.CONFIRMED) {
+    telegram.send(
+      renderSubmitted({
+        chain: input.chain,
+        side: 'BUY',
+        reason: TradeReason.COPY,
+        tokenSymbol: input.market.symbol ?? input.token.symbol ?? input.tokenAddress.slice(0, 6),
+        amountQuote: sizing.sizeQuote,
+        txHash: outcome.txHash,
+        broadcastLatencyMs: telemetry.sinceStart('broadcast') ?? null,
+      }),
+      { kind: 'buy-submitted', tradeId: trade.id, positionId: position.id },
+    );
+  }
+
+  if (outcome.status !== TxStatus.CONFIRMED) {
+    const keepPending = outcome.status === TxStatus.UNKNOWN || outcome.status === TxStatus.BROADCAST;
+    await prisma.position.update({
+      where: { id: position.id },
+      data: { status: keepPending ? PositionStatus.PENDING_OPEN : PositionStatus.OPEN_FAILED },
+    });
+    telegram.send(
+      renderFailure({
+        chain: input.chain,
+        side: 'BUY',
+        tokenSymbol: input.market.symbol ?? input.token.symbol,
+        errorCode: outcome.errorCode ?? outcome.status,
+        errorMessage: outcome.errorMessage ?? 'Execution did not confirm on-chain.',
+        txHash: outcome.txHash,
+        attempts: outcome.attempts,
+      }),
+      { kind: 'buy-failed', tradeId: trade.id, positionId: position.id },
+    );
+    if (keepPending) {
+      await reportError(new Error(outcome.errorMessage ?? 'confirmation unknown'), {
+        component: 'copy-execute',
+        code: 'CONFIRMATION_UNKNOWN',
+        chain: input.chain,
+        notify: true,
+        context: { tradeId: trade.id, txHash: outcome.txHash },
+      });
+    }
+    return {
+      status: SignalStatus.FAILED,
+      signalId: signal.id,
+      positionId: position.id,
+      tradeId: trade.id,
+      txHash: outcome.txHash,
+    };
+  }
+
+  const decimals = input.decoded.tokenOut?.decimals ?? input.token.decimals ?? 0;
+  const tokensReceived = outcome.actualAmountRaw ? wholeUnits(outcome.actualAmountRaw, decimals) : 0;
+  const spentQuote = sizing.sizeQuote;
+  const entryPriceUsd =
+    tokensReceived > 0 && portfolio.balance.quotePriceUsd > 0
+      ? (spentQuote * portfolio.balance.quotePriceUsd) / tokensReceived
+      : input.market.priceUsd;
+
+  await prisma.position.update({
+    where: { id: position.id },
+    data: {
+      status: PositionStatus.OPEN,
+      openedAt: outcome.telemetry.at('confirmed') ?? new Date(),
+      actualQuoteRaw: requestedRaw,
+      tokenAmountRaw: outcome.actualAmountRaw,
+      remainingTokenRaw: outcome.actualAmountRaw,
+      entryPriceUsd,
+      entryQuotePriceUsd: portfolio.balance.quotePriceUsd,
+      entryValueUsd: sizing.sizeUsd,
+      entrySlippagePct: outcome.realizedSlippagePct,
+      entryPriceImpactPct: outcome.priceImpactPct,
+      lastPriceUsd: entryPriceUsd,
+      lastPriceAt: new Date(),
+      feesQuote: outcome.networkFeeRaw
+        ? wholeUnits(outcome.networkFeeRaw, chainMeta.nativeDecimals)
+        : 0,
+    },
+  });
+
+  const mark = await getMarketSnapshot(input.chain, input.tokenAddress).catch(() => input.market);
+  const pnl = await getPnlSummary(settings.pnlResetAt);
+  telegram.send(
+    renderBuy({
+      chain: input.chain,
+      tokenSymbol: mark.symbol ?? input.token.symbol ?? input.tokenAddress.slice(0, 6),
+      tokenAddress: input.tokenAddress,
+      marketCapUsd: mark.marketCapUsd,
+      liquidityUsd: mark.liquidityUsd,
+      traderLabel: input.trader.label,
+      traderAddress: input.trader.address,
+      spentQuote,
+      spentUsd: sizing.sizeUsd,
+      balanceSharePct:
+        portfolio.state.tradingBalanceQuote > 0
+          ? (spentQuote / portfolio.state.tradingBalanceQuote) * 100
+          : null,
+      executionPriceUsd: entryPriceUsd,
+      requestedSlippageBps: config.maxSlippageBps,
+      realizedSlippagePct: outcome.realizedSlippagePct,
+      priceImpactPct: outcome.priceImpactPct,
+      feeNative: outcome.networkFeeRaw
+        ? wholeUnits(outcome.networkFeeRaw, chainMeta.nativeDecimals)
+        : null,
+      speedMs: telemetry.sinceStart('confirmed') ?? null,
+      exitStrategy: config.exitStrategy,
+      exitConfig: {
+        takeProfitPct: config.takeProfitPct,
+        stopLossPct: config.stopLossPct,
+        trailingDropPct: config.trailingDropPct,
+        trailingPartialSellPct: config.trailingPartialSellPct,
+      },
+      balanceQuote: portfolio.balance.totalQuote - spentQuote,
+      balanceUsd: (portfolio.balance.totalQuote - spentQuote) * portfolio.balance.quotePriceUsd,
+      openPnlQuote: pnl.unrealizedPnlQuote,
+      txHash: outcome.txHash as string,
+    }),
+    { kind: 'buy-confirmed', tradeId: trade.id, positionId: position.id },
+  );
+
+  log.info(
+    { token: input.tokenAddress, txHash: outcome.txHash, latencyMs: telemetry.sinceStart('confirmed') },
+    'Copy buy confirmed on-chain',
+  );
+
+  return {
+    status: SignalStatus.EXECUTED,
+    signalId: signal.id,
+    positionId: position.id,
+    tradeId: trade.id,
+    txHash: outcome.txHash,
+  };
+}

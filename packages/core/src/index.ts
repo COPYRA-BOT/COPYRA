@@ -32,6 +32,10 @@ export * from './engine/exits.js';
 export * from './engine/telemetry.js';
 export * from './engine/settings.js';
 export * from './engine/portfolio.js';
+export * from './engine/execution-gate.js';
+export * from './engine/copy-execute.js';
+export * from './engine/exit-execute.js';
+export * from './engine/reconcile.js';
 
 // Market data
 export * from './market/index.js';

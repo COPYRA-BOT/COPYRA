@@ -2,7 +2,7 @@ import { prisma } from '@copyra/db';
 import { env } from '../config/env.js';
 import { componentLogger } from '../obs/logger.js';
 import { redactString } from '../obs/redact.js';
-import { fetchJson, sleep } from '../util/retry.js';
+import { fetchJson, HttpError, sleep } from '../util/retry.js';
 
 const log = componentLogger('telegram');
 
@@ -35,10 +35,23 @@ interface QueueItem {
   options: SendOptions;
 }
 
+export function parseTelegramMigrateTo(error: unknown): string | null {
+  if (!(error instanceof HttpError)) return null;
+  try {
+    const parsed = JSON.parse(error.body) as {
+      parameters?: { migrate_to_chat_id?: number | string };
+    };
+    const id = parsed.parameters?.migrate_to_chat_id;
+    return id === undefined || id === null ? null : String(id);
+  } catch {
+    return null;
+  }
+}
+
 class TelegramNotifier {
   readonly enabled: boolean;
   readonly #token: string | undefined;
-  readonly #chatId: string | undefined;
+  #chatId: string | undefined;
   readonly #queue: QueueItem[] = [];
   #draining = false;
   #lastSentAt = 0;
@@ -113,8 +126,37 @@ class TelegramNotifier {
         delivered = data.ok;
         if (!data.ok) error = data.description ?? 'Telegram returned ok=false';
       } catch (caught) {
-        error = caught instanceof Error ? caught.message : String(caught);
-        log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed');
+        const migrated = parseTelegramMigrateTo(caught);
+        if (migrated && this.#token) {
+          this.#chatId = migrated;
+          log.warn({ from: env.TELEGRAM_CHAT_ID, to: migrated }, 'Telegram chat upgraded; retrying with migrate_to_chat_id');
+          try {
+            const retry = await fetchJson<{ ok: boolean; description?: string }>(
+              `${API_BASE}/bot${this.#token}/sendMessage`,
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: migrated,
+                  text,
+                  parse_mode: 'HTML',
+                  link_preview_options: { is_disabled: true },
+                  disable_notification: options.disableNotification ?? false,
+                }),
+                timeoutMs: 8_000,
+                label: 'telegram/sendMessage-migrated',
+              },
+            );
+            delivered = retry.data.ok;
+            if (!retry.data.ok) error = retry.data.description ?? 'Telegram returned ok=false after migrate';
+          } catch (retryError) {
+            error = retryError instanceof Error ? retryError.message : String(retryError);
+            log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed after migrate');
+          }
+        } else {
+          error = caught instanceof Error ? caught.message : String(caught);
+          log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed');
+        }
       }
     } else {
       error = 'Telegram not configured';

@@ -18,7 +18,7 @@ import {
   tradingBlockedReason,
   tradingWalletAddress,
 } from '@copyra/core';
-import { Chain, prisma } from '@copyra/db';
+import { Chain, prisma, type Prisma } from '@copyra/db';
 import { PublicKey } from '@solana/web3.js';
 import type { FastifyInstance } from 'fastify';
 import { getAddress, isAddress } from 'viem';
@@ -33,6 +33,7 @@ import {
   verifyWalletSignature,
 } from './auth.js';
 import { jsonSafe } from './serialize.js';
+import { registerSwapRoutes } from './swap.js';
 
 const chainSchema = z.nativeEnum(Chain);
 
@@ -45,6 +46,7 @@ function parseChainAddress(chain: Chain, raw: string): string {
 }
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
+  await registerSwapRoutes(app);
   app.get('/health', async () => ({ ok: true, service: 'copyra-api', at: new Date().toISOString() }));
 
   app.get('/api/status', async () => {
@@ -177,7 +179,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
     const updated = await prisma.strategySettings.update({
       where: { id: 1 },
-      data: { ...body, updatedBy: 'dashboard' },
+      data: { ...body, ui: body.ui as Prisma.InputJsonValue | undefined, updatedBy: 'dashboard' },
     });
     return jsonSafe({ row: updated, effective: await getStrategyConfig() });
   });
@@ -369,7 +371,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     return jsonSafe({
       buckets: {
-        trading: 'The trading engine may use only the trading-bucket bot wallet. It is unconfigured until SOLANA_BOT_PRIVATE_KEY is set on the server.',
+        trading: 'The trading engine may use only the trading-bucket bot wallet. It is unconfigured until the server-side bot signing key is set on the host.',
         savings: 'Savings is a separate reserved bucket. No automatic transfer from savings is enabled.',
       },
       wallets: out,

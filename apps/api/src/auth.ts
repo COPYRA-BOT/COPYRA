@@ -133,7 +133,10 @@ export async function createSession(
   return { userId: user.id, expiresAt };
 }
 
-export async function readSession(request: FastifyRequest) {
+export async function readSession(request: FastifyRequest): Promise<{
+  id: string;
+  user: { id: string; address: string; chain: Chain; label: string | null };
+} | null> {
   const token = request.cookies[SESSION_COOKIE];
   if (!token) return null;
   const session = await prisma.session.findUnique({

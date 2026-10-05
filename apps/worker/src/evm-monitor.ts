@@ -1,128 +1,168 @@
 import {
-  MAX_SUPPORTED_TX_VERSION,
+  chainConfig,
   componentLogger,
-  decodeSolanaTransaction,
+  decodeEvmTransaction,
+  evmPool,
   getMarketSnapshot,
   getStrategyConfig,
   handleQualifiedCopy,
-  isSolanaQuoteAsset,
+  isEvmQuoteAsset,
   markSeenOnce,
   qualifySignal,
-  solanaConnection,
-  solanaPool,
-  telegram,
-  renderSkip,
   renderDetection,
+  renderSkip,
+  telegram,
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
-import { PublicKey } from '@solana/web3.js';
+import { getAddress } from 'viem';
 
-const log = componentLogger('solana-monitor');
+const log = componentLogger('evm-monitor');
+
+const POLL_CHAINS: Chain[] = [Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+
+interface AssetTransfer {
+  hash: string;
+  from: string;
+  to: string;
+  category: string;
+  blockNum: string;
+  metadata?: { blockTimestamp?: string };
+}
 
 /**
- * Real-time Solana trader monitor.
- *
- * Subscribes to confirmed logs for each enabled Solana trader wallet through
- * the configured Helius/Alchemy connection. Every notification is a real
- * signature; nothing is invented.
+ * Polls Alchemy `alchemy_getAssetTransfers` for enabled EVM traders.
+ * Base is always first. Arbitrum and BNB are included only when those chains
+ * are enabled in strategy settings.
  */
-export async function startSolanaMonitor(): Promise<() => void> {
-  const connection = solanaConnection();
-  const subscriptions = new Map<string, number>();
+export async function startEvmMonitor(): Promise<() => void> {
+  const cursors = new Map<string, string>();
+  let stopped = false;
 
-  const sync = async () => {
-    const traders = await prisma.trader.findMany({
-      where: { chain: Chain.SOLANA, enabled: true },
+  const tick = async () => {
+    const settings = await getStrategyConfig();
+    const chains = POLL_CHAINS.filter((chain) => {
+      const config = chainConfig(chain);
+      return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
     });
-    const wanted = new Set(traders.map((trader) => trader.id));
+    if (chains.length === 0) return;
 
-    for (const [traderId, sub] of subscriptions) {
-      if (wanted.has(traderId)) continue;
-      await connection.removeOnLogsListener(sub);
-      subscriptions.delete(traderId);
-      log.info({ traderId }, 'Dropped Solana log subscription');
-    }
+    const traders = await prisma.trader.findMany({
+      where: { chain: { in: chains }, enabled: true },
+    });
 
     for (const trader of traders) {
-      if (subscriptions.has(trader.id)) continue;
-      let pubkey: PublicKey;
+      if (stopped) return;
       try {
-        pubkey = new PublicKey(trader.address);
-      } catch {
-        log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
-        continue;
+        await pollTrader(trader.chain, trader.id, trader.address, cursors);
+      } catch (error) {
+        log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
       }
-      const id = connection.onLogs(
-        pubkey,
-        (logs, ctx) => {
-          void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
-            log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
-          });
-        },
-        'confirmed',
-      );
-      subscriptions.set(trader.id, id);
-      log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
     }
-
-    log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
   };
 
-  await sync();
+  await tick();
   const timer = setInterval(() => {
-    void sync().catch((error: unknown) => {
-      log.error({ err: error }, 'Failed to refresh trader subscriptions');
-    });
-  }, 15_000);
+    void tick();
+  }, 4_000);
 
   return () => {
+    stopped = true;
     clearInterval(timer);
-    for (const id of subscriptions.values()) {
-      void connection.removeOnLogsListener(id);
-    }
-    subscriptions.clear();
   };
 }
 
-async function handleSignature(traderId: string, signature: string, slot: number): Promise<void> {
-  const first = await markSeenOnce(`sol:${signature}:${traderId}`, 86_400);
-  if (!first) return;
+async function pollTrader(
+  chain: Chain,
+  traderId: string,
+  address: string,
+  cursors: Map<string, string>,
+): Promise<void> {
+  const config = chainConfig(chain);
+  if (!config.rpcUrl) return;
+  const key = `${chain}:${address}`;
+  const params: Record<string, unknown> = {
+    fromAddress: getAddress(address),
+    category: ['external', 'erc20', 'internal'],
+    withMetadata: true,
+    excludeZeroValue: false,
+    maxCount: '0x14',
+    order: 'asc',
+  };
+  const cursor = cursors.get(key);
+  if (cursor) params.fromBlock = cursor;
 
+  const response = await fetch(config.rpcUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'alchemy_getAssetTransfers',
+      params: [params],
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`alchemy_getAssetTransfers HTTP ${response.status}`);
+  }
+  const body = (await response.json()) as {
+    result?: { transfers?: AssetTransfer[]; pageKey?: string };
+    error?: { message: string };
+  };
+  if (body.error) throw new Error(body.error.message);
+
+  const transfers = body.result?.transfers ?? [];
+  let maxBlock = cursor ?? '0x0';
+  const seen = new Set<string>();
+  for (const transfer of transfers) {
+    if (BigInt(transfer.blockNum) > BigInt(maxBlock)) maxBlock = transfer.blockNum;
+    if (seen.has(transfer.hash)) continue;
+    seen.add(transfer.hash);
+    await handleEvmHash(chain, traderId, transfer.hash);
+  }
+  cursors.set(key, maxBlock);
+}
+
+async function handleEvmHash(chain: Chain, traderId: string, hash: string): Promise<void> {
+  const first = await markSeenOnce(`evm:${hash}:${traderId}`, 86_400);
+  if (!first) return;
   const existing = await prisma.processedSignature.findUnique({
-    where: { chain_signature: { chain: Chain.SOLANA, signature } },
+    where: { chain_signature: { chain, signature: hash } },
   });
   if (existing) return;
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
 
-  const fetched = await solanaPool().call('getParsedTransaction', (client) =>
-    client.getParsedTransaction(signature, {
-      maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-      commitment: 'confirmed',
-    }),
+  const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
+    client.getTransactionReceipt({ hash: hash as `0x${string}` }),
   );
-  const tx = fetched.value;
-  if (!tx) {
+  const receipt = receiptResult.value;
+  if (!receipt) {
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: 'tx-not-found' },
+      data: { chain, signature: hash, outcome: 'receipt-not-found' },
     });
     return;
   }
 
-  const decoded = decodeSolanaTransaction({
-    tx,
-    signature,
+  const txResult = await evmPool(chain).call('getTransaction', (client) =>
+    client.getTransaction({ hash: hash as `0x${string}` }),
+  );
+  const tx = txResult.value;
+  const decoded = await decodeEvmTransaction({
+    chain,
+    receipt,
     traderAddress: trader.address,
-    observedAt: new Date(),
+    nativeValue: tx?.value ?? 0n,
+    blockTimestamp: null,
+    toAddress: tx?.to ?? receipt.to ?? null,
   });
 
   const detection = await prisma.detectedTransaction.create({
     data: {
-      chain: Chain.SOLANA,
-      txHash: signature,
+      chain,
+      txHash: hash,
       traderId: trader.id,
-      blockNumber: BigInt(slot),
+      blockNumber: receipt.blockNumber,
       blockTime: decoded.blockTime,
       classification: decoded.classification,
       venue: decoded.venue,
@@ -142,19 +182,19 @@ async function handleSignature(traderId: string, signature: string, slot: number
 
   await prisma.trader.update({
     where: { id: trader.id },
-    data: { lastActivityAt: new Date(), lastSignature: signature },
+    data: { lastActivityAt: new Date(), lastSignature: hash },
   });
 
   telegram.send(
     renderDetection({
-      chain: Chain.SOLANA,
+      chain,
       traderLabel: trader.label,
       traderAddress: trader.address,
       classification: decoded.classification,
       tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
       tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
-      sourceTxHash: signature,
-      detectLatencyMs: decoded.blockTime ? Date.now() - decoded.blockTime.getTime() : null,
+      sourceTxHash: hash,
+      detectLatencyMs: null,
     }),
     { kind: 'detection' },
   );
@@ -162,25 +202,23 @@ async function handleSignature(traderId: string, signature: string, slot: number
   const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
   if (!tokenAddress) {
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: decoded.classification },
+      data: { chain, signature: hash, outcome: decoded.classification },
     });
     return;
   }
 
   const token = await prisma.token.upsert({
-    where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
+    where: { chain_address: { chain, address: tokenAddress } },
     create: {
-      chain: Chain.SOLANA,
+      chain,
       address: tokenAddress,
       symbol: decoded.tokenOut?.symbol ?? null,
       decimals: decoded.tokenOut?.decimals ?? null,
     },
-    update: {
-      decimals: decoded.tokenOut?.decimals ?? undefined,
-    },
+    update: { decimals: decoded.tokenOut?.decimals ?? undefined },
   });
 
-  const market = await getMarketSnapshot(Chain.SOLANA, tokenAddress);
+  const market = await getMarketSnapshot(chain, tokenAddress);
   if (!market.missing) {
     await prisma.token.update({
       where: { id: token.id },
@@ -199,16 +237,15 @@ async function handleSignature(traderId: string, signature: string, slot: number
   }
 
   const firstBuy = await prisma.tokenFirstBuy.findUnique({
-    where: { chain_tokenAddress: { chain: Chain.SOLANA, tokenAddress } },
+    where: { chain_tokenAddress: { chain, tokenAddress } },
   });
   const open = await prisma.position.findFirst({
     where: {
-      chain: Chain.SOLANA,
+      chain,
       tokenAddress,
       status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
     },
   });
-
   const config = await getStrategyConfig();
   const qualification = qualifySignal({
     decoded,
@@ -228,20 +265,20 @@ async function handleSignature(traderId: string, signature: string, slot: number
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
     isFirstBuy: firstBuy === null,
-    chainCanExecute: true,
+    chainCanExecute: chainConfig(chain).canExecute,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
-    spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isSolanaQuoteAsset(decoded.tokenIn.address)),
+    spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isEvmQuoteAsset(chain, decoded.tokenIn.address)),
   });
 
   if (!qualification.qualified) {
     await prisma.signal.create({
       data: {
-        chain: Chain.SOLANA,
+        chain,
         traderId: trader.id,
         tokenId: token.id,
         tokenAddress,
         detectionId: detection.id,
-        sourceTxHash: signature,
+        sourceTxHash: hash,
         status: SignalStatus.SKIPPED,
         skipReason: qualification.reason,
         skipDetail: qualification.detail,
@@ -254,7 +291,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
     });
     telegram.send(
       renderSkip({
-        chain: Chain.SOLANA,
+        chain,
         tokenSymbol: market.symbol,
         tokenAddress,
         traderLabel: trader.label,
@@ -263,18 +300,18 @@ async function handleSignature(traderId: string, signature: string, slot: number
         detail: qualification.detail,
         marketCapUsd: market.marketCapUsd,
         liquidityUsd: market.liquidityUsd,
-        sourceTxHash: signature,
+        sourceTxHash: hash,
       }),
       { kind: 'skip' },
     );
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: `skipped:${qualification.reason}` },
+      data: { chain, signature: hash, outcome: `skipped:${qualification.reason}` },
     });
     return;
   }
 
   const result = await handleQualifiedCopy({
-    chain: Chain.SOLANA,
+    chain,
     trader,
     token,
     tokenAddress,
@@ -283,25 +320,14 @@ async function handleSignature(traderId: string, signature: string, slot: number
     signalStrength: qualification.signalStrength,
     marketCapTier: qualification.marketCapTier,
     detectionId: detection.id,
-    sourceTxHash: signature,
-    observedAt: decoded.blockTime ?? new Date(),
+    sourceTxHash: hash,
+    observedAt: new Date(),
   });
 
   await prisma.processedSignature.create({
-    data: { chain: Chain.SOLANA, signature, outcome: result.status },
+    data: { chain, signature: hash, outcome: result.status },
   });
-
-  log.info(
-    {
-      signature,
-      trader: trader.label,
-      token: tokenAddress,
-      status: result.status,
-      txHash: result.txHash,
-      classification: decoded.classification,
-    },
-    'Processed trader transaction',
-  );
+  log.info({ hash, trader: trader.label, token: tokenAddress, status: result.status }, 'Processed EVM trader transaction');
 }
 
 export { TxClassification };
