@@ -8,7 +8,7 @@ Run three services from the same image / repo:
 
 | Service | Command | Port | Role |
 |---|---|---|---|
-| api | `npm run start -w @copyra/api` | `41717` | Fastify HTTP + WS |
+| api | `npm run start -w @copyra/api` | `8080` in Docker / App Platform (`PORT`), `41717` locally via `API_PORT` | Fastify HTTP + WS |
 | worker | `npm run start -w @copyra/worker` | none | monitors + exits |
 | web | `npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127` | `43127` | Vite-built `copyra.` UI |
 
@@ -33,11 +33,27 @@ Create **three** components from the same Dockerfile / branch:
 
 | Component | Type | HTTP port | Run command |
 |---|---|---|---|
-| `api` | Web service | `41717` | `npm run start -w @copyra/api` |
+| `api` | Web service | **`8080`** | `npm run start -w @copyra/api` |
 | `web` | Web service | `43127` | `npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127` |
 | `worker` | Worker | none | `npm run start -w @copyra/worker` |
 
-Health check for `api`: `GET /health`.
+### API health checks (exact App Platform values)
+
+On the **api** component → Settings → HTTP Port / Health Checks:
+
+| Setting | Value |
+|---|---|
+| HTTP Port | **`8080`** |
+| Health Check path | **`/health`** |
+| Initial Delay | **`60` seconds** |
+| Period | `10` seconds |
+| Timeout | `5` seconds |
+| Success Threshold | `1` |
+| Failure Threshold | `6` |
+
+The API binds `0.0.0.0` and listens on `process.env.PORT` when set (App Platform sets `PORT` from the HTTP Port). `GET /health` returns `200` with `{ "ok": true, "service": "copyra-api" }` and no secrets.
+
+If health checks still fail, open **Runtime Logs** on the `api` component: a missing encrypted env var crashes before listen; a wrong HTTP Port (e.g. `41717` or `3000` while the process is on `8080`) never receives the probe.
 
 A checked-in example lives at `.do/app.yaml` (no secrets). Prefer setting encrypted env vars in the DO UI.
 

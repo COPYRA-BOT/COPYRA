@@ -38,7 +38,7 @@ That starts:
 
 | Process | Port |
 |---|---|
-| API (`apps/api`) | `41717` |
+| API (`apps/api`) | `41717` locally (`API_PORT`); `8080` in Docker / App Platform (`PORT`) |
 | Dashboard (`apps/web`) | `43127` |
 | Worker (`apps/worker`) | no HTTP port — Helius log subscriptions + heartbeat |
 

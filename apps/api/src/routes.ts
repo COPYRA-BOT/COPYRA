@@ -47,7 +47,8 @@ function parseChainAddress(chain: Chain, raw: string): string {
 
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerSwapRoutes(app);
-  app.get('/health', async () => ({ ok: true, service: 'copyra-api', at: new Date().toISOString() }));
+  // /health is registered in main.ts before plugins so App Platform liveness
+  // does not depend on route registration order.
 
   app.get('/api/status', async () => {
     const settings = await getSettings();

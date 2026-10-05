@@ -23,19 +23,28 @@ services:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    http_port: 41717
+    # Must match process listen port (PORT / API_PORT). App Platform sets PORT
+    # from this value and probes http_path until it returns 200.
+    http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     health_check:
       http_path: /health
+      initial_delay_seconds: 60
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 6
     run_command: npm run start -w @copyra/api
     envs:
       - key: NODE_ENV
         value: production
       - key: API_HOST
         value: "0.0.0.0"
+      - key: PORT
+        value: "8080"
       - key: API_PORT
-        value: "41717"
+        value: "8080"
       # Set the rest as encrypted App-Level secrets in the DO UI — never commit:
       # DATABASE_URL (public Postgres), REDIS_URL (public rediss://, not private-),
       # SESSION_SECRET (>=32 chars), SOLANA_RPC_URL, SOLANA_WS_URL,

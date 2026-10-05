@@ -13,6 +13,17 @@ const app = Fastify({
   trustProxy: true,
 });
 
+/**
+ * Liveness for DigitalOcean App Platform / load balancers.
+ * Registered first, before DB/Redis work, and returns 200 with no secrets.
+ */
+app.get('/health', async (_request, reply) =>
+  reply.code(200).type('application/json').send({
+    ok: true,
+    service: 'copyra-api',
+  }),
+);
+
 await app.register(cors, {
   origin: true,
   credentials: true,
@@ -21,10 +32,20 @@ await app.register(cookie);
 await app.register(rateLimit, {
   max: 300,
   timeWindow: '1 minute',
+  allowList: (request) => {
+    const path = request.url.split('?')[0] ?? request.url;
+    return path === '/health';
+  },
 });
 await app.register(websocket);
 
-await ensureSettings();
+try {
+  await ensureSettings();
+} catch (error) {
+  // Still listen so /health can pass while operators fix DB connectivity.
+  logger.error({ err: error }, 'ensureSettings failed during API boot — continuing so /health stays up');
+}
+
 await registerRoutes(app);
 
 app.get('/api/ws', { websocket: true }, (socket) => {
@@ -41,11 +62,11 @@ app.get('/api/ws', { websocket: true }, (socket) => {
   socket.on('close', () => clearInterval(timer));
 });
 
-const port = env.API_PORT;
+const port = env.listenPort;
 const host = env.API_HOST;
 
 await app.listen({ port, host });
-logger.info({ port, host }, 'COPYRA API listening');
+logger.info({ port, host, apiPort: env.API_PORT }, 'COPYRA API listening');
 
 const shutdown = async () => {
   await app.close();

@@ -65,7 +65,12 @@ const schema = z.object({
   /** TLS Redis (`rediss://`) is required for DigitalOcean Managed Redis. */
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
+  /**
+   * Local / explicit port. DigitalOcean App Platform also injects `PORT` —
+   * see `listenPort` below, which prefers `PORT` when set.
+   */
   API_PORT: z.coerce.number().int().positive().default(41717),
+  /** Must be 0.0.0.0 on App Platform so health checks can reach the process. */
   API_HOST: z.string().default('0.0.0.0'),
   CORS_ORIGINS: csv,
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
@@ -128,8 +133,22 @@ if (!parsed.success) {
   );
 }
 
+/** Prefer platform `PORT` (App Platform / Railway / Cloud Run) over API_PORT. */
+function resolveListenPort(apiPort: number): number {
+  const raw = process.env.PORT?.trim();
+  if (raw && /^\d+$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0 && n <= 65535) return n;
+  }
+  return apiPort;
+}
+
 export const env = {
   ...parsed.data,
+  /** Host the HTTP server binds to. Always force a public bind in production. */
+  API_HOST: parsed.data.NODE_ENV === 'production' ? '0.0.0.0' : parsed.data.API_HOST,
+  /** Actual listen port: `PORT` env if set, otherwise `API_PORT`. */
+  listenPort: resolveListenPort(parsed.data.API_PORT),
   /** Solana execution guard. Defaults to master TRADING_ENABLED when unset. */
   SOL_TRADING_ENABLED:
     process.env.SOL_TRADING_ENABLED === undefined

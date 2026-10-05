@@ -41,7 +41,10 @@ RUN apt-get update \
 
 ENV NODE_ENV=production
 ENV API_HOST=0.0.0.0
-ENV API_PORT=41717
+# App Platform injects PORT to match the component HTTP Port. Default 8080 so
+# a UI left on the DO default still reaches the API. Local .env can override.
+ENV PORT=8080
+ENV API_PORT=8080
 
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
@@ -50,7 +53,7 @@ COPY --from=build /app/apps ./apps
 COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/tsconfig.base.json /app/tsconfig.json ./
 
-EXPOSE 41717 43127
+EXPOSE 8080 43127
 
 # Default process is the API. On App Platform, create separate components
 # (or override the run command) for worker and web — see docs/DEPLOY.md.
