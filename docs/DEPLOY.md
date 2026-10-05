@@ -23,7 +23,7 @@ In the App Platform component settings:
 | Field | Value |
 |---|---|
 | Source | GitHub `COPYRA-BOT/COPYRA` |
-| Branch | `dev` |
+| Branch | `main` (or `dev` — same Dockerfile fix is on both) |
 | Autodeploy | On |
 | Source Directory | **leave blank** (repo root `/`) — do **not** set `apps/api`, `packages/db`, or any subdirectory |
 | Dockerfile path | `Dockerfile` |
