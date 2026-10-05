@@ -89,9 +89,16 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 VITE_REOWN_PROJECT_ID=
 NEXT_PUBLIC_REOWN_PROJECT_ID=
+# Aliases accepted by the API / Vite (same WalletConnect Cloud project id):
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
+# Optional browser Alchemy id for Wagmi EVM RPC (same key as server EVM_* RPCs):
+VITE_ALCHEMY_ID=
+NEXT_PUBLIC_ALCHEMY_ID=
 ```
 
-`VITE_REOWN_PROJECT_ID` is the public Reown / WalletConnect project id (safe to expose). Set it **App-Level → RUN_AND_BUILD_TIME** (or at least RUN_TIME). The API serves it via `/config.js` and `/api/public-config` so Connect Wallet can open the full multi-wallet Reown modal even when the Docker build did not bake the id.
+`VITE_REOWN_PROJECT_ID` (or `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`) is the public Reown / WalletConnect project id (safe to expose). Set it **App-Level → RUN_AND_BUILD_TIME** (or at least RUN_TIME). The API serves it via `/config.js` and `/api/public-config` so Connect Wallet can open the full multi-wallet Reown modal even when the Docker build did not bake the id.
+
+In [WalletConnect Cloud](https://cloud.walletconnect.com/) allowlist **`https://copyra.fun`** (and `www` / App Platform hosts if you use them) for that project.
 
 Scope every encrypted var to **App-Level → All components** (or both `api` and `worker`). If RPCs are only on the worker, `/api/funds` and `/api/balances` fail with `SOLANA_RPC_URL is not configured`.
 

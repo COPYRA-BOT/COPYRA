@@ -32,10 +32,12 @@ export function buildSiweMessage(input: {
   chainId: number;
   issuedAt: string;
   webOrigin?: string;
+  /** Prefer browser location.host — wallets compare this to the page origin. */
+  domainHost?: string;
 }): string {
   const origin = (input.webOrigin ?? env.PUBLIC_WEB_URL).replace(/\/+$/, '');
   // Wallets compare domain to location.host (hostname[:port], no scheme).
-  const domain = new URL(origin).host;
+  const domain = (input.domainHost?.trim() || new URL(origin).host).replace(/^https?:\/\//i, '');
   return [
     `${domain} wants you to sign in with your Ethereum account:`,
     input.address,
@@ -55,9 +57,11 @@ export function buildSiwsMessage(input: {
   nonce: string;
   issuedAt: string;
   webOrigin?: string;
+  /** Prefer browser location.host — wallets compare this to the page origin. */
+  domainHost?: string;
 }): string {
   const origin = (input.webOrigin ?? env.PUBLIC_WEB_URL).replace(/\/+$/, '');
-  const domain = new URL(origin).host;
+  const domain = (input.domainHost?.trim() || new URL(origin).host).replace(/^https?:\/\//i, '');
   return [
     `${domain} wants you to sign in with your Solana account:`,
     input.address,
@@ -73,12 +77,15 @@ export function buildSiwsMessage(input: {
 
 export async function verifyWalletSignature(input: {
   address: string;
+  /** Lowercase EVM / base58 Solana address used when the nonce was issued. */
+  storageAddress?: string;
   chain: Chain;
   message: string;
   signature: string;
 }): Promise<boolean> {
+  const lookupAddress = input.storageAddress ?? input.address;
   const record = await prisma.authNonce.findFirst({
-    where: { address: input.address, usedAt: null, expiresAt: { gt: new Date() } },
+    where: { address: lookupAddress, usedAt: null, expiresAt: { gt: new Date() } },
     orderBy: { issuedAt: 'desc' },
   });
   if (!record) return false;

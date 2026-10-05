@@ -359,9 +359,11 @@ async function sessionSign(e, connected){
     address:a,
     chain,
     chainId:e==='evm'?chainId:undefined,
-    clientOrigin:location.origin
+    clientOrigin:location.origin,
+    clientHost:location.host
   });
   if(!window.CopyraWallet?.signMessage)throw new Error('Wallet signer is not ready.');
+  // Sign with the checksum/base58 address the SIWE/SIWS message was built for.
   const signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e);
   await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
   return issued.address;

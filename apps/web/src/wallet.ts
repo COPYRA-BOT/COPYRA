@@ -11,6 +11,7 @@ import {
   optimism,
 } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
+import { getAddress, http } from 'viem';
 
 export type WalletMode = 'sol' | 'evm';
 
@@ -112,10 +113,31 @@ function networkForChainId(chainId: number) {
   return mainnet;
 }
 
+function alchemyRpcForChain(chainId: number, alchemyId: string): string | undefined {
+  const path =
+    chainId === 1
+      ? 'eth-mainnet'
+      : chainId === 8453
+        ? 'base-mainnet'
+        : chainId === 42161
+          ? 'arb-mainnet'
+          : chainId === 56
+            ? 'bnb-mainnet'
+            : chainId === 137
+              ? 'polygon-mainnet'
+              : chainId === 10
+                ? 'opt-mainnet'
+                : null;
+  if (!path) return undefined;
+  return `https://${path}.g.alchemy.com/v2/${alchemyId}`;
+}
+
 async function resolveProjectId(): Promise<string> {
   const baked =
     (import.meta.env.VITE_REOWN_PROJECT_ID as string | undefined)?.trim() ||
     (import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID as string | undefined)?.trim() ||
+    (import.meta.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID as string | undefined)?.trim() ||
+    (import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined)?.trim() ||
     '';
   if (baked) return baked;
 
@@ -165,13 +187,29 @@ async function init(): Promise<WalletApi> {
     typeof optimism,
   ];
 
+  const alchemyId =
+    (import.meta.env.VITE_ALCHEMY_ID as string | undefined)?.trim() ||
+    (import.meta.env.NEXT_PUBLIC_ALCHEMY_ID as string | undefined)?.trim() ||
+    '';
+  const evmNetworks = [mainnet, base, arbitrum, bsc, polygon, optimism] as const;
+  const transports = Object.fromEntries(
+    evmNetworks.map((network) => {
+      const rpc = alchemyId
+        ? alchemyRpcForChain(network.id, alchemyId)
+        : undefined;
+      return [network.id, http(rpc)];
+    }),
+  );
+
   const wagmiAdapter = new WagmiAdapter({
     projectId: PROJECT_ID,
-    networks: [mainnet, base, arbitrum, bsc, polygon, optimism],
+    networks: [...evmNetworks],
+    transports,
   });
   const solanaAdapter = new SolanaAdapter();
   new QueryClient();
 
+  // Exact page origin — WalletConnect / Phantom / MetaMask compare this to SIWE/SIWS.
   const siteOrigin = window.location.origin || 'https://copyra.fun';
 
   const modal = createAppKit({
@@ -181,12 +219,12 @@ async function init(): Promise<WalletApi> {
     metadata: {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
-      // Must match the page origin or wallets reject SIWE/SIWS.
       url: siteOrigin,
       icons: [`${siteOrigin}/icons/copyra.png`],
     },
     allWallets: 'SHOW',
     featuredWalletIds: [
+      // Phantom, MetaMask, Trust, Coinbase, Rainbow
       '4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0',
       'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96',
       'a797aa35c0fadbfc1a53e7f675162ed5226968b44a19ee3d24385c64d1d3c974',
@@ -201,6 +239,8 @@ async function init(): Promise<WalletApi> {
       onramp: false,
     },
     allowUnsupportedChain: true,
+    enableWalletGuide: true,
+    enableNetworkSwitch: true,
   });
 
   function solanaProvider(): SolanaProvider | undefined {
@@ -289,7 +329,16 @@ async function init(): Promise<WalletApi> {
       }
       throw new Error('Wallet connect timed out. Open Connect again or use All Wallets / QR.');
     },
-    async disconnect(_mode) {
+    async disconnect(mode) {
+      // Disconnect only the active mode so SOL and EVM sessions stay independent.
+      if (mode === 'sol') {
+        await modal.disconnect('solana');
+        return;
+      }
+      if (mode === 'evm') {
+        await modal.disconnect('eip155');
+        return;
+      }
       await modal.disconnect();
     },
     getAddress(mode) {
@@ -320,9 +369,18 @@ async function init(): Promise<WalletApi> {
           'Connected EVM wallet cannot sign messages. Try MetaMask, Trust, or another wallet from All Wallets.',
         );
       }
+      // MetaMask requires the personal_sign address to match the SIWE message
+      // address (EIP-55 checksum). Passing a lowercased address triggers
+      // "address does not match the provided address for verification."
+      let signingAddress = address;
+      try {
+        signingAddress = getAddress(address);
+      } catch {
+        /* keep original if not a valid hex address */
+      }
       const sig = await provider.request({
         method: 'personal_sign',
-        params: [message, address],
+        params: [message, signingAddress],
       });
       return String(sig);
     },

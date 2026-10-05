@@ -43,11 +43,26 @@ export function allowedWebOrigins(): string[] {
     ...env.CORS_ORIGINS,
     'https://copyra.fun',
     'http://copyra.fun',
+    'https://www.copyra.fun',
+    'http://www.copyra.fun',
   ]) {
     if (!candidate) continue;
     try {
       const normalized = normalizeOrigin(candidate);
-      for (const variant of withHttpTwin(normalized)) out.add(variant);
+      for (const variant of withHttpTwin(normalized)) {
+        out.add(variant);
+        // Always allow www / apex twins so SIWE domain matches the page the user opened.
+        try {
+          const url = new URL(variant);
+          if (url.hostname.startsWith('www.')) {
+            out.add(`${url.protocol}//${url.hostname.slice(4)}`);
+          } else if (url.hostname.includes('.')) {
+            out.add(`${url.protocol}//www.${url.hostname}`);
+          }
+        } catch {
+          /* skip */
+        }
+      }
     } catch {
       /* skip invalid */
     }
@@ -127,7 +142,9 @@ export function publicReownProjectId(): string {
   return (
     process.env.VITE_REOWN_PROJECT_ID?.trim() ||
     process.env.NEXT_PUBLIC_REOWN_PROJECT_ID?.trim() ||
+    process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ||
     process.env.REOWN_PROJECT_ID?.trim() ||
+    process.env.WALLETCONNECT_PROJECT_ID?.trim() ||
     ''
   );
 }

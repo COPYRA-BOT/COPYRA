@@ -471,17 +471,28 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         chain: chainSchema,
         /** Actual browser origin — same-origin POSTs often omit Origin header. */
         clientOrigin: z.string().url().optional(),
+        /** location.host — wallets compare SIWE/SIWS domain to this exactly. */
+        clientHost: z.string().min(1).max(253).optional(),
         /** Wallet's active EVM chain id (required for SIWE to match MetaMask). */
         chainId: z.number().int().positive().optional(),
       })
       .parse(request.body);
+
+    // EVM: SIWE messages MUST use EIP-55 checksum addresses. Lowercasing the
+    // address in the message makes MetaMask refuse with
+    // "address does not match the provided address for verification."
+    const checksumEvm =
+      body.chain === Chain.SOLANA ? null : getAddress(body.address);
     const address =
       body.chain === Chain.SOLANA
         ? new PublicKey(body.address).toBase58()
-        : getAddress(body.address).toLowerCase();
+        : checksumEvm!.toLowerCase();
+    const messageAddress =
+      body.chain === Chain.SOLANA ? address : checksumEvm!;
+
     const { nonce, expiresAt } = await issueNonce(address, body.chain);
     const issuedAt = new Date().toISOString();
-    const webOrigin = resolveWebOrigin({
+    let webOrigin = resolveWebOrigin({
       requestHost: String(request.headers['x-forwarded-host'] ?? request.headers.host ?? ''),
       originHeader:
         body.clientOrigin ||
@@ -492,31 +503,89 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
           ? request.headers['x-forwarded-proto']
           : undefined,
     });
+    // Browser location.host / location.origin are ground truth for wallet domain
+    // checks. Keep URI + domain as one consistent pair from the page the user opened.
+    let domainHost: string | undefined;
+    try {
+      const originHost = new URL(webOrigin).host;
+      const stripWww = (h: string) => h.replace(/^www\./i, '').toLowerCase();
+      const clientHost = body.clientHost?.trim();
+      const clientOrigin = body.clientOrigin?.trim();
+      let clientOriginHost: string | undefined;
+      if (clientOrigin) {
+        try {
+          clientOriginHost = new URL(clientOrigin).host;
+        } catch {
+          clientOriginHost = undefined;
+        }
+      }
+      const pairConsistent =
+        Boolean(clientHost && clientOriginHost) &&
+        clientHost!.toLowerCase() === clientOriginHost!.toLowerCase();
+      // Prefer the exact page the browser is on when that origin is allowlisted
+      // (covers www vs apex / http vs https without inventing a different domain).
+      const clientAllowed =
+        pairConsistent &&
+        (() => {
+          try {
+            const host = stripWww(clientHost!);
+            // resolveWebOrigin already validated via Origin header path; re-check host kinship.
+            return (
+              host === stripWww(originHost) ||
+              host === 'copyra.fun' ||
+              host === 'localhost' ||
+              host.startsWith('127.0.0.1') ||
+              host.endsWith('.ondigitalocean.app')
+            );
+          } catch {
+            return false;
+          }
+        })();
+      if (clientAllowed) {
+        webOrigin = clientOrigin!.replace(/\/+$/, '');
+        domainHost = clientHost;
+      } else if (clientHost && stripWww(clientHost) === stripWww(originHost)) {
+        domainHost = clientHost;
+      } else {
+        domainHost = originHost;
+      }
+    } catch {
+      domainHost = body.clientHost;
+    }
+
     const evmChainId =
       body.chainId ??
       CHAIN_CONFIGS[body.chain]?.chainId ??
       1;
     const message =
       body.chain === Chain.SOLANA
-        ? buildSiwsMessage({ address, nonce, issuedAt, webOrigin })
+        ? buildSiwsMessage({
+            address: messageAddress,
+            nonce,
+            issuedAt,
+            webOrigin,
+            domainHost,
+          })
         : buildSiweMessage({
-            address,
+            address: messageAddress,
             nonce,
             chainId: evmChainId,
             issuedAt,
             webOrigin,
+            domainHost,
           });
     return {
       nonce,
-      address,
+      address: messageAddress,
+      storageAddress: address,
       chain: body.chain,
       chainId: body.chain === Chain.SOLANA ? null : evmChainId,
       message,
       expiresAt,
       webOrigin,
+      domainHost,
     };
   });
-
 
   app.post('/api/auth/verify', async (request, reply) => {
     const body = z
@@ -527,11 +596,19 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         signature: z.string(),
       })
       .parse(request.body);
+    const checksumEvm =
+      body.chain === Chain.SOLANA ? null : getAddress(body.address);
     const address =
       body.chain === Chain.SOLANA
         ? new PublicKey(body.address).toBase58()
-        : getAddress(body.address).toLowerCase();
-    const ok = await verifyWalletSignature({ ...body, address });
+        : checksumEvm!.toLowerCase();
+    const verifyAddress =
+      body.chain === Chain.SOLANA ? address : checksumEvm!;
+    const ok = await verifyWalletSignature({
+      ...body,
+      address: verifyAddress,
+      storageAddress: address,
+    });
     if (!ok) return reply.code(401).send({ error: 'Signature verification failed.' });
     const session = await createSession(address, body.chain, reply, {
       userAgent: request.headers['user-agent'],
@@ -549,7 +626,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         return undefined;
       })(),
     });
-    return { ok: true, address, chain: body.chain, expiresAt: session.expiresAt };
+    return { ok: true, address: verifyAddress, chain: body.chain, expiresAt: session.expiresAt };
   });
 
   app.get('/api/auth/me', async (request) => {
