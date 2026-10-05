@@ -39,7 +39,9 @@ COPY packages ./packages
 COPY apps ./apps
 COPY scripts ./scripts
 
-RUN npm run db:generate && npm run build
+RUN npm run db:generate && npm run build \
+  && rm -f /app/apps/web/dist/config.js
+
 
 FROM node:22-bookworm-slim AS runtime
 

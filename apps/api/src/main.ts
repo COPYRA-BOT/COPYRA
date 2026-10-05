@@ -55,28 +55,17 @@ try {
 await registerRoutes(app);
 await registerFundsRoutes(app);
 
-/**
- * Runtime browser config. Must be registered before static files so production
- * always gets the Reown project id from App Platform env (Vite cannot see
- * runtime secrets at Docker build time unless BUILD_TIME is also set).
- */
-app.get('/config.js', async (_request, reply) => {
-  const reownProjectId = publicReownProjectId();
-  const venlyClientId = publicVenlyClientId();
-  const venlyEnvironment = publicVenlyEnvironment();
-  const body =
+function browserConfigJs(): string {
+  return (
     `window.COPYRA_API='';` +
     `window.__COPYRA_CONFIG__=${JSON.stringify({
-      reownProjectId,
-      venlyClientId,
-      venlyEnvironment,
+      reownProjectId: publicReownProjectId(),
+      venlyClientId: publicVenlyClientId(),
+      venlyEnvironment: publicVenlyEnvironment(),
       site: 'https://copyra.fun',
-    })};`;
-  return reply
-    .type('application/javascript; charset=utf-8')
-    .header('cache-control', 'no-store')
-    .send(body);
-});
+    })};`
+  );
+}
 
 app.get('/api/ws', { websocket: true }, (socket) => {
   const tick = async () => {
@@ -114,7 +103,16 @@ if (webDist) {
     prefix: '/',
     wildcard: false,
     decorateReply: true,
+    // Never let the built static config.js steal this path — runtime env injection.
+    allowedPath: (pathName) => pathName !== '/config.js' && !pathName.endsWith('/config.js'),
   });
+  // Register AFTER static so we own /config.js exclusively (no FST_ERR_DUPLICATED_ROUTE).
+  app.get('/config.js', async (_request, reply) =>
+    reply
+      .type('application/javascript; charset=utf-8')
+      .header('cache-control', 'no-store')
+      .send(browserConfigJs()),
+  );
   app.setNotFoundHandler((request, reply) => {
     const path = request.url.split('?')[0] ?? request.url;
     if (request.method === 'GET' && !path.startsWith('/api') && path !== '/health') {
@@ -124,6 +122,12 @@ if (webDist) {
   });
   logger.info({ webDist }, 'Serving copyra. dashboard from API (same-origin /api)');
 } else {
+  app.get('/config.js', async (_request, reply) =>
+    reply
+      .type('application/javascript; charset=utf-8')
+      .header('cache-control', 'no-store')
+      .send(browserConfigJs()),
+  );
   logger.warn({}, 'apps/web/dist not found — API-only mode (no dashboard on /)');
 }
 
