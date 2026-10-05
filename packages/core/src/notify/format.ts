@@ -31,6 +31,10 @@ function trim(value: number): string {
   return String(rounded);
 }
 
+function trimTrailingZeros(value: string): string {
+  return value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+}
+
 /**
  * Token price with adaptive precision.
  *
@@ -40,13 +44,14 @@ function trim(value: number): string {
 export function formatPrice(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value) || value === 0) return 'n/a';
   const abs = Math.abs(value);
-  if (abs >= 1) return `$${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
-  if (abs >= 0.01) return `$${value.toFixed(5)}`;
-  if (abs >= 0.0001) return `$${value.toFixed(7)}`;
-  // Keep 3 significant digits for very small prices.
+  if (abs >= 1) return `$${trimTrailingZeros(value.toFixed(4))}`;
+  if (abs >= 0.01) return `$${trimTrailingZeros(value.toFixed(5))}`;
+  if (abs >= 0.0001) return `$${trimTrailingZeros(value.toFixed(7))}`;
+  // Keep 3 significant digits for very small prices, then drop leftover zeros
+  // so $0.0000231 stays $0.0000231 rather than $0.00002310.
   const exponent = Math.floor(Math.log10(abs));
   const decimals = Math.min(18, Math.abs(exponent) + 3);
-  return `$${value.toFixed(decimals)}`;
+  return `$${trimTrailingZeros(value.toFixed(decimals))}`;
 }
 
 /** Token amount in human units, with magnitude-appropriate precision. */
@@ -66,8 +71,8 @@ export function formatAmount(value: number | null | undefined, symbol?: string):
 export function formatNative(value: number | null | undefined, symbol: string): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return `n/a ${symbol}`;
   const abs = Math.abs(value);
-  const decimals = abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6;
-  return `${value.toFixed(decimals)} ${symbol}`;
+  const decimals = abs >= 1 ? 2 : abs >= 0.01 ? 2 : 6;
+  return `${trimTrailingZeros(value.toFixed(decimals))} ${symbol}`;
 }
 
 /** Signed amount for P&L lines: "+0.26 SOL", "-0.13 SOL". */

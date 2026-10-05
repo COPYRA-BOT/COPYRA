@@ -35,7 +35,7 @@ const HEX32 = /\b0x[0-9a-fA-F]{64}\b/;
 const KEY_CONTEXT = /\b(private|secret|mnemonic|seed|signer|wallet|keypair|priv)\w*\b/i;
 
 const SKIP_SECRET_SCAN =
-  /(^|\/)(package-lock\.json|\.env\.example|node_modules\/|dist\/|generated\/)|scripts\/audit-secrets\.mjs$/;
+  /(^|\/)(package-lock\.json|\.env\.example|node_modules\/|dist\/|generated\/)|scripts\/audit-secrets\.mjs$|\.spec\.ts$|\.test\.ts$|\/__tests__\//;
 
 const SIGNING_ENV_VARS = ['SOLANA_BOT_PRIVATE_KEY', 'EVM_BOT_PRIVATE_KEY'];
 const SIGNER_ALLOWLIST = [

@@ -31,6 +31,7 @@ export * from './engine/sizing.js';
 export * from './engine/exits.js';
 export * from './engine/telemetry.js';
 export * from './engine/settings.js';
+export * from './engine/portfolio.js';
 
 // Market data
 export * from './market/index.js';
