@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
+import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
 function resolveReownProjectId(env: Record<string, string>): string {
@@ -54,7 +55,22 @@ export default defineConfig(({ mode }) => {
   return {
     envDir: resolve(process.cwd(), '../..'),
     envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
-    plugins: [copyraConfigPlugin(env)],
+    plugins: [react(), copyraConfigPlugin(env)],
+    // Equivalent to Next.js webpack.resolve.fallback = { fs, net, tls: false }
+    resolve: {
+      alias: {
+        fs: resolve(__dirname, 'src/empty-module.ts'),
+        net: resolve(__dirname, 'src/empty-module.ts'),
+        tls: resolve(__dirname, 'src/empty-module.ts'),
+      },
+    },
+    optimizeDeps: {
+      esbuildOptions: {
+        define: {
+          global: 'globalThis',
+        },
+      },
+    },
     define: {
       'import.meta.env.VITE_REOWN_PROJECT_ID': JSON.stringify(projectId),
       'import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID': JSON.stringify(projectId),
@@ -62,6 +78,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_WALLETCONNECT_PROJECT_ID': JSON.stringify(projectId),
       'import.meta.env.VITE_ALCHEMY_ID': JSON.stringify(alchemyId),
       'import.meta.env.NEXT_PUBLIC_ALCHEMY_ID': JSON.stringify(alchemyId),
+      global: 'globalThis',
     },
     server: {
       host: '0.0.0.0',

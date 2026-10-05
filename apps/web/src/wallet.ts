@@ -12,6 +12,9 @@ import {
 } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
 import { getAddress, http } from 'viem';
+import { getAccount } from '@wagmi/core';
+import { mountWeb3Provider } from './web3/mount';
+import type { EvmAccountStatus } from './web3/AccountBridge';
 
 export type WalletMode = 'sol' | 'evm';
 
@@ -21,6 +24,11 @@ export interface ConnectedWallet {
   chainId?: number;
   mode: WalletMode;
 }
+
+export type AccountSnapshot = {
+  evm: EvmAccountStatus;
+  solAddress: string | null;
+};
 
 type SolanaProvider = {
   signMessage?: (msg: Uint8Array, enc?: string) => Promise<Uint8Array | { signature: Uint8Array }>;
@@ -41,6 +49,8 @@ type WalletApi = {
   disconnect: (mode?: WalletMode) => Promise<void>;
   getAddress: (mode: WalletMode) => string | null;
   getChainId: () => number | null;
+  /** ConnectKit-style account snapshot (address / connecting / disconnected). */
+  getAccountStatus: () => AccountSnapshot;
   signMessage: (message: string, address: string, mode: WalletMode) => Promise<string>;
   signSolanaTransaction: (swapTransactionBase64: string) => Promise<string>;
   sendEvmNative: (input: {
@@ -66,6 +76,15 @@ declare global {
   }
 }
 
+const DISCONNECTED_EVM: EvmAccountStatus = {
+  address: undefined,
+  isConnecting: false,
+  isDisconnected: true,
+  isConnected: false,
+  status: 'disconnected',
+  chainId: undefined,
+};
+
 function emptyApi(error: string | null, projectIdConfigured = false): WalletApi {
   return {
     ready: false,
@@ -82,6 +101,9 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
     },
     getChainId() {
       return null;
+    },
+    getAccountStatus() {
+      return { evm: { ...DISCONNECTED_EVM }, solAddress: null };
     },
     async signMessage() {
       throw new Error(error ?? 'Wallet is not ready.');
@@ -194,9 +216,7 @@ async function init(): Promise<WalletApi> {
   const evmNetworks = [mainnet, base, arbitrum, bsc, polygon, optimism] as const;
   const transports = Object.fromEntries(
     evmNetworks.map((network) => {
-      const rpc = alchemyId
-        ? alchemyRpcForChain(network.id, alchemyId)
-        : undefined;
+      const rpc = alchemyId ? alchemyRpcForChain(network.id, alchemyId) : undefined;
       return [network.id, http(rpc)];
     }),
   );
@@ -207,7 +227,7 @@ async function init(): Promise<WalletApi> {
     transports,
   });
   const solanaAdapter = new SolanaAdapter();
-  new QueryClient();
+  const queryClient = new QueryClient();
 
   // Exact page origin — WalletConnect / Phantom / MetaMask compare this to SIWE/SIWS.
   const siteOrigin = window.location.origin || 'https://copyra.fun';
@@ -243,6 +263,17 @@ async function init(): Promise<WalletApi> {
     enableNetworkSwitch: true,
   });
 
+  let evmAccount: EvmAccountStatus = { ...DISCONNECTED_EVM };
+
+  // ConnectKit-equivalent: WagmiProvider + useAccount island.
+  mountWeb3Provider({
+    config: wagmiAdapter.wagmiConfig,
+    queryClient,
+    onAccountChange: (status) => {
+      evmAccount = status;
+    },
+  });
+
   function solanaProvider(): SolanaProvider | undefined {
     return (
       (modal.getProvider?.('solana') as SolanaProvider | undefined) ||
@@ -267,12 +298,18 @@ async function init(): Promise<WalletApi> {
   }
 
   function readEvmAddress(): string | null {
+    // Prefer live wagmi account (same source as ConnectKit useAccount).
+    const fromWagmi = evmAccount.address || getAccount(wagmiAdapter.wagmiConfig).address;
+    if (fromWagmi) return String(fromWagmi);
     const address = modal.getAddress?.('eip155') || modal.getAddress?.();
     if (!address || !String(address).startsWith('0x')) return null;
     return String(address);
   }
 
   function readEvmChainId(): number | null {
+    if (evmAccount.chainId) return evmAccount.chainId;
+    const fromWagmi = getAccount(wagmiAdapter.wagmiConfig).chainId;
+    if (typeof fromWagmi === 'number') return fromWagmi;
     const raw = modal.getChainId?.();
     if (raw === undefined || raw === null) return null;
     const n = Number(raw);
@@ -303,8 +340,13 @@ async function init(): Promise<WalletApi> {
             return { address, chain: 'SOLANA', mode };
           }
         } else {
+          // Wait until wagmi reports connected (or AppKit address is ready).
+          if (evmAccount.isConnecting) {
+            await sleep(200);
+            continue;
+          }
           const address = readEvmAddress();
-          if (address) {
+          if (address && (evmAccount.isConnected || !evmAccount.isConnecting)) {
             const chainId = readEvmChainId() ?? 1;
             try {
               await modal.close();
@@ -346,6 +388,12 @@ async function init(): Promise<WalletApi> {
     },
     getChainId() {
       return readEvmChainId();
+    },
+    getAccountStatus() {
+      return {
+        evm: { ...evmAccount },
+        solAddress: readSolAddress(),
+      };
     },
     async signMessage(message, address, mode) {
       if (mode === 'sol') {
@@ -413,12 +461,18 @@ async function init(): Promise<WalletApi> {
       if (!provider?.request) throw new Error('No EVM wallet available to send.');
       const from = readEvmAddress();
       if (!from) throw new Error('Connect an EVM wallet first.');
+      let checksumFrom = from;
+      try {
+        checksumFrom = getAddress(from);
+      } catch {
+        /* keep */
+      }
       const hexValue = `0x${BigInt(input.valueWei).toString(16)}`;
       const hash = await provider.request({
         method: 'eth_sendTransaction',
         params: [
           {
-            from,
+            from: checksumFrom,
             to: input.to,
             value: hexValue,
             chainId: `0x${input.chainId.toString(16)}`,

@@ -233,7 +233,10 @@ function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pt
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
 <div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${H.slice(0,60).map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div></div>`}
 function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const mi=$('#mi');if(mi){mi.src=w?'/icons/solana.png':'/icons/evm.png';mi.alt=w?'Solana':'EVM'}$('#mc')?.classList.toggle('evm',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
- {const a=wallet[M];$('#cn').textContent=a?'● '+a.slice(0,4)+'…'+a.slice(-4):'Connect Wallet';$('#cn').title=a?M.toUpperCase()+' wallet connected':'Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
+ {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
+  if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
+  else if(a){$('#cn').textContent='● '+a.slice(0,4)+'…'+a.slice(-4);$('#cn').title=M.toUpperCase()+' wallet connected'}
+  else {$('#cn').textContent='Connect Wallet';$('#cn').title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}}
  $('#th').innerHTML=document.documentElement.dataset.theme=='dark'?'<svg viewBox="0 0 24 24" class="ib" style="width:26px"><circle cx="12" cy="12" r="4" stroke="currentColor" fill="none" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.8"/></svg>':'<svg viewBox="0 0 24 24" style="width:26px"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
  $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="M='${x}';draw()">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
 const md=(h)=>{$('#md').firstElementChild.innerHTML=h;$('#md').classList.add('o')},cl=()=>$('#md').classList.remove('o');
@@ -256,22 +259,28 @@ function addT(){const e=M;md(`<h3>Add trader (${e.toUpperCase()})</h3><label>Tra
 const tg=async(id,on)=>{try{await api('PATCH','/api/traders/'+id,{enabled:!!on});await refresh()}catch(err){toast(err.message)}};
 const rm=(id,n)=>md(`<h3>Remove trader?</h3><p class="mu">Open positions stay monitored; no new trades will be copied from ${n}.</p><div class="row"><button class="btn red" onclick="api('DELETE','/api/traders/${id}').then(()=>{cl();refresh()}).catch(e=>toast(e.message))">Remove</button><button class="btn" onclick="cl()">Cancel</button></div>`);
 function dep(){const e=M,X=UI[e],addr=S[e].wa,a=wallet[e];
+ const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  md(`<h3>Deposit ${X.u}</h3>
 ${e=='evm'?`<label>Chain</label><select id="dc">${X.ch.map(c=>`<option value="${c}">${CH[c]}</option>`).join('')}</select>`:''}
 <label>Trading wallet (bot)</label><input readonly value="${addr||'No bot signing key — set SOLANA_BOT_PRIVATE_KEY / EVM_BOT_PRIVATE_KEY on the host'}">
-<label>Amount (${X.u})</label><input id="da" type="number" step="any" min="0" placeholder="0.0">
-<p class="mu">${addr?`Send real ${X.u} from your connected wallet to the trading wallet. Confirmed on-chain via RPC — never simulated.`:'Observe-only: there is no deposit destination until a bot key is configured.'}</p>
+<label>Amount (${X.u})</label><input id="da" type="number" step="any" min="0" placeholder="${presets[0]}">
+<div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>
+<p class="mu">${addr?`Send a small test amount of real ${X.u} from your connected wallet to the trading wallet. Confirmed on-chain via RPC — never simulated.`:'Observe-only: there is no deposit destination until a bot key is configured.'}</p>
 <p class="rd" id="ae"></p>
 <div class="row" style="margin-top:12px">
-${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:''}
+${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:a?'':'<button class="btn pri" onclick="cl();conn()">Connect Wallet first</button>'}
 <button class="btn" onclick="cl();refresh();toast('Refreshing on-chain balance')">Refresh balance</button>
 <button class="btn" onclick="cl()">Close</button></div>`);
+ $('#md').querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>{$('#da').value=b.getAttribute('data-amt')});
  const ds=$('#ds'); if(!ds)return;
  ds.onclick=async()=>{
   const amount=Number($('#da').value); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   ds.disabled=true; $('#ae').textContent='Building deposit…';
   try{
-   if(!window.CopyraWallet?.ready)throw new Error('Connect a wallet with Reown AppKit first.');
+   if(!window.CopyraWallet?.ready)throw new Error('Connect a wallet first (Reown / WalletConnect).');
+   const st=window.CopyraWallet.getAccountStatus?.();
+   if(e==='evm'&&st?.evm?.isConnecting)throw new Error('Wallet still connecting — wait a moment, then try again.');
+   if(e==='evm'&&st?.evm?.isDisconnected&&!window.CopyraWallet.getAddress('evm'))throw new Error('EVM wallet disconnected. Tap Connect Wallet.');
    const built=await api('POST','/api/funds/deposit/build',{mode:e,amount,chain:e==='sol'?'SOLANA':({base:'BASE',arb:'ARBITRUM',bnb:'BSC',ethereum:'ETHEREUM'}[$('#dc')?.value]||'BASE')});
    if(built.kind==='solana'){
     $('#ae').textContent='Sign the transfer in your wallet…';
@@ -305,13 +314,16 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  }
 }
 function wd(){const e=M,X=UI[e],a=wallet[e];
+ const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from the bot wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Requires the server bot signing key. Confirmed on explorers — never simulated.</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Requires the server bot signing key. Confirmed on explorers — never simulated. Start with a small test amount.</p>
 <label>From</label><select id="wb"><option value="savings">Savings</option><option value="trading">Trading (available)</option></select>
-<label>Amount (${X.u})</label><input id="wa" type="number" step="any" min="0">
+<label>Amount (${X.u})</label><input id="wa" type="number" step="any" min="0" placeholder="${presets[0]}">
+<div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-wamt="${p}">${p} ${X.u}</button>`).join('')}</div>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">Withdraw</button><button class="btn" onclick="cl()">Cancel</button></div>`);
+ $('#md').querySelectorAll('[data-wamt]').forEach(b=>b.onclick=()=>{$('#wa').value=b.getAttribute('data-wamt')});
  $('#ok').onclick=async()=>{
   const amount=Number($('#wa').value); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
@@ -401,26 +413,32 @@ function disconnectMode(e){
   cl();toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');draw();
 }
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
+ const st=window.CopyraWallet?.getAccountStatus?.();
  if(a0){
-  md(`<h3>${N} wallet</h3><p class="mu">Connected in ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode uses a separate wallet. This proves identity for deposit / withdraw — the bot key on the server is what copy-trades.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" id="dx">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
+  const line=e==='evm'&&st?.evm
+    ?(st.evm.isConnecting?'Connecting…':st.evm.isDisconnected?'Session wallet saved — reconnect to refresh.':('Connected Wallet: '+a0))
+    :('Connected Wallet: '+a0);
+  md(`<h3>${N} wallet</h3><p class="mu">${line}</p><p class="mu">Connected in ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode uses a separate wallet. This proves identity for deposit / withdraw — the bot key on the server is what copy-trades.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" id="dx">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
   $('#dx').onclick=()=>disconnectMode(e);
   return;
  }
- md(`<h3>Connect ${N} wallet</h3><p class="mu">${e==='sol'?'Opens the Solana Reown list (Phantom, Solflare, Trust, All Wallets QR, …).':'Opens the EVM Reown list (MetaMask, Trust, Coinbase, OKX, All Wallets QR, …).'} After you pick a wallet, approve the one-time sign-in — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+ md(`<h3>Connect ${N} wallet</h3><p class="mu">${e==='sol'?'Opens the Solana Reown list (Phantom, Solflare, Trust, All Wallets QR, …).':'Opens the EVM wallet list via Wagmi + WalletConnect (MetaMask, Trust, Coinbase, OKX, All Wallets QR, …).'} After you pick a wallet, approve the one-time sign-in — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
  (async()=>{
   try{
     const w=await waitWallet();
-    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'Reown AppKit is not ready. Set VITE_REOWN_PROJECT_ID, redeploy, then hard-refresh.');
-    $('#ws').textContent='Choose a wallet in the popup…';
+    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, redeploy, then hard-refresh.');
+    $('#ws').textContent=e==='evm'?'Connecting… choose a wallet in the popup.':'Choose a wallet in the popup…';
     const connected=await w.connect(e);
+    $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
     await finishConnect(e,N,connected);
   }catch(err){
     const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
-    md(`<h3>Connect ${N} wallet</h3><p class="mu">Tap Connect Wallet to open the ${e==='sol'?'Solana':'EVM'} Reown list.</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+    md(`<h3>Connect ${N} wallet</h3><p class="mu">Tap Connect Wallet to open the ${e==='sol'?'Solana':'EVM'} wallet list.</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
     $('#bw').onclick=()=>{cl();conn()};
   }
  })();
 }
+window.addEventListener('copyra-wallet-account',()=>{try{draw()}catch{}});
 $('#cn').onclick=conn;
 $('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="nav.classList.remove(\'o\');refresh();toast(LIVE&&LIVE.status?(\'API live · \'+(LIVE.status.telegram.botUsername||\'telegram\')+\' · workers \'+(LIVE.status.workers.map(w=>w.status).join(\',\')||\'none\')):\'Refreshing…\')">System health</button>';
 const wd2=()=>{nav.classList.remove('o');md('<h3>Security</h3><p class="mu">2FA protects withdrawals in both modes. Sessions last 7 days. Wallet sign-in proves you control the key. COPYRA never asks for a seed phrase.</p><button class="btn" onclick="cl()">Close</button>')};
