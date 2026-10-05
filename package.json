@@ -1,0 +1,51 @@
+{
+  "name": "copyra",
+  "version": "1.0.0",
+  "private": true,
+  "description": "COPYRA — real on-chain copy-trading for Solana and EVM",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @copyra/db && npm run build -w @copyra/core && npm run build -w @copyra/api && npm run build -w @copyra/worker && npm run build -w @copyra/web",
+    "dev": "concurrently -n api,worker,web -c blue,magenta,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "dev:api": "npm run dev -w @copyra/api",
+    "dev:worker": "npm run dev -w @copyra/worker",
+    "dev:web": "npm run dev -w @copyra/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md,css}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "LIVE_RPC_TESTS=1 vitest run --testNamePattern=live",
+    "db:generate": "npm run generate -w @copyra/db",
+    "db:push": "npm run push -w @copyra/db",
+    "db:migrate": "npm run migrate -w @copyra/db",
+    "db:seed": "npm run seed -w @copyra/db",
+    "db:studio": "npm run studio -w @copyra/db",
+    "audit:mocks": "node scripts/audit-mocks.mjs",
+    "audit:secrets": "node scripts/audit-secrets.mjs",
+    "audit:all": "npm run audit:mocks && npm run audit:secrets",
+    "verify:providers": "node --experimental-strip-types scripts/verify-providers.mts",
+    "ci": "npm run audit:all && npm run format:check && npm run lint && npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.17.0",
+    "eslint-config-prettier": "^9.1.0",
+    "globals": "^15.14.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.19.1",
+    "vitest": "^2.1.8"
+  }
+}

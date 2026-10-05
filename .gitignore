@@ -1,0 +1,48 @@
+# ---- secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keypair.json
+id.json
+wallet.json
+secrets/
+
+# ---- dependencies ----
+node_modules/
+.npm/
+.pnpm-store/
+
+# ---- build output ----
+dist/
+build/
+out/
+.vite/
+*.tsbuildinfo
+
+# ---- prisma ----
+packages/db/generated/
+prisma/migrations/dev.db*
+
+# ---- logs & runtime ----
+logs/
+*.log
+npm-debug.log*
+pids/
+*.pid
+coverage/
+.nyc_output/
+
+# ---- editors / os ----
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# ---- local scratch ----
+tmp/
+.tmp/
+.cache/
+evidence/*.json
+!evidence/.gitkeep

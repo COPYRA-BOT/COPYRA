@@ -1,0 +1,818 @@
+// COPYRA persistence layer.
+//
+// Design rules enforced by this schema:
+//  * Every trade row is anchored to a real on-chain transaction hash.
+//  * `first-buy-only` and signal idempotency are DB constraints, not app logic,
+//    so they survive restarts, redeploys and RPC/WS reconnections.
+//  * Full execution telemetry is a required part of the trade record.
+//  * The chain is the source of truth; drift is flagged, never silently fixed.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+enum Chain {
+  SOLANA
+  ETHEREUM
+  BASE
+  ARBITRUM
+  BSC
+  POLYGON
+  OPTIMISM
+  ARC
+  ROBINHOOD
+  HYPERLIQUID
+  TRON
+}
+
+/// How a decoded on-chain transaction was classified. Only `BUY` can open a
+/// position; only `SELL` can trigger a trader-sold exit. Everything else is
+/// recorded and ignored for trading purposes.
+enum TxClassification {
+  BUY
+  SELL
+  TRANSFER_IN
+  TRANSFER_OUT
+  AIRDROP
+  STAKE
+  UNSTAKE
+  LP_ADD
+  LP_REMOVE
+  CLAIM
+  BRIDGE
+  MIGRATION
+  NFT
+  APPROVAL
+  CONTRACT_DEPLOY
+  UNKNOWN
+}
+
+enum SignalStatus {
+  DETECTED
+  QUALIFIED
+  SKIPPED
+  EXECUTING
+  EXECUTED
+  FAILED
+  /// Fully qualified and sized, but no server-side signing key is configured.
+  /// COPYRA refuses to fabricate a trade; the signal is recorded instead.
+  BLOCKED_NO_SIGNER
+  /// Trading kill switch was engaged.
+  BLOCKED_DISABLED
+}
+
+enum PositionStatus {
+  PENDING_OPEN
+  OPEN
+  PARTIALLY_CLOSED
+  CLOSING
+  CLOSED
+  OPEN_FAILED
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+/// Drives the Telegram title line: "BUY", "SELL · TAKE PROFIT", etc.
+enum TradeReason {
+  COPY
+  TAKE_PROFIT
+  STOP_LOSS
+  TRAILING_STOP
+  TRADER_SOLD
+  MANUAL
+  EMERGENCY_STOP
+}
+
+/// A transaction is only ever CONFIRMED by reading chain state back.
+enum TxStatus {
+  BUILDING
+  SIGNED
+  BROADCAST
+  LANDED
+  CONFIRMED
+  FAILED
+  EXPIRED
+  DROPPED
+  /// Broadcast succeeded but confirmation could not be established within the
+  /// deadline. Requires reconciliation before the position is trusted.
+  UNKNOWN
+}
+
+enum ExitStrategy {
+  /// Option A — SL at entry x0.90, TP at entry x1.20, sell 100% at TP.
+  MANUAL
+  /// Option B — SL at entry x0.90, sell 50% at +20%, then trail the remainder
+  /// at highest x0.85.
+  TRAILING
+}
+
+enum SkipReason {
+  MARKET_CAP_TOO_HIGH
+  MARKET_CAP_TOO_LOW
+  NOT_A_BUY
+  NO_QUOTE_CURRENCY_SPENT
+  IS_AIRDROP
+  IS_TRANSFER
+  IS_STAKING
+  IS_LP
+  IS_CLAIM
+  IS_BRIDGE
+  IS_MIGRATION
+  IS_SELL
+  NOT_TRADABLE
+  INSUFFICIENT_LIQUIDITY
+  PRICE_IMPACT_TOO_HIGH
+  SLIPPAGE_TOO_HIGH
+  BLACKLISTED
+  NOT_FIRST_BUY
+  POSITION_ALREADY_OPEN
+  MAX_POSITIONS_REACHED
+  INSUFFICIENT_BALANCE
+  BELOW_MIN_TRADE_SIZE
+  RESERVE_PROTECTED
+  MAX_DEPLOYMENT_REACHED
+  DUPLICATE_SIGNAL
+  TRADER_DISABLED
+  CHAIN_NOT_EXECUTABLE
+  QUOTE_FAILED
+  QUOTE_STALE
+  TOKEN_METADATA_UNAVAILABLE
+  RPC_UNAVAILABLE
+}
+
+enum BalanceBucket {
+  TRADING
+  SAVINGS
+}
+
+enum SystemEventLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+  CRITICAL
+}
+
+enum DriftKind {
+  BALANCE_MISMATCH
+  POSITION_MISSING_ONCHAIN
+  POSITION_MISSING_IN_DB
+  TOKEN_BALANCE_MISMATCH
+  TX_STATUS_MISMATCH
+  REALIZED_PNL_MISMATCH
+}
+
+enum DriftResolution {
+  UNRESOLVED
+  RECONCILED_FROM_CHAIN
+  MANUALLY_REVIEWED
+  IGNORED
+}
+
+// ============================================================================
+// Auth — wallet-based (SIWE / Sign-In-With-Solana). No passwords, no keys.
+// ============================================================================
+
+model User {
+  id         String   @id @default(cuid())
+  /// Lowercased EVM address, or base58 Solana pubkey.
+  address    String   @unique
+  chain      Chain
+  label      String?
+  isAdmin    Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  sessions Session[]
+
+  @@map("users")
+}
+
+/// Single-use nonce for signature login. Consumed on verify to stop replay.
+model AuthNonce {
+  id        String   @id @default(cuid())
+  nonce     String   @unique
+  address   String
+  chain     Chain
+  issuedAt  DateTime @default(now())
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  @@index([address, usedAt])
+  @@map("auth_nonces")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
+  userAgent String?
+  ip        String?
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ============================================================================
+// Monitored traders
+// ============================================================================
+
+model Trader {
+  id        String   @id @default(cuid())
+  chain     Chain
+  address   String
+  label     String
+  enabled   Boolean  @default(true)
+  /// Relative weight used when combining correlated signals. 1.0 = neutral.
+  weight    Decimal  @default(1.0) @db.Decimal(6, 3)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Set when the monitor last saw any activity from this wallet, so the UI can
+  /// show whether monitoring is genuinely live rather than just "configured".
+  lastActivityAt DateTime?
+  lastSignature  String?
+
+  detections DetectedTransaction[]
+  signals    Signal[]
+
+  @@unique([chain, address])
+  @@index([enabled])
+  @@map("traders")
+}
+
+// ============================================================================
+// Tokens — metadata and market state, always sourced from chain/market APIs
+// ============================================================================
+
+model Token {
+  id       String @id @default(cuid())
+  chain    Chain
+  /// Solana mint, or lowercased EVM contract address.
+  address  String
+  symbol   String?
+  name     String?
+  /// Read from the mint/ERC-20 contract. Never defaulted.
+  decimals Int?
+
+  priceUsd       Decimal? @db.Decimal(40, 18)
+  marketCapUsd   Decimal? @db.Decimal(30, 4)
+  fdvUsd         Decimal? @db.Decimal(30, 4)
+  liquidityUsd   Decimal? @db.Decimal(30, 4)
+  volume24hUsd   Decimal? @db.Decimal(30, 4)
+  /// Which provider produced the market numbers above, for traceability.
+  marketSource   String?
+  marketUpdatedAt DateTime?
+
+  blacklisted       Boolean @default(false)
+  blacklistReason   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  positions  Position[]
+  signals    Signal[]
+  firstBuy   TokenFirstBuy?
+
+  @@unique([chain, address])
+  @@index([chain, marketUpdatedAt])
+  @@map("tokens")
+}
+
+/// Persistent enforcement of the FIRST-BUY-ONLY rule (spec §5).
+/// One row per (chain, token) forever. Survives restarts and redeploys.
+model TokenFirstBuy {
+  id              String   @id @default(cuid())
+  chain           Chain
+  tokenAddress    String
+  tokenId         String   @unique
+  token           Token    @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  /// The trader whose buy first qualified.
+  firstTraderId   String
+  firstSignalId   String?
+  firstSourceTx   String
+  firstSeenAt     DateTime @default(now())
+  /// Incremented by later buys from any monitored trader. Raises signal
+  /// strength only — never allocates more capital (spec §6).
+  correlatedBuys  Int      @default(0)
+  lastCorrelatedAt DateTime?
+
+  @@unique([chain, tokenAddress])
+  @@map("token_first_buys")
+}
+
+// ============================================================================
+// Detection — raw observed on-chain activity from monitored wallets
+// ============================================================================
+
+model DetectedTransaction {
+  id       String @id @default(cuid())
+  chain    Chain
+  /// Solana signature, or EVM transaction hash.
+  txHash   String
+  traderId String
+  trader   Trader @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  /// Solana slot, or EVM block number.
+  blockNumber BigInt?
+  blockTime   DateTime?
+
+  classification TxClassification
+  /// Program/router that executed the swap, when identified.
+  venue          String?
+
+  tokenInAddress   String?
+  tokenInSymbol    String?
+  tokenInDecimals  Int?
+  /// Raw base-unit amount as a decimal string. Never a float.
+  tokenInAmountRaw String?
+
+  tokenOutAddress   String?
+  tokenOutSymbol    String?
+  tokenOutDecimals  Int?
+  tokenOutAmountRaw String?
+
+  feeRaw String?
+
+  /// Full decoder output kept for forensics and for re-classification without
+  /// re-fetching the transaction.
+  rawDecoded Json?
+
+  /// --- lifecycle telemetry (spec §11) ---
+  observedAt DateTime @default(now())
+  decodedAt  DateTime?
+  /// Milliseconds from the block timestamp to local observation.
+  detectLatencyMs Int?
+  decodeLatencyMs Int?
+
+  signal Signal?
+
+  @@unique([chain, txHash, traderId])
+  @@index([chain, classification, observedAt])
+  @@index([traderId, observedAt])
+  @@map("detected_transactions")
+}
+
+/// Hard idempotency barrier. A signature recorded here is never processed
+/// twice, even across process restarts or a WebSocket replay storm.
+model ProcessedSignature {
+  chain       Chain
+  signature   String
+  processedAt DateTime @default(now())
+  outcome     String
+
+  @@id([chain, signature])
+  @@map("processed_signatures")
+}
+
+// ============================================================================
+// Signals — a qualification decision about one detected transaction
+// ============================================================================
+
+model Signal {
+  id       String @id @default(cuid())
+  chain    Chain
+  traderId String
+  trader   Trader @relation(fields: [traderId], references: [id], onDelete: Cascade)
+
+  tokenId String?
+  token   Token?  @relation(fields: [tokenId], references: [id])
+  tokenAddress String
+
+  detectionId String?              @unique
+  detection   DetectedTransaction? @relation(fields: [detectionId], references: [id])
+
+  /// The trader transaction that produced this signal.
+  sourceTxHash String
+
+  status     SignalStatus @default(DETECTED)
+  skipReason SkipReason?
+  skipDetail String?
+
+  /// 1 for a lone trader; grows as correlated traders buy the same token.
+  signalStrength Decimal @default(1.0) @db.Decimal(6, 3)
+
+  /// Market snapshot captured at qualification time, so a skip decision can be
+  /// audited later even after the market moves.
+  marketCapUsdAtSignal Decimal? @db.Decimal(30, 4)
+  liquidityUsdAtSignal Decimal? @db.Decimal(30, 4)
+  priceUsdAtSignal     Decimal? @db.Decimal(40, 18)
+
+  plannedSizeQuote Decimal? @db.Decimal(40, 18)
+  plannedSizeUsd   Decimal? @db.Decimal(30, 4)
+  sizingBasis      Json?
+
+  /// --- lifecycle telemetry (spec §11) ---
+  detectedAt        DateTime  @default(now())
+  decodedAt         DateTime?
+  qualifiedAt       DateTime?
+  riskCheckedAt     DateTime?
+  quotedAt          DateTime?
+  builtAt           DateTime?
+  signedAt          DateTime?
+  broadcastAt       DateTime?
+  landedAt          DateTime?
+  confirmedAt       DateTime?
+  /// Detection -> broadcast. The number that actually matters for copy trading.
+  detectToBroadcastMs Int?
+  /// Detection -> confirmation.
+  detectToConfirmMs   Int?
+
+  positionId String?
+  position   Position? @relation(fields: [positionId], references: [id])
+  trades     Trade[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Prevents the same trader transaction producing two signals.
+  @@unique([chain, sourceTxHash, traderId])
+  @@index([status, createdAt])
+  @@index([chain, tokenAddress])
+  @@map("signals")
+}
+
+// ============================================================================
+// Positions — one per (chain, token) while open. Enforced below.
+// ============================================================================
+
+model Position {
+  id      String @id @default(cuid())
+  chain   Chain
+  tokenId String
+  token   Token  @relation(fields: [tokenId], references: [id])
+  tokenAddress String
+  tokenSymbol  String?
+
+  status PositionStatus @default(PENDING_OPEN)
+
+  /// Mint/contract of what was spent (SOL/USDC/WETH/...).
+  quoteAsset       String
+  quoteAssetSymbol String
+
+  exitStrategy ExitStrategy
+
+  // --- entry, all derived from confirmed on-chain amounts ---
+  requestedQuoteRaw String?
+  actualQuoteRaw    String?
+  tokenAmountRaw    String?
+  /// Remaining token balance attributable to this position, in base units.
+  remainingTokenRaw String?
+  entryPriceUsd     Decimal? @db.Decimal(40, 18)
+  entryQuotePriceUsd Decimal? @db.Decimal(30, 10)
+  entryValueUsd     Decimal? @db.Decimal(30, 4)
+  entryMarketCapUsd Decimal? @db.Decimal(30, 4)
+  entryLiquidityUsd Decimal? @db.Decimal(30, 4)
+  entrySlippagePct  Decimal? @db.Decimal(10, 6)
+  entryPriceImpactPct Decimal? @db.Decimal(10, 6)
+
+  // --- exit rule state ---
+  stopLossPriceUsd   Decimal? @db.Decimal(40, 18)
+  takeProfitPriceUsd Decimal? @db.Decimal(40, 18)
+  /// Highest confirmed price observed after the trailing stage activated.
+  highestPriceUsd    Decimal? @db.Decimal(40, 18)
+  trailingActive     Boolean  @default(false)
+  trailingActivatedAt DateTime?
+  trailingStopPriceUsd Decimal? @db.Decimal(40, 18)
+  /// Set once the +20% partial sell of Option B has executed.
+  partialTakeProfitDone Boolean @default(false)
+
+  // --- live marks, refreshed by the position monitor ---
+  lastPriceUsd     Decimal? @db.Decimal(40, 18)
+  lastPriceAt      DateTime?
+  unrealizedPnlQuote Decimal? @db.Decimal(40, 18)
+  unrealizedPnlUsd   Decimal? @db.Decimal(30, 4)
+  unrealizedPnlPct   Decimal? @db.Decimal(12, 6)
+
+  // --- realized ---
+  realizedPnlQuote Decimal @default(0) @db.Decimal(40, 18)
+  realizedPnlUsd   Decimal @default(0) @db.Decimal(30, 4)
+  feesQuote        Decimal @default(0) @db.Decimal(40, 18)
+
+  /// Number of monitored traders that bought this token. Confidence only.
+  correlatedTraders Int @default(1)
+  signalStrength    Decimal @default(1.0) @db.Decimal(6, 3)
+
+  openedAt  DateTime?
+  closedAt  DateTime?
+  closeReason TradeReason?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  trades  Trade[]
+  signals Signal[]
+  drifts  DriftFlag[]
+
+  @@index([status, chain])
+  @@index([chain, tokenAddress, status])
+  @@map("positions")
+}
+
+// ============================================================================
+// Trades — one row per real on-chain transaction attempt
+// ============================================================================
+
+model Trade {
+  id         String   @id @default(cuid())
+  /// Caller-supplied idempotency key. A retry with the same key never produces
+  /// a second broadcast.
+  idempotencyKey String @unique
+
+  positionId String?
+  position   Position? @relation(fields: [positionId], references: [id])
+  signalId   String?
+  signal     Signal?   @relation(fields: [signalId], references: [id])
+
+  chain  Chain
+  side   TradeSide
+  reason TradeReason
+
+  tokenAddress String
+  tokenSymbol  String?
+  tokenDecimals Int?
+  quoteAsset       String
+  quoteAssetSymbol String
+  quoteDecimals    Int?
+
+  status   TxStatus @default(BUILDING)
+  /// The real signature/hash. NULL until the transaction is actually signed.
+  txHash   String?
+  /// Solana slot or EVM block of inclusion.
+  blockNumber BigInt?
+  confirmations Int @default(0)
+  /// Explorer deep link, derived from chain + hash.
+  explorerUrl String?
+
+  /// What we asked for, in base units.
+  requestedAmountRaw String
+  /// What the quote predicted we would receive.
+  quotedAmountRaw    String?
+  /// What the chain actually delivered, read back from balance deltas.
+  actualAmountRaw    String?
+  /// Guard against partial fills: actual/quoted.
+  fillRatio          Decimal? @db.Decimal(10, 6)
+
+  executionPriceUsd Decimal? @db.Decimal(40, 18)
+  valueUsd          Decimal? @db.Decimal(30, 4)
+  quoteAssetPriceUsd Decimal? @db.Decimal(30, 10)
+
+  requestedSlippageBps Int?
+  realizedSlippagePct  Decimal? @db.Decimal(12, 6)
+  priceImpactPct       Decimal? @db.Decimal(12, 6)
+
+  /// Network fee in base units of the chain's native asset.
+  networkFeeRaw   String?
+  priorityFeeRaw  String?
+  feeUsd          Decimal? @db.Decimal(20, 6)
+
+  routeProvider String?
+  routeSummary  Json?
+
+  attempt     Int @default(1)
+  maxAttempts Int @default(3)
+  errorCode   String?
+  errorMessage String?
+  /// Every attempt's outcome, for post-mortem.
+  attemptLog  Json?
+
+  // --- full lifecycle telemetry (spec §11) ---
+  sourceDetectedAt DateTime?
+  decodedAt        DateTime?
+  qualifiedAt      DateTime?
+  quotedAt         DateTime?
+  builtAt          DateTime?
+  signedAt         DateTime?
+  broadcastAt      DateTime?
+  landedAt         DateTime?
+  confirmedAt      DateTime?
+  failedAt         DateTime?
+
+  quoteLatencyMs      Int?
+  buildLatencyMs      Int?
+  signLatencyMs       Int?
+  broadcastLatencyMs  Int?
+  confirmLatencyMs    Int?
+  /// Detection -> confirmation, end to end.
+  totalLatencyMs      Int?
+
+  /// Blockhash/nonce used, so expiry can be diagnosed precisely.
+  blockhash            String?
+  lastValidBlockHeight BigInt?
+  nonce                Int?
+
+  notifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([positionId])
+  @@index([chain, txHash])
+  @@map("trades")
+}
+
+// ============================================================================
+// Wallet state — always a snapshot of real chain state, never a running tally
+// ============================================================================
+
+model WalletBalance {
+  id      String @id @default(cuid())
+  chain   Chain
+  address String
+  bucket  BalanceBucket
+
+  assetAddress String
+  assetSymbol  String
+  decimals     Int
+  amountRaw    String
+  priceUsd     Decimal? @db.Decimal(30, 10)
+  valueUsd     Decimal? @db.Decimal(30, 4)
+
+  /// Slot/block the balance was read at, so staleness is measurable.
+  readAtBlock BigInt?
+  readAt      DateTime @default(now())
+  source      String
+
+  @@unique([chain, address, bucket, assetAddress])
+  @@index([chain, address])
+  @@map("wallet_balances")
+}
+
+model Transfer {
+  id       String   @id @default(cuid())
+  chain    Chain
+  fromBucket BalanceBucket
+  toBucket   BalanceBucket
+  assetAddress String
+  assetSymbol  String
+  amountRaw    String
+  status   TxStatus @default(BUILDING)
+  txHash   String?
+  explorerUrl String?
+  errorMessage String?
+  requestedAt DateTime @default(now())
+  confirmedAt DateTime?
+
+  @@index([status])
+  @@map("transfers")
+}
+
+// ============================================================================
+// Strategy settings — single authoritative row, editable from the dashboard
+// ============================================================================
+
+model StrategySettings {
+  id Int @id @default(1)
+
+  /// Master kill switch, independent of the TRADING_ENABLED env guard.
+  tradingEnabled Boolean @default(false)
+  emergencyStop  Boolean @default(false)
+  emergencyStopReason String?
+  emergencyStopAt DateTime?
+
+  exitStrategy ExitStrategy @default(MANUAL)
+
+  // --- market-cap window (spec §4) ---
+  minMarketCapUsd Decimal @default(1000000) @db.Decimal(30, 4)
+  maxMarketCapUsd Decimal @default(20000000) @db.Decimal(30, 4)
+
+  // --- deployment limits (spec §7) ---
+  maxDeploymentPct Decimal @default(80) @db.Decimal(6, 3)
+  tier1MaxPct      Decimal @default(20) @db.Decimal(6, 3)
+  tier2MaxPct      Decimal @default(30) @db.Decimal(6, 3)
+  tier3MaxPct      Decimal @default(40) @db.Decimal(6, 3)
+  tier4MaxPct      Decimal @default(50) @db.Decimal(6, 3)
+
+  maxOpenPositions Int @default(5)
+
+  // --- reserve (spec §8) ---
+  reservePct   Decimal @default(20) @db.Decimal(6, 3)
+  minTradeUsd  Decimal @default(10) @db.Decimal(20, 4)
+  autoTransferFromSavings Boolean @default(false)
+
+  // --- execution guards (spec §12) ---
+  maxSlippageBps     Int     @default(100)
+  maxPriceImpactPct  Decimal @default(3) @db.Decimal(10, 6)
+  minLiquidityUsd    Decimal @default(50000) @db.Decimal(30, 4)
+  quoteMaxAgeMs      Int     @default(3000)
+  confirmTimeoutMs   Int     @default(60000)
+  maxExecutionAttempts Int   @default(3)
+
+  // --- exits (spec §13) ---
+  takeProfitPct      Decimal @default(20) @db.Decimal(8, 4)
+  stopLossPct        Decimal @default(10) @db.Decimal(8, 4)
+  trailingTriggerPct Decimal @default(20) @db.Decimal(8, 4)
+  trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
+  trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
+  followTraderSells  Boolean @default(true)
+
+  /// Chains the engine is allowed to execute on. Monitor-only chains are
+  /// rejected by the executor regardless of what is listed here.
+  enabledChains Chain[] @default([SOLANA, BASE])
+
+  /// Running P&L baseline for the Telegram "Total P&L" line (spec §"Total P&L").
+  pnlResetAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("strategy_settings")
+}
+
+// ============================================================================
+// Observability
+// ============================================================================
+
+model SystemEvent {
+  id        String           @id @default(cuid())
+  level     SystemEventLevel
+  component String
+  code      String
+  message   String
+  /// Must never contain secrets — the logger redacts before writing.
+  context   Json?
+  chain     Chain?
+  createdAt DateTime         @default(now())
+
+  @@index([level, createdAt])
+  @@index([component, createdAt])
+  @@map("system_events")
+}
+
+model RpcHealth {
+  id        String   @id @default(cuid())
+  chain     Chain
+  /// Host only — the API key is stripped before storage.
+  endpoint  String
+  healthy   Boolean
+  latencyMs Int?
+  blockHeight BigInt?
+  consecutiveFailures Int @default(0)
+  lastError String?
+  checkedAt DateTime @default(now())
+
+  @@unique([chain, endpoint])
+  @@map("rpc_health")
+}
+
+model WorkerHeartbeat {
+  name      String   @id
+  /// Proof the backend keeps trading with the browser closed (spec §14).
+  beatAt    DateTime @default(now())
+  status    String
+  detail    Json?
+
+  @@map("worker_heartbeats")
+}
+
+model DriftFlag {
+  id         String          @id @default(cuid())
+  kind       DriftKind
+  chain      Chain
+  positionId String?
+  position   Position?       @relation(fields: [positionId], references: [id])
+  subject    String
+  dbValue    String?
+  chainValue String?
+  detail     Json?
+  resolution DriftResolution @default(UNRESOLVED)
+  detectedAt DateTime        @default(now())
+  resolvedAt DateTime?
+
+  @@index([resolution, detectedAt])
+  @@map("drift_flags")
+}
+
+model NotificationLog {
+  id        String   @id @default(cuid())
+  channel   String
+  kind      String
+  /// Rendered message, retained so the exact text sent can be audited.
+  body      String
+  tradeId   String?
+  positionId String?
+  delivered Boolean  @default(false)
+  error     String?
+  createdAt DateTime @default(now())
+
+  @@index([kind, createdAt])
+  @@map("notification_logs")
+}

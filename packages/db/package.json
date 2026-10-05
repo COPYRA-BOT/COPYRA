@@ -1,0 +1,31 @@
+{
+  "name": "@copyra/db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "generate": "node scripts/with-env.mjs generate",
+    "push": "node scripts/with-env.mjs db push",
+    "migrate": "node scripts/with-env.mjs migrate deploy",
+    "migrate:dev": "node scripts/with-env.mjs migrate dev",
+    "studio": "node scripts/with-env.mjs studio",
+    "seed": "node --experimental-strip-types src/seed.ts",
+    "build": "node scripts/with-env.mjs generate && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.2.1"
+  },
+  "devDependencies": {
+    "prisma": "^6.2.1",
+    "typescript": "^5.7.3"
+  }
+}
