@@ -6,10 +6,11 @@ Copy `.env.example` to `.env` at the repo root. Every app loads that file.
 
 Required for the API and worker to boot:
 
-- `DATABASE_URL` — Postgres
-- `REDIS_URL` — Redis (idempotency locks)
+- `DATABASE_URL` — Postgres (public host on DigitalOcean App Platform)
+- `REDIS_URL` — Redis for idempotency locks (`rediss://` + public host on DO Managed Redis)
 - `SESSION_SECRET` — at least 32 characters
 - At least one Solana RPC URL (`SOLANA_RPC_URL`) for monitoring and decode
+- `TRADING_ENABLED` / `SOL_TRADING_ENABLED` / `EVM_TRADING_ENABLED` — keep `false` until a funded bot key exists
 
 Required for the dashboard wallet modal:
 

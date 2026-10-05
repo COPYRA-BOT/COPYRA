@@ -21,6 +21,21 @@ function loadRootEnv(): void {
 
 loadRootEnv();
 
+/**
+ * Accept SOL_TRADING_ENABLED / EVM_TRADING_ENABLED from App Platform.
+ * Master TRADING_ENABLED stays the hard host kill switch; if it is unset,
+ * it defaults to true only when at least one chain trading flag is true.
+ */
+function normalizeTradingFlags(): void {
+  const truthy = (v: string | undefined) => v === 'true' || v === '1';
+  const sol = process.env.SOL_TRADING_ENABLED;
+  const evm = process.env.EVM_TRADING_ENABLED;
+  if (process.env.TRADING_ENABLED === undefined && (sol !== undefined || evm !== undefined)) {
+    process.env.TRADING_ENABLED = truthy(sol) || truthy(evm) ? 'true' : 'false';
+  }
+}
+normalizeTradingFlags();
+
 const bool = z
   .string()
   .optional()
@@ -47,6 +62,7 @@ const schema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  /** TLS Redis (`rediss://`) is required for DigitalOcean Managed Redis. */
   REDIS_URL: z.string().min(1, 'REDIS_URL is required'),
 
   API_PORT: z.coerce.number().int().positive().default(41717),
@@ -87,6 +103,8 @@ const schema = z.object({
   KYBERSWAP_CLIENT_ID: z.string().default('copyra'),
 
   TRADING_ENABLED: bool,
+  SOL_TRADING_ENABLED: bool,
+  EVM_TRADING_ENABLED: bool,
   MAX_TRADE_USD: z.coerce.number().positive().default(25),
 
   TELEGRAM_BOT_TOKEN: z.string().trim().optional(),
@@ -101,10 +119,28 @@ const parsed = schema.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
-  throw new Error(`Invalid environment configuration:\n${issues}\n\nSee .env.example.`);
+  throw new Error(
+    `Invalid environment configuration:\n${issues}\n\n` +
+      `On DigitalOcean App Platform, set these as encrypted App-Level env vars ` +
+      `(never commit them): DATABASE_URL, REDIS_URL (public rediss:// host), ` +
+      `SESSION_SECRET (>=32 chars), plus RPC/Telegram vars from .env.example.\n` +
+      `Use the PUBLIC Redis hostname (without private-). See docs/DEPLOY.md.`,
+  );
 }
 
-export const env = parsed.data;
+export const env = {
+  ...parsed.data,
+  /** Solana execution guard. Defaults to master TRADING_ENABLED when unset. */
+  SOL_TRADING_ENABLED:
+    process.env.SOL_TRADING_ENABLED === undefined
+      ? parsed.data.TRADING_ENABLED
+      : parsed.data.SOL_TRADING_ENABLED,
+  /** EVM execution guard. Defaults to master TRADING_ENABLED when unset. */
+  EVM_TRADING_ENABLED:
+    process.env.EVM_TRADING_ENABLED === undefined
+      ? parsed.data.TRADING_ENABLED
+      : parsed.data.EVM_TRADING_ENABLED,
+};
 export type Env = typeof env;
 
 export const isProduction = env.NODE_ENV === 'production';

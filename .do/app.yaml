@@ -36,14 +36,22 @@ services:
         value: "0.0.0.0"
       - key: API_PORT
         value: "41717"
-      # Set the rest as SECRET in the DO UI — never commit real values:
-      # DATABASE_URL, REDIS_URL, SESSION_SECRET, SOLANA_RPC_URL, SOLANA_WS_URL,
+      # Set the rest as encrypted App-Level secrets in the DO UI — never commit:
+      # DATABASE_URL (public Postgres), REDIS_URL (public rediss://, not private-),
+      # SESSION_SECRET (>=32 chars), SOLANA_RPC_URL, SOLANA_WS_URL,
       # SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY, EVM_*_RPC_URL, EVM_*_WS_URL,
       # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN, PUBLIC_API_URL,
-      # PUBLIC_WEB_URL, CORS_ORIGINS, TRADING_ENABLED, VITE_REOWN_PROJECT_ID,
-      # NEXT_PUBLIC_REOWN_PROJECT_ID
+      # PUBLIC_WEB_URL, CORS_ORIGINS, TRADING_ENABLED=false,
+      # SOL_TRADING_ENABLED=false, EVM_TRADING_ENABLED=false,
+      # VITE_REOWN_PROJECT_ID, NEXT_PUBLIC_REOWN_PROJECT_ID
       # Bot keys only if you intend to trade:
       # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
+      - key: TRADING_ENABLED
+        value: "false"
+      - key: SOL_TRADING_ENABLED
+        value: "false"
+      - key: EVM_TRADING_ENABLED
+        value: "false"
 
   - name: web
     dockerfile_path: Dockerfile

@@ -43,12 +43,31 @@ A checked-in example lives at `.do/app.yaml` (no secrets). Prefer setting encryp
 
 ### App-level environment variables (secrets in DO UI only)
 
-Set these as **encrypted** App-Level or component env vars — never in git:
+Missing `REDIS_URL` or `SESSION_SECRET` causes:
+
+`Error: Invalid environment configuration: REDIS_URL / SESSION_SECRET Required`
+
+Set these as **encrypted App-Level** env vars in the DigitalOcean UI (Settings → App-Level Environment Variables). Scope them to **all components** (`api`, `worker`, and `web` if it loads config). Never commit real values.
+
+**Required for boot (this is what the runtime crash was complaining about):**
+
+| Key | Notes |
+|---|---|
+| `DATABASE_URL` | Public Postgres URL (`sslmode=require`). Host **without** `private-`. |
+| `REDIS_URL` | Managed Redis with **`rediss://`** (TLS) and the **PUBLIC** hostname (`copyra-cache-…`, **not** `private-copyra-cache-…`). App Platform cannot reach the private VPC hostname. |
+| `SESSION_SECRET` | ≥32 random hex/bytes. |
+
+**Trading kill switches (keep false until a funded bot key exists):**
 
 ```
-DATABASE_URL=
-REDIS_URL=
-SESSION_SECRET=
+TRADING_ENABLED=false
+SOL_TRADING_ENABLED=false
+EVM_TRADING_ENABLED=false
+```
+
+**Also set (encrypted) from your local `.env` / provider dashboards:**
+
+```
 PUBLIC_API_URL=
 PUBLIC_WEB_URL=
 CORS_ORIGINS=
@@ -71,7 +90,6 @@ TELEGRAM_CHAT_ID=
 SENTRY_DSN=
 VITE_REOWN_PROJECT_ID=
 NEXT_PUBLIC_REOWN_PROJECT_ID=
-TRADING_ENABLED=false
 ```
 
 Bot signing keys only when you intend to trade (encrypted, never `VITE_*`):
@@ -81,7 +99,9 @@ SOLANA_BOT_PRIVATE_KEY=
 EVM_BOT_PRIVATE_KEY=
 ```
 
-Use the **public** Postgres hostname (without `private-`). Keep the App Platform egress / trusted sources list up to date.
+After adding the variables, use **Force Rebuild and Deploy** (or Redeploy) so every component picks them up. Trusted Sources on Postgres/Redis must allow App Platform egress.
+
+Use the **public** Postgres and Redis hostnames (without `private-`). Keep the App Platform egress / trusted sources list up to date.
 
 ### Prove the image locally
 
