@@ -55,6 +55,6 @@ COPY --from=build /app/tsconfig.base.json /app/tsconfig.json ./
 
 EXPOSE 8080 43127
 
-# Default process is the API. On App Platform, create separate components
-# (or override the run command) for worker and web — see docs/DEPLOY.md.
+# Default process is the API + dashboard (same origin). Override the run
+# command for the worker component — see docs/DEPLOY.md.
 CMD ["npm", "run", "start", "-w", "@copyra/api"]
