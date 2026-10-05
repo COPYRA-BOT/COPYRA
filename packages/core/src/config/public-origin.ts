@@ -131,3 +131,26 @@ export function publicReownProjectId(): string {
     ''
   );
 }
+
+/** Public Venly widget client id (safe to expose — not a bot signing key). */
+export function publicVenlyClientId(): string {
+  return (
+    process.env.VITE_VENLY_CLIENT_ID?.trim() ||
+    process.env.NEXT_PUBLIC_VENLY_CLIENT_ID?.trim() ||
+    process.env.VENLY_CLIENT_ID?.trim() ||
+    ''
+  );
+}
+
+/** Venly environment: production (default) or sandbox. */
+export function publicVenlyEnvironment(): 'production' | 'sandbox' {
+  const raw = (
+    process.env.VITE_VENLY_ENVIRONMENT?.trim() ||
+    process.env.VENLY_ENVIRONMENT?.trim() ||
+    'production'
+  ).toLowerCase();
+  if (raw === 'sandbox' || raw === 'staging' || raw === 'dev' || raw === 'development') {
+    return 'sandbox';
+  }
+  return 'production';
+}

@@ -83,4 +83,5 @@ services:
       # VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_REOWN_PROJECT_ID / REOWN_PROJECT_ID
       # (public WalletConnect id — set App-Level RUN_AND_BUILD_TIME so the
       # dashboard can open the full Reown Connect Wallet modal),
+      # VITE_VENLY_CLIENT_ID / VITE_VENLY_ENVIRONMENT (optional Venly EVM widget),
       # Bot keys alone are not enough — RPC URLs must be on the api component too.

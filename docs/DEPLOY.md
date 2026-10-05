@@ -89,9 +89,13 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_CHAT_ID=
 VITE_REOWN_PROJECT_ID=
 NEXT_PUBLIC_REOWN_PROJECT_ID=
+VITE_VENLY_CLIENT_ID=
+VITE_VENLY_ENVIRONMENT=production
 ```
 
 `VITE_REOWN_PROJECT_ID` is the public Reown / WalletConnect project id (safe to expose). Set it **App-Level → RUN_AND_BUILD_TIME** (or at least RUN_TIME). The API serves it via `/config.js` and `/api/public-config` so Connect Wallet can open the full multi-wallet Reown modal even when the Docker build did not bake the id.
+
+`VITE_VENLY_CLIENT_ID` is optional. When set, EVM Connect also shows **Connect with Venly** (custodial email/social widget). This is separate from the Reown Trust/MetaMask/Phantom list.
 
 Scope every encrypted var to **App-Level → All components** (or both `api` and `worker`). If RPCs are only on the worker, `/api/funds` and `/api/balances` fail with `SOLANA_RPC_URL is not configured`.
 

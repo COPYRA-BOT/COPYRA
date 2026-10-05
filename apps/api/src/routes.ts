@@ -14,6 +14,8 @@ import {
   getStrategyConfig,
   monitorableChains,
   publicReownProjectId,
+  publicVenlyClientId,
+  publicVenlyEnvironment,
   resolveWebOrigin,
   solanaSigner,
   telegram,
@@ -454,12 +456,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  /** Public browser config — Reown project id is safe to expose. */
+  /** Public browser config — Reown + Venly ids are safe to expose. */
   app.get('/api/public-config', async () => {
     const reownProjectId = publicReownProjectId();
+    const venlyClientId = publicVenlyClientId();
+    const venlyEnvironment = publicVenlyEnvironment();
     return {
       reownProjectId,
       reownConfigured: Boolean(reownProjectId),
+      venlyClientId,
+      venlyConfigured: Boolean(venlyClientId),
+      venlyEnvironment,
       site: 'https://copyra.fun',
     };
   });

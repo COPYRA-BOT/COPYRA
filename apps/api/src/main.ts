@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allowedWebOrigins, env, ensureSettings, initSentry, logger, publicReownProjectId } from '@copyra/core';
+import { allowedWebOrigins, env, ensureSettings, initSentry, logger, publicReownProjectId, publicVenlyClientId, publicVenlyEnvironment } from '@copyra/core';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -62,9 +62,16 @@ await registerFundsRoutes(app);
  */
 app.get('/config.js', async (_request, reply) => {
   const reownProjectId = publicReownProjectId();
+  const venlyClientId = publicVenlyClientId();
+  const venlyEnvironment = publicVenlyEnvironment();
   const body =
     `window.COPYRA_API='';` +
-    `window.__COPYRA_CONFIG__=${JSON.stringify({ reownProjectId, site: 'https://copyra.fun' })};`;
+    `window.__COPYRA_CONFIG__=${JSON.stringify({
+      reownProjectId,
+      venlyClientId,
+      venlyEnvironment,
+      site: 'https://copyra.fun',
+    })};`;
   return reply
     .type('application/javascript; charset=utf-8')
     .header('cache-control', 'no-store')

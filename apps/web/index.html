@@ -361,22 +361,60 @@ async function sessionSign(e,a){
   await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
   return issued.address;
 }
+async function finishConnect(e,N,connected){
+  $('#ws')&&($('#ws').textContent='Approve the sign-in message in your wallet…');
+  const addr=await sessionSign(e,connected.address);
+  wallet[e]=addr;
+  cl();toast(N+' wallet connected'+(connected.backend==='venly'?' (Venly)':''));draw();
+}
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  if(a0)return md(`<h3>${N} wallet</h3><p class="mu">Connected to ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode has its own wallet. This is identity — the bot key on the server is what would copy-trade.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" onclick="wallet['${e}']=null;window.CopyraWallet&&window.CopyraWallet.disconnect();api('POST','/api/auth/logout').catch(()=>{});cl();toast('${N} wallet disconnected');draw()">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
- md(`<h3>Connect ${N} wallet</h3><p class="mu">Opening the full Reown wallet list (Trust, MetaMask, Phantom, Coinbase, Binance, OKX, All Wallets QR, and more). Sign a one-time message after you pick a wallet — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+ // EVM: chooser between Reown multi-wallet catalog and Venly widget.
+ if(e==='evm'){
+  md(`<h3>Connect EVM wallet</h3>
+<p class="mu">Pick how you want to connect. <b>Browser / mobile wallets</b> opens the full Reown list (Trust, MetaMask, Phantom, Coinbase, Binance, OKX, All Wallets QR). <b>Venly</b> opens the Venly custodial widget (email / social).</p>
+<button class="btn pri" id="bw" style="width:100%;margin-top:8px">Browser / mobile wallets</button>
+<button class="btn" id="bv" style="width:100%;margin-top:8px;display:none">Connect with Venly</button>
+<p class="mu" id="ws" style="font-size:13px;margin-top:8px"></p>
+<p class="rd" id="ae"></p>
+<div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+  (async()=>{
+    try{
+      const w=await waitWallet();
+      if(!w?.ready)throw new Error(w?.error||'Wallet module is not ready. Set VITE_REOWN_PROJECT_ID and optionally VITE_VENLY_CLIENT_ID, then redeploy.');
+      if(w.venlyConfigured){$('#bv').style.display='block'}
+      else{$('#ws').textContent=w.projectIdConfigured?'Reown ready. Set VITE_VENLY_CLIENT_ID to enable Venly.':'Set VITE_REOWN_PROJECT_ID for the multi-wallet list.'}
+      $('#bw').onclick=async()=>{
+        try{
+          if(!w.projectIdConfigured)throw new Error('Reown project id missing. Set VITE_REOWN_PROJECT_ID on DigitalOcean.');
+          $('#ae').textContent='';$('#ws').textContent='Choose a wallet in the popup…';
+          const connected=await w.connect('evm');
+          await finishConnect('evm','EVM',connected);
+        }catch(err){$('#ae').textContent=err&&err.message?err.message:'Connect cancelled.';$('#ws').textContent=''}
+      };
+      $('#bv').onclick=async()=>{
+        try{
+          $('#ae').textContent='';$('#ws').textContent='Opening Venly…';
+          const connected=await w.connectVenly('ETHEREUM');
+          await finishConnect('evm','EVM',connected);
+        }catch(err){$('#ae').textContent=err&&err.message?err.message:'Venly connect cancelled.';$('#ws').textContent=''}
+      };
+    }catch(err){$('#ae').textContent=err&&err.message?err.message:'Wallet module failed to load.'}
+  })();
+  return;
+ }
+ // Solana: open Reown AppKit list directly.
+ md(`<h3>Connect Solana wallet</h3><p class="mu">Opening the full Reown wallet list (Phantom, Solflare, Trust, All Wallets QR, and more). Sign a one-time message after you pick a wallet — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
  (async()=>{
   try{
     const w=await waitWallet();
-    if(!w?.ready)throw new Error(w?.error||'Reown AppKit is not ready. Set VITE_REOWN_PROJECT_ID on DigitalOcean (App-Level), redeploy, then hard-refresh.');
+    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'Reown AppKit is not ready. Set VITE_REOWN_PROJECT_ID on DigitalOcean, redeploy, then hard-refresh.');
     $('#ws').textContent='Choose a wallet in the popup…';
-    const connected=await w.connect(e);
-    $('#ws').textContent='Approve the sign-in message in your wallet…';
-    const addr=await sessionSign(e,connected.address);
-    wallet[e]=addr;
-    cl();toast(N+' wallet connected');draw();
+    const connected=await w.connect('sol');
+    await finishConnect('sol','Solana',connected);
   }catch(err){
     const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
-    md(`<h3>Connect ${N} wallet</h3><p class="mu">Tap Connect Wallet to open the full Reown list for ${e==='sol'?'Solana':'EVM'} (Trust, MetaMask, Phantom, Coinbase, All Wallets QR, …).</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+    md(`<h3>Connect Solana wallet</h3><p class="mu">Tap Connect Wallet to open the full Reown list (Phantom, Solflare, Trust, All Wallets QR, …).</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
     $('#bw').onclick=()=>{cl();conn()};
   }
  })();
