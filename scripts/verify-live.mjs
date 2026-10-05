@@ -29,10 +29,11 @@ const trading = status.json?.trading;
 const signers = status.json?.signers;
 console.log('trading:', JSON.stringify(trading));
 console.log('signers:', JSON.stringify(signers));
+console.log('rpcConfigured:', JSON.stringify(status.json?.rpcConfigured || null));
 console.log('chains:', (status.json?.chains || []).length, 'workers:', status.json?.workers);
 
 if (!signers?.solana?.available && !signers?.evm?.available) {
-  issues.push('no bot signer available — set SOLANA_BOT_PRIVATE_KEY / EVM_BOT_PRIVATE_KEY on App-Level');
+  issues.push('no bot signer available — set bot signing material as App-Level encrypted secrets');
 }
 if (!trading?.envGuard) {
   issues.push('TRADING_ENABLED is not true on the server (use lowercase true, App-Level, redeploy)');
@@ -41,7 +42,7 @@ if (trading?.blockedReason) {
   issues.push(`trading blocked: ${trading.blockedReason}`);
 }
 if (!(status.json?.chains || []).length) {
-  issues.push('no chain heads — set SOLANA_RPC_URL / EVM_*_RPC_URL on App-Level for ALL components');
+  issues.push('no chain heads — set Solana/EVM RPC URL env vars on App-Level for ALL components');
 }
 
 const funds = await get('/api/funds?mode=sol');

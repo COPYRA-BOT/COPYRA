@@ -130,6 +130,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         solana: { available: solanaSigner.available, address: solanaSigner.address },
         evm: { available: evmSigner.available, address: evmSigner.address },
       },
+      /** Present/absent only — never includes URL values. */
+      rpcConfigured: {
+        solana: Boolean(process.env.SOLANA_RPC_URL?.trim()),
+        ethereum: Boolean(process.env.EVM_ETHEREUM_RPC_URL?.trim()),
+        base: Boolean(process.env.EVM_BASE_RPC_URL?.trim()),
+        arbitrum: Boolean(process.env.EVM_ARBITRUM_RPC_URL?.trim()),
+        bsc: Boolean(process.env.EVM_BSC_RPC_URL?.trim()),
+        polygon: Boolean(process.env.EVM_POLYGON_RPC_URL?.trim()),
+        optimism: Boolean(process.env.EVM_OPTIMISM_RPC_URL?.trim()),
+      },
       telegram: telegramStatus,
       chains,
       executableChains: executableChains().map((c) => c.chain),
