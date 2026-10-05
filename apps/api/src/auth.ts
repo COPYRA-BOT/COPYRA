@@ -14,7 +14,8 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function cookieSecure(): boolean {
+function cookieSecure(override?: boolean): boolean {
+  if (typeof override === 'boolean') return override;
   return env.PUBLIC_WEB_URL.startsWith('https://');
 }
 
@@ -113,7 +114,7 @@ export async function createSession(
   address: string,
   chain: Chain,
   reply: FastifyReply,
-  meta: { userAgent?: string; ip?: string },
+  meta: { userAgent?: string; ip?: string; secureCookie?: boolean },
 ): Promise<{ userId: string; expiresAt: Date }> {
   const user = await prisma.user.upsert({
     where: { address },
@@ -134,7 +135,7 @@ export async function createSession(
   reply.setCookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: cookieSecure(),
+    secure: cookieSecure(meta.secureCookie),
     path: '/',
     expires: expiresAt,
   });

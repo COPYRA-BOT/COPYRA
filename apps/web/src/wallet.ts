@@ -12,11 +12,6 @@ import {
 } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
 
-const PROJECT_ID =
-  import.meta.env.VITE_REOWN_PROJECT_ID ||
-  import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID ||
-  '';
-
 export type WalletMode = 'sol' | 'evm';
 
 export interface ConnectedWallet {
@@ -51,10 +46,23 @@ type WalletApi = {
   }) => Promise<string>;
 };
 
-function emptyApi(error: string | null): WalletApi {
+declare global {
+  interface Window {
+    CopyraWallet?: WalletApi;
+    __COPYRA_CONFIG__?: { reownProjectId?: string; site?: string };
+    COPYRA_API?: string;
+    solana?: SolanaProvider & {
+      connect?: () => Promise<{ publicKey: { toString: () => string } }>;
+    };
+    phantom?: { solana?: Window['solana'] };
+    ethereum?: EvmProvider;
+  }
+}
+
+function emptyApi(error: string | null, projectIdConfigured = false): WalletApi {
   return {
     ready: false,
-    projectIdConfigured: Boolean(PROJECT_ID),
+    projectIdConfigured,
     error,
     async connect() {
       throw new Error(error ?? 'Wallet connect is not ready.');
@@ -99,10 +107,41 @@ function networkForChainId(chainId: number) {
   return mainnet;
 }
 
+/** Resolve Reown project id: baked Vite env → runtime config.js → /api/public-config. */
+async function resolveProjectId(): Promise<string> {
+  const baked =
+    (import.meta.env.VITE_REOWN_PROJECT_ID as string | undefined)?.trim() ||
+    (import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID as string | undefined)?.trim() ||
+    '';
+  if (baked) return baked;
+
+  const fromWindow = window.__COPYRA_CONFIG__?.reownProjectId?.trim();
+  if (fromWindow) return fromWindow;
+
+  try {
+    const response = await fetch('/api/public-config', { credentials: 'same-origin' });
+    if (response.ok) {
+      const data = (await response.json()) as { reownProjectId?: string };
+      if (data.reownProjectId?.trim()) {
+        window.__COPYRA_CONFIG__ = {
+          ...(window.__COPYRA_CONFIG__ ?? {}),
+          reownProjectId: data.reownProjectId.trim(),
+        };
+        return data.reownProjectId.trim();
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return '';
+}
+
 async function init(): Promise<WalletApi> {
+  const PROJECT_ID = await resolveProjectId();
   if (!PROJECT_ID) {
     return emptyApi(
-      'VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_REOWN_PROJECT_ID is not set. Install Phantom or MetaMask, or set the Reown project id.',
+      'Reown project id missing. Set VITE_REOWN_PROJECT_ID (or NEXT_PUBLIC_REOWN_PROJECT_ID) as an App-Level env var on DigitalOcean, then redeploy.',
+      false,
     );
   }
 
@@ -123,6 +162,9 @@ async function init(): Promise<WalletApi> {
   const solanaAdapter = new SolanaAdapter();
   new QueryClient();
 
+  const siteOrigin =
+    typeof window !== 'undefined' ? window.location.origin : 'https://copyra.fun';
+
   const modal = createAppKit({
     adapters: [wagmiAdapter, solanaAdapter],
     networks,
@@ -130,21 +172,25 @@ async function init(): Promise<WalletApi> {
     metadata: {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
-      url: typeof window !== 'undefined' ? window.location.origin : 'https://copyra.fun',
-      icons: [
-        typeof window !== 'undefined'
-          ? `${window.location.origin}/icons/copyra.png`
-          : 'https://copyra.fun/icons/copyra.png',
-      ],
+      url: siteOrigin,
+      icons: [`${siteOrigin}/icons/copyra.png`],
     },
+    // Full catalog matching Reown “Connect Wallet” UI (Trust, MetaMask, Phantom, … + All Wallets QR).
+    allWallets: 'SHOW',
+    featuredWalletIds: [
+      // Trust, MetaMask, Phantom, Coinbase, Rainbow — verified WalletConnect explorer ids.
+      '4622a2b2d6af1c9844944291e5e7351a6aa24cd7b23099efac1b2fd875da31a0',
+      'c57ca95b47569778a828d19178114f4db188b89b763c899ba0be274e97267d96',
+      'a797aa35c0fadbfc1a53e7f675162ed5226968b44a19ee3d24385c64d1d3c974',
+      'fd20dc426fb37566d803205b19bbc1d4096b248ac04548e3bfb774b1909aa5b4',
+      '1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369',
+    ],
     features: {
       analytics: false,
       email: false,
       socials: false,
       swaps: false,
       onramp: false,
-      // Show the full WalletConnect / Reown wallet catalog (QR + injected).
-      allWallets: true,
     },
     allowUnsupportedChain: false,
   });
@@ -180,7 +226,9 @@ async function init(): Promise<WalletApi> {
     error: null,
     async connect(mode) {
       await ensureNamespace(mode);
-      await modal.open({ view: 'Connect' });
+      const namespace = mode === 'sol' ? 'solana' : 'eip155';
+      // Opens the full multi-wallet Reown list filtered to Solana or EVM.
+      await modal.open({ view: 'Connect', namespace });
       const deadline = Date.now() + 180_000;
       while (Date.now() < deadline) {
         const address =
@@ -189,10 +237,20 @@ async function init(): Promise<WalletApi> {
             : modal.getAddress?.('eip155') || modal.getAddress?.();
         if (address) {
           if (mode === 'sol' && !String(address).startsWith('0x')) {
+            try {
+              await modal.close();
+            } catch {
+              /* ignore */
+            }
             return { address: String(address), chain: 'SOLANA', mode };
           }
           if (mode === 'evm' && String(address).startsWith('0x')) {
             const chainId = Number(modal.getChainId?.() ?? 1);
+            try {
+              await modal.close();
+            } catch {
+              /* ignore */
+            }
             return {
               address: String(address),
               chain: evmChainFromId(chainId),
@@ -204,7 +262,7 @@ async function init(): Promise<WalletApi> {
           setTimeout(resolve, 400); // copyra-audit-allow: poll Reown modal until user connects
         });
       }
-      throw new Error('Wallet connect timed out. Open Connect again or use the QR / All Wallets list.');
+      throw new Error('Wallet connect timed out. Open Connect again or use All Wallets / QR.');
     },
     async disconnect() {
       await modal.disconnect();
@@ -224,7 +282,9 @@ async function init(): Promise<WalletApi> {
       if (mode === 'sol') {
         const provider = solanaProvider();
         if (!provider?.signMessage) {
-          throw new Error('Connected Solana wallet cannot sign messages. Try Phantom or another wallet from All Wallets.');
+          throw new Error(
+            'Connected Solana wallet cannot sign messages. Try Phantom, Solflare, or another wallet from All Wallets.',
+          );
         }
         const result = await provider.signMessage(new TextEncoder().encode(message), 'utf8');
         const signature =
@@ -236,7 +296,9 @@ async function init(): Promise<WalletApi> {
       }
       const provider = evmProvider();
       if (!provider?.request) {
-        throw new Error('Connected EVM wallet cannot sign messages. Try MetaMask or another wallet from All Wallets.');
+        throw new Error(
+          'Connected EVM wallet cannot sign messages. Try MetaMask, Trust, or another wallet from All Wallets.',
+        );
       }
       const sig = await provider.request({
         method: 'personal_sign',
@@ -306,21 +368,12 @@ function bs58(bytes: Uint8Array): string {
   return '1'.repeat(zeros) + digits.reverse().map((d) => alphabet[d]).join('');
 }
 
-declare global {
-  interface Window {
-    CopyraWallet?: WalletApi;
-    solana?: SolanaProvider & {
-      connect?: () => Promise<{ publicKey: { toString: () => string } }>;
-    };
-    phantom?: { solana?: Window['solana'] };
-    ethereum?: EvmProvider;
-  }
-}
-
 void init()
   .then((api) => {
     window.CopyraWallet = api;
+    window.dispatchEvent(new CustomEvent('copyra-wallet-ready', { detail: { ready: api.ready } }));
   })
   .catch((error: unknown) => {
     window.CopyraWallet = emptyApi(error instanceof Error ? error.message : String(error));
+    window.dispatchEvent(new CustomEvent('copyra-wallet-ready', { detail: { ready: false } }));
   });

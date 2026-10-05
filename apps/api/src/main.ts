@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allowedWebOrigins, env, ensureSettings, initSentry, logger } from '@copyra/core';
+import { allowedWebOrigins, env, ensureSettings, initSentry, logger, publicReownProjectId } from '@copyra/core';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -54,6 +54,22 @@ try {
 
 await registerRoutes(app);
 await registerFundsRoutes(app);
+
+/**
+ * Runtime browser config. Must be registered before static files so production
+ * always gets the Reown project id from App Platform env (Vite cannot see
+ * runtime secrets at Docker build time unless BUILD_TIME is also set).
+ */
+app.get('/config.js', async (_request, reply) => {
+  const reownProjectId = publicReownProjectId();
+  const body =
+    `window.COPYRA_API='';` +
+    `window.__COPYRA_CONFIG__=${JSON.stringify({ reownProjectId, site: 'https://copyra.fun' })};`;
+  return reply
+    .type('application/javascript; charset=utf-8')
+    .header('cache-control', 'no-store')
+    .send(body);
+});
 
 app.get('/api/ws', { websocket: true }, (socket) => {
   const tick = async () => {

@@ -342,23 +342,45 @@ $('#sb').onclick=()=>{const i=$('#q');i.style.display=i.style.display=='none'?'b
 const b58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 function b58len(s){let b=[0];for(const c of s){let v=b58.indexOf(c);if(v<0)return -1;for(let i=0;i<b.length;i++){v+=b[i]*58;b[i]=v&255;v>>=8}while(v){b.push(v&255);v>>=8}}for(const c of s){if(c!='1')break;b.push(0)}return b.length}
 const kind=a=>/^0x[0-9a-fA-F]{40}$/.test(a)?'evm':(a.length>=32&&a.length<=44&&b58len(a)==32)?'sol':null;
+async function waitWallet(ms=20000){
+  if(window.CopyraWallet)return window.CopyraWallet;
+  return await new Promise((resolve,reject)=>{
+    const t=setTimeout(()=>reject(new Error('Wallet module timed out. Confirm VITE_REOWN_PROJECT_ID is set on the API, then hard-refresh.')),ms);
+    const done=()=>{clearTimeout(t);window.removeEventListener('copyra-wallet-ready',done);resolve(window.CopyraWallet)};
+    window.addEventListener('copyra-wallet-ready',done);
+  });
+}
+async function sessionSign(e,a){
+  const issued=await api('POST','/api/auth/nonce',{address:a,chain:e==='sol'?'SOLANA':'BASE'});
+  let signature=null;
+  if(window.CopyraWallet?.signMessage){
+    try{signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e)}
+    catch(err){throw err}
+  }
+  if(!signature)throw new Error('Sign the login message in your wallet to create a session.');
+  await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
+  return issued.address;
+}
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
- if(a0)return md(`<h3>${N} wallet</h3><p class="mu">Connected to ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode has its own wallet. This is identity — the bot key on the server is what would copy-trade. A Jupiter swap from this wallet is signed here and confirmed on-chain by the API.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" onclick="wallet['${e}']=null;window.CopyraWallet&&window.CopyraWallet.disconnect();api('POST','/api/auth/logout').catch(()=>{});cl();toast('${N} wallet disconnected');draw()">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
- md(`<h3>Connect ${N} wallet</h3><p class="mu">${e.toUpperCase()} Mode uses Reown AppKit — WalletConnect QR plus injected wallets (Phantom, MetaMask, and the full All Wallets list). Sign a server nonce to create a session. COPYRA never asks for your private key or seed phrase.</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="mu" style="font-size:13px;margin-top:8px">${window.CopyraWallet?.ready?'Reown AppKit ready.':'Wallet module loading… if this stays empty, check VITE_REOWN_PROJECT_ID.'}</p><label>Or paste your ${N} wallet address</label><input id="wi" autocapitalize="off" spellcheck="false"><p class="rd" id="ae"></p><div class="row"><button class="btn" id="ok">Verify &amp; connect</button><button class="btn" onclick="cl()">Cancel</button></div>`);
- const fin=async a=>{const k=kind(a);if(!k)return $('#ae').textContent='Not a valid Solana or EVM wallet address.';if(k!=e)return $('#ae').textContent=`That is ${k=='sol'?'a Solana':'an EVM'} address. ${e.toUpperCase()} Mode needs ${e=='sol'?'a Solana':'an EVM'} wallet.`;
-  wallet[e]=a;
+ if(a0)return md(`<h3>${N} wallet</h3><p class="mu">Connected to ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode has its own wallet. This is identity — the bot key on the server is what would copy-trade.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" onclick="wallet['${e}']=null;window.CopyraWallet&&window.CopyraWallet.disconnect();api('POST','/api/auth/logout').catch(()=>{});cl();toast('${N} wallet disconnected');draw()">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
+ md(`<h3>Connect ${N} wallet</h3><p class="mu">Opening the full Reown wallet list (Trust, MetaMask, Phantom, Coinbase, Binance, OKX, All Wallets QR, and more). Sign a one-time message after you pick a wallet — COPYRA never asks for your private key.</p><p class="mu" id="ws">Preparing wallet list…</p><p class="rd" id="ae"></p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+ (async()=>{
   try{
-   const issued=await api('POST','/api/auth/nonce',{address:a,chain:e==='sol'?'SOLANA':'BASE'});
-   let signature=null;
-   if(window.CopyraWallet?.signMessage){try{signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e)}catch(err){$('#ae').textContent=err.message}}
-   if(!signature && e==='sol'){const p=window.phantom?.solana||window.solana;if(p?.signMessage){const r=await p.signMessage(new TextEncoder().encode(issued.message),'utf8');signature=typeof r==='string'?r:(window.bs58?window.bs58.encode(r.signature||r):null)}}
-   else if(!signature){const p=window.ethereum;if(p)signature=await p.request({method:'personal_sign',params:[issued.message,a]})}
-   if(signature)await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
-   else {$('#ae').textContent='Sign the nonce in your wallet to create a session. An address alone is not a login.';return}
-  }catch(err){$('#ae').textContent=err.message;return}
-  cl();toast(N+' wallet connected');draw()};
- $('#ok').onclick=()=>fin($('#wi').value.trim());
- $('#bw').onclick=async()=>{try{let a;if(window.CopyraWallet?.ready){const w=await window.CopyraWallet.connect(e);a=w.address}else if(e=='sol'){const p=window.phantom?.solana||window.solana;if(!p)throw 0;a=(await p.connect()).publicKey.toString()}else{const p=window.ethereum;if(!p)throw 0;a=(await p.request({method:'eth_requestAccounts'}))[0]}fin(a)}catch(err){$('#ae').textContent=err&&err.message?err.message:`No ${N} wallet found or request rejected. Paste your address instead.`}}}
+    const w=await waitWallet();
+    if(!w?.ready)throw new Error(w?.error||'Reown AppKit is not ready. Set VITE_REOWN_PROJECT_ID on DigitalOcean (App-Level), redeploy, then hard-refresh.');
+    $('#ws').textContent='Choose a wallet in the popup…';
+    const connected=await w.connect(e);
+    $('#ws').textContent='Approve the sign-in message in your wallet…';
+    const addr=await sessionSign(e,connected.address);
+    wallet[e]=addr;
+    cl();toast(N+' wallet connected');draw();
+  }catch(err){
+    const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
+    md(`<h3>Connect ${N} wallet</h3><p class="mu">Tap Connect Wallet to open the full Reown list for ${e==='sol'?'Solana':'EVM'} (Trust, MetaMask, Phantom, Coinbase, All Wallets QR, …).</p><button class="btn pri" id="bw" style="width:100%">Connect Wallet</button><p class="rd" id="ae">${msg}</p><div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
+    $('#bw').onclick=()=>{cl();conn()};
+  }
+ })();
+}
 $('#cn').onclick=conn;
 $('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="nav.classList.remove(\'o\');refresh();toast(LIVE&&LIVE.status?(\'API live · \'+(LIVE.status.telegram.botUsername||\'telegram\')+\' · workers \'+(LIVE.status.workers.map(w=>w.status).join(\',\')||\'none\')):\'Refreshing…\')">System health</button>';
 const wd2=()=>{nav.classList.remove('o');md('<h3>Security</h3><p class="mu">2FA protects withdrawals in both modes. Sessions last 7 days. Wallet sign-in proves you control the key. COPYRA never asks for a seed phrase.</p><button class="btn" onclick="cl()">Close</button>')};
@@ -368,8 +390,8 @@ setInterval(()=>{refresh()},8000);
 try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{refresh()}}catch{}
 refresh();draw();
 </script>
+<script src="/config.js"></script>
 <script type="module" src="/src/wallet.ts"></script>
-<script src="config.js"></script>
 <!-- ===== COPYRA ACCOUNT LAYER (additive): accounts, 2FA, devices, passkeys, referrals, footer ===== -->
 <style>
 #ft{border-top:1px solid var(--ln);background:var(--sf);padding:36px max(16px,env(safe-area-inset-left)) calc(28px + env(safe-area-inset-bottom,0)) max(16px,env(safe-area-inset-right))}

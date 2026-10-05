@@ -13,6 +13,7 @@ import {
   getSolanaBalances,
   getStrategyConfig,
   monitorableChains,
+  publicReownProjectId,
   resolveWebOrigin,
   solanaSigner,
   telegram,
@@ -453,6 +454,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  /** Public browser config — Reown project id is safe to expose. */
+  app.get('/api/public-config', async () => {
+    const reownProjectId = publicReownProjectId();
+    return {
+      reownProjectId,
+      reownConfigured: Boolean(reownProjectId),
+      site: 'https://copyra.fun',
+    };
+  });
+
   app.post('/api/auth/nonce', async (request) => {
     const body = z.object({ address: z.string(), chain: chainSchema }).parse(request.body);
     const address =
@@ -461,9 +472,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         : getAddress(body.address).toLowerCase();
     const { nonce, expiresAt } = await issueNonce(address, body.chain);
     const issuedAt = new Date().toISOString();
-    const webOrigin = resolveWebOrigin(
-      String(request.headers['x-forwarded-host'] ?? request.headers.host ?? ''),
-    );
+    const webOrigin = resolveWebOrigin({
+      requestHost: String(request.headers['x-forwarded-host'] ?? request.headers.host ?? ''),
+      originHeader: typeof request.headers.origin === 'string' ? request.headers.origin : undefined,
+      referer: typeof request.headers.referer === 'string' ? request.headers.referer : undefined,
+      forwardedProto:
+        typeof request.headers['x-forwarded-proto'] === 'string'
+          ? request.headers['x-forwarded-proto']
+          : undefined,
+    });
     const message =
       body.chain === Chain.SOLANA
         ? buildSiwsMessage({ address, nonce, issuedAt, webOrigin })
@@ -474,7 +491,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
             issuedAt,
             webOrigin,
           });
-    return { nonce, address, chain: body.chain, message, expiresAt };
+    return { nonce, address, chain: body.chain, message, expiresAt, webOrigin };
   });
 
   app.post('/api/auth/verify', async (request, reply) => {
@@ -495,6 +512,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const session = await createSession(address, body.chain, reply, {
       userAgent: request.headers['user-agent'],
       ip: request.ip,
+      secureCookie: (() => {
+        const proto = String(request.headers['x-forwarded-proto'] ?? '')
+          .split(',')[0]
+          ?.trim()
+          .toLowerCase();
+        if (proto === 'http') return false;
+        if (proto === 'https') return true;
+        const origin = typeof request.headers.origin === 'string' ? request.headers.origin : '';
+        if (origin.startsWith('http://')) return false;
+        if (origin.startsWith('https://')) return true;
+        return undefined;
+      })(),
     });
     return { ok: true, address, chain: body.chain, expiresAt: session.expiresAt };
   });

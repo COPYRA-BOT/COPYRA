@@ -20,6 +20,13 @@ COPY apps/web/package.json apps/web/
 ARG DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
 ENV DATABASE_URL=${DATABASE_URL}
 
+# Public Reown / WalletConnect project id — bake into the Vite bundle when
+# DigitalOcean provides BUILD_TIME / RUN_AND_BUILD_TIME. Runtime /config.js
+# and /api/public-config also inject it if this ARG is empty.
+ARG VITE_REOWN_PROJECT_ID=
+ENV VITE_REOWN_PROJECT_ID=${VITE_REOWN_PROJECT_ID}
+ENV NEXT_PUBLIC_REOWN_PROJECT_ID=${VITE_REOWN_PROJECT_ID}
+
 RUN npm ci --no-audit --no-fund
 
 # --- Source + compile (invalidates only when code changes) ---
