@@ -170,6 +170,6 @@ Until (3) exists, COPYRA will decode, qualify and quote for real, then record `B
 
 **No.**
 
-Verified: live RPC/market/quote/decode/Telegram reachability, engine unit tests, source audits, QUALIFIED→executor wiring (observe-only), Vite + Reown build.
+Verified: live RPC/market/quote/decode/Telegram reachability, engine unit tests, source audits, QUALIFIED→executor wiring (observe-only), Vite + Reown build, public DigitalOcean Postgres (migrated, settings + heartbeat).
 
 Not verified: a single COPYRA-signed transaction, a live copy of a trader, a TP/SL fill, a completed Reown sign-in, or a `copyra.fun` deploy.
