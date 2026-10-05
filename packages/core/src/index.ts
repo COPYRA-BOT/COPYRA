@@ -37,6 +37,7 @@ export * from './engine/execution-gate.js';
 export * from './engine/copy-execute.js';
 export * from './engine/exit-execute.js';
 export * from './engine/reconcile.js';
+export * from './engine/funds.js';
 
 // Market data
 export * from './market/index.js';

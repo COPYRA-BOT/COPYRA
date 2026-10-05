@@ -9,6 +9,7 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import { registerRoutes } from './routes.js';
+import { registerFundsRoutes } from './funds.js';
 
 initSentry('copyra-api');
 
@@ -52,6 +53,7 @@ try {
 }
 
 await registerRoutes(app);
+await registerFundsRoutes(app);
 
 app.get('/api/ws', { websocket: true }, (socket) => {
   const tick = async () => {

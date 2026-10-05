@@ -349,6 +349,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         continue;
       }
       try {
+        const { getTradingAvailableQuote } = await import('@copyra/core');
+        const funds = await getTradingAvailableQuote(chain);
         if (chain === Chain.SOLANA) {
           const balances = await getSolanaBalances(address);
           out.push({
@@ -356,9 +358,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
             configured: true,
             address,
             nativeRaw: balances.lamports.toString(),
-            native: Number(balances.lamports) / 1e9,
+            native: funds.availableQuote,
+            onChainNative: funds.onChainQuote,
+            savings: funds.savingsQuote,
             tokens: balances.tokens,
             slot: balances.slot.toString(),
+            source: 'rpc',
+          });
+        } else {
+          out.push({
+            chain,
+            configured: true,
+            address,
+            native: funds.availableQuote,
+            onChainNative: funds.onChainQuote,
+            savings: funds.savingsQuote,
             source: 'rpc',
           });
         }
@@ -373,8 +387,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
     return jsonSafe({
       buckets: {
-        trading: 'The trading engine may use only the trading-bucket bot wallet. It is unconfigured until the server-side bot signing key is set on the host.',
-        savings: 'Savings is a separate reserved bucket. No automatic transfer from savings is enabled.',
+        trading: 'Available trading balance after savings reservation and fee buffer (RPC).',
+        savings: 'Reserved ledger bucket on the bot wallet — move between buckets in the dashboard; withdraw sends on-chain to your connected wallet.',
       },
       wallets: out,
     });

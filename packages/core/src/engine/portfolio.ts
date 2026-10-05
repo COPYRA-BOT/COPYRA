@@ -146,6 +146,8 @@ export async function buildPortfolioState(
   tokenAddress: string,
 ): Promise<{ state: PortfolioState; balance: OnChainBalance }> {
   const balance = await readOnChainBalance(chain);
+  const { getSavingsQuote } = await import('./funds.js');
+  const savingsQuote = await getSavingsQuote(chain).catch(() => 0);
 
   const [openPositions, tokenPosition] = await Promise.all([
     prisma.position.findMany({
@@ -170,7 +172,7 @@ export async function buildPortfolioState(
   return {
     balance,
     state: {
-      tradingBalanceQuote: balance.availableQuote,
+      tradingBalanceQuote: Math.max(0, balance.availableQuote - savingsQuote),
       quotePriceUsd: balance.quotePriceUsd,
       deployedUsd: Math.max(0, deployedUsd),
       openPositionCount: openPositions.length,

@@ -21,7 +21,13 @@ Nothing in these routes invents a fill. A trade is `executed: true` only after S
 | GET | `/api/signals` | qualification decisions |
 | GET | `/api/trades` | one row per broadcast attempt, with explorer URL |
 | GET | `/api/pnl` | confirmed realized + last mark unrealized |
-| GET | `/api/balances` | bot wallet from RPC, or `configured: false` |
+| GET | `/api/balances` | bot wallet from RPC (available after savings), or `configured: false` |
+| GET | `/api/funds` | trading / savings / on-chain split for a chain |
+| POST | `/api/funds/deposit/build` | user-signed deposit intent (session required) |
+| POST | `/api/funds/deposit/broadcast` | Solana deposit broadcast + confirm |
+| POST | `/api/funds/deposit/record-evm` | confirm user-broadcast EVM deposit |
+| POST | `/api/funds/move` | trading ↔ savings reservation (session) |
+| POST | `/api/funds/withdraw` | bot-signed withdraw to connected wallet |
 | GET | `/api/wallet/onchain?address=&chain=` | any address, live RPC |
 | GET | `/api/market/:chain/:address` | Dexscreener |
 | GET | `/api/notifications` | Telegram delivery log |
