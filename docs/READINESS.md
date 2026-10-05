@@ -1,7 +1,7 @@
 # COPYRA production readiness
 
-**As of:** 2026-10-05 00:27 UTC
-**Verdict: NOT production-ready.** COPYRA is not trading, has no dashboard, and has never broadcast a transaction from this codebase.
+**As of:** 2026-10-05 01:55 UTC
+**Verdict: NOT production-ready.** The dashboard, API, and Solana worker are running locally and the frontend is on GitHub. COPYRA still has no bot signing key and has never broadcast a transaction from this codebase.
 
 This document marks an item **VERIFIED** only when a command was run in this environment and produced real evidence. Code existing, compiling, or looking complete is not enough.
 
@@ -146,16 +146,16 @@ No BUY/SELL/SKIP message was sent in this session. Delivery of the formatted tem
 |---|---|---|
 | Actual on-chain COPYRA buy/sell | **NOT VERIFIED** | No signing key. No broadcast. No COPYRA signature on any explorer. |
 | Balances from chain | **IMPLEMENTED, NOT VERIFIED** | `readOnChainBalance` exists. No bot address to read. |
-| Trader-wallet monitoring (Helius WS) | **NOT BUILT** | No worker process. Decoder is verified on fetched historical txs only. |
+| Trader-wallet monitoring (Helius WS) | **IMPLEMENTED, NOT VERIFIED live fill** | Worker is running and subscribes to enabled Solana traders via `onLogs`. Zero traders were configured at boot, so no live signature has been ingested yet. |
 | First-buy-only persisted | **IMPLEMENTED, NOT VERIFIED** | Prisma model + unique index exist. No runtime insert was exercised. |
 | Correlated signals = one position | **VERIFIED (unit only)** | `qualifySignal` + sizing tests. No live multi-trader event. |
 | Position sizing / reserve | **VERIFIED (unit only)** | 10 sizing tests passed. |
 | Real swap execution | **NOT VERIFIED** | Quote and unsigned build verified. Sign/broadcast/confirm of a COPYRA tx has never happened. |
 | Confirmation = chain state | **VERIFIED (negative + historical)** | Fake sig ≠ CONFIRMED. Historical sig is confirmed via `getSignatureStatuses`. A COPYRA-broadcast tx has never been confirmed. |
 | TP/SL / trailing | **VERIFIED (unit only)** | 16 exit tests passed. No live position has ever hit TP or SL. |
-| Backend trades with browser closed | **NOT BUILT** | No worker. |
-| Wallet connect + SIWE/SIWS | **NOT BUILT** | `apps/web` is a package.json only. |
-| Frontend ↔ backend | **NOT BUILT** | `apps/api` is a package.json only. |
+| Backend trades with browser closed | **IMPLEMENTED, observe-only** | Worker process is independent of the dashboard. It cannot trade without a signing key. |
+| Wallet connect + SIWE/SIWS | **IMPLEMENTED, NOT VERIFIED in browser** | Reown AppKit + `/api/auth/nonce|verify|me` exist. HTTP `/api/auth/me` returns `{authenticated:false}` with no cookie. A real wallet signature has not been completed in this session. |
+| Frontend ↔ backend | **VERIFIED (HTTP)** | Vite `:43127` proxies `/api` and `/health` to Fastify `:41717`. `/health`, `/api/status`, `/api/settings`, `/api/traders`, `/api/positions`, `/api/signals`, `/api/trades`, `/api/events`, `/api/pnl`, `/api/balances`, `/api/auth/me`, `/api/notifications` all returned 200. Invalid trader address returned 400. |
 | Duplicate-trade prevention | **IMPLEMENTED, NOT VERIFIED** | Unique indexes + Redis lock code. No concurrent-signal test against Postgres. |
 | Withdrawals / emergency stop | **IMPLEMENTED, NOT VERIFIED** | Settings fields and skip path exist. No UI, no live engage. |
 | RPC outage / reconnect | **VERIFIED (unit failover)** | Pool fails over and cools down a dead endpoint. Live WS reconnect is untested (no WS subscriber). |
@@ -174,11 +174,11 @@ No BUY/SELL/SKIP message was sent in this session. Delivery of the formatted tem
 | Are any transactions fake? | COPYRA has produced **zero** transactions. Jupiter/KyberSwap builds were real and unsigned. |
 | Are transaction signatures real? | The decoded mainnet signatures above are real. None of them were sent by COPYRA. |
 | Are wallet balances real? | **No bot wallet.** Cannot answer. |
-| Are trader signals coming from real blockchain data? | Decoder works on real txs. The monitor that would turn those into live signals is **not built**. |
+| Are trader signals coming from real blockchain data? | Decoder works on real txs. The worker is running and will subscribe to any enabled Solana trader. No watched wallet was configured at verification time, so no new live signal has been recorded. |
 | Are buys actually broadcast? | **No.** |
 | Are sells actually broadcast? | **No.** |
 | Are TP/SL rules actually active? | Functions exist. Nothing is monitoring a position. **No.** |
-| Does the backend still trade when the browser is closed? | **No backend trading process exists.** |
+| Does the backend still trade when the browser is closed? | The worker stays up without the browser. It still cannot trade: no signing key. |
 | Are duplicate trades prevented? | Schema designed for it. **Not verified under load.** |
 | Are first-buy rules persistent? | Schema designed for it. **Not verified across restart.** |
 | Are deployment secrets protected? | **VERIFIED** for the git tree. Host `.env` still holds the chat-transmitted keys and **must be rotated**. |
@@ -193,13 +193,14 @@ No BUY/SELL/SKIP message was sent in this session. Delivery of the formatted tem
 
 | Process | Status |
 |---|---|
-| Local Postgres 16 / Redis | Up on this machine (used for migrations only) |
-| API (`apps/api`) | **NOT BUILT** — package.json only |
-| Worker (`apps/worker`) | **NOT BUILT** — package.json only |
-| Web (`apps/web`) | **NOT BUILT** — package.json only |
-| Preview / `copyra.fun` | **None** |
+| Local Postgres 16 / Redis | Up. Settings row seeded at API boot. |
+| API (`apps/api`) | **Running** on `0.0.0.0:41717`. `/health` 200. `/api/status` returned live heads (Solana slot **453436938**, Ethereum 26123013, Base 52187976) and Telegram `@copyrafun_bot` / chat **Copyra bot** `canPostToChat=true`. |
+| Worker (`apps/worker`) | **Running**. Heartbeat written. 0 Solana subscriptions (no traders yet). Observe-only. |
+| Web (`apps/web`) | **Running** on `0.0.0.0:43127`. HTML 200; Vite compiled `main.tsx`, `wallet.tsx`, `Overview.tsx`. |
+| GitHub | Frontend/API/worker sources pushed to `https://github.com/COPYRA-BOT/COPYRA.git` on `main`. |
+| `copyra.fun` | **Not deployed.** This preview is the local Vite server, not the public domain. |
 
-There is no preview URL. A dashboard cannot be clicked because it does not exist yet.
+Dashboard verdict from HTTP: the live link can load the app and read real engine state. A full click-through of Reown connect still needs a wallet in the browser.
 
 ---
 
@@ -221,4 +222,4 @@ Until (3) exists, COPYRA will continue to decode, qualify and quote for real, th
 
 Verified: live RPC/market/quote/decode/Telegram reachability, engine unit tests, source audits.
 
-Not verified: a single COPYRA-signed transaction, a live copy of a trader, a TP/SL fill, a running worker, a connected frontend, or a deployed preview.
+Not verified: a single COPYRA-signed transaction, a live copy of a trader, a TP/SL fill, a completed Reown sign-in, or a `copyra.fun` deploy.

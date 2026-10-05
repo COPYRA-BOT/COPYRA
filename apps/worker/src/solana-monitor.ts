@@ -27,40 +27,59 @@ const log = componentLogger('solana-monitor');
  */
 export async function startSolanaMonitor(): Promise<() => void> {
   const connection = solanaConnection();
-  const subscriptions: number[] = [];
+  const subscriptions = new Map<string, number>();
 
-  const traders = await prisma.trader.findMany({
-    where: { chain: Chain.SOLANA, enabled: true },
-  });
+  const sync = async () => {
+    const traders = await prisma.trader.findMany({
+      where: { chain: Chain.SOLANA, enabled: true },
+    });
+    const wanted = new Set(traders.map((trader) => trader.id));
 
-  log.info({ count: traders.length }, 'Starting Solana wallet subscriptions');
-
-  for (const trader of traders) {
-    let pubkey: PublicKey;
-    try {
-      pubkey = new PublicKey(trader.address);
-    } catch {
-      log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
-      continue;
+    for (const [traderId, sub] of subscriptions) {
+      if (wanted.has(traderId)) continue;
+      await connection.removeOnLogsListener(sub);
+      subscriptions.delete(traderId);
+      log.info({ traderId }, 'Dropped Solana log subscription');
     }
 
-    const id = connection.onLogs(
-      pubkey,
-      (logs, ctx) => {
-        void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
-          log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
-        });
-      },
-      'confirmed',
-    );
-    subscriptions.push(id);
-    log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
-  }
+    for (const trader of traders) {
+      if (subscriptions.has(trader.id)) continue;
+      let pubkey: PublicKey;
+      try {
+        pubkey = new PublicKey(trader.address);
+      } catch {
+        log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
+        continue;
+      }
+      const id = connection.onLogs(
+        pubkey,
+        (logs, ctx) => {
+          void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
+            log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
+          });
+        },
+        'confirmed',
+      );
+      subscriptions.set(trader.id, id);
+      log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
+    }
+
+    log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
+  };
+
+  await sync();
+  const timer = setInterval(() => {
+    void sync().catch((error: unknown) => {
+      log.error({ err: error }, 'Failed to refresh trader subscriptions');
+    });
+  }, 15_000);
 
   return () => {
-    for (const id of subscriptions) {
+    clearInterval(timer);
+    for (const id of subscriptions.values()) {
       void connection.removeOnLogsListener(id);
     }
+    subscriptions.clear();
   };
 }
 
