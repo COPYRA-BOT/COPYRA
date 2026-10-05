@@ -33,7 +33,8 @@ export function buildSiweMessage(input: {
   issuedAt: string;
   webOrigin?: string;
 }): string {
-  const origin = input.webOrigin ?? env.PUBLIC_WEB_URL;
+  const origin = (input.webOrigin ?? env.PUBLIC_WEB_URL).replace(/\/+$/, '');
+  // Wallets compare domain to location.host (hostname[:port], no scheme).
   const domain = new URL(origin).host;
   return [
     `${domain} wants you to sign in with your Ethereum account:`,
@@ -55,7 +56,7 @@ export function buildSiwsMessage(input: {
   issuedAt: string;
   webOrigin?: string;
 }): string {
-  const origin = input.webOrigin ?? env.PUBLIC_WEB_URL;
+  const origin = (input.webOrigin ?? env.PUBLIC_WEB_URL).replace(/\/+$/, '');
   const domain = new URL(origin).host;
   return [
     `${domain} wants you to sign in with your Solana account:`,

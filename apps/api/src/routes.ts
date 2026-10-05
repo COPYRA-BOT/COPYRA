@@ -14,8 +14,6 @@ import {
   getStrategyConfig,
   monitorableChains,
   publicReownProjectId,
-  publicVenlyClientId,
-  publicVenlyEnvironment,
   resolveWebOrigin,
   solanaSigner,
   telegram,
@@ -456,23 +454,27 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  /** Public browser config — Reown + Venly ids are safe to expose. */
+  /** Public browser config — Reown project id is safe to expose. */
   app.get('/api/public-config', async () => {
     const reownProjectId = publicReownProjectId();
-    const venlyClientId = publicVenlyClientId();
-    const venlyEnvironment = publicVenlyEnvironment();
     return {
       reownProjectId,
       reownConfigured: Boolean(reownProjectId),
-      venlyClientId,
-      venlyConfigured: Boolean(venlyClientId),
-      venlyEnvironment,
       site: 'https://copyra.fun',
     };
   });
 
   app.post('/api/auth/nonce', async (request) => {
-    const body = z.object({ address: z.string(), chain: chainSchema }).parse(request.body);
+    const body = z
+      .object({
+        address: z.string(),
+        chain: chainSchema,
+        /** Actual browser origin — same-origin POSTs often omit Origin header. */
+        clientOrigin: z.string().url().optional(),
+        /** Wallet's active EVM chain id (required for SIWE to match MetaMask). */
+        chainId: z.number().int().positive().optional(),
+      })
+      .parse(request.body);
     const address =
       body.chain === Chain.SOLANA
         ? new PublicKey(body.address).toBase58()
@@ -481,25 +483,40 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const issuedAt = new Date().toISOString();
     const webOrigin = resolveWebOrigin({
       requestHost: String(request.headers['x-forwarded-host'] ?? request.headers.host ?? ''),
-      originHeader: typeof request.headers.origin === 'string' ? request.headers.origin : undefined,
+      originHeader:
+        body.clientOrigin ||
+        (typeof request.headers.origin === 'string' ? request.headers.origin : undefined),
       referer: typeof request.headers.referer === 'string' ? request.headers.referer : undefined,
       forwardedProto:
         typeof request.headers['x-forwarded-proto'] === 'string'
           ? request.headers['x-forwarded-proto']
           : undefined,
     });
+    const evmChainId =
+      body.chainId ??
+      CHAIN_CONFIGS[body.chain]?.chainId ??
+      1;
     const message =
       body.chain === Chain.SOLANA
         ? buildSiwsMessage({ address, nonce, issuedAt, webOrigin })
         : buildSiweMessage({
             address,
             nonce,
-            chainId: CHAIN_CONFIGS[body.chain].chainId ?? 1,
+            chainId: evmChainId,
             issuedAt,
             webOrigin,
           });
-    return { nonce, address, chain: body.chain, message, expiresAt, webOrigin };
+    return {
+      nonce,
+      address,
+      chain: body.chain,
+      chainId: body.chain === Chain.SOLANA ? null : evmChainId,
+      message,
+      expiresAt,
+      webOrigin,
+    };
   });
+
 
   app.post('/api/auth/verify', async (request, reply) => {
     const body = z
