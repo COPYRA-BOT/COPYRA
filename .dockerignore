@@ -1,0 +1,48 @@
+# Build context for COPYRA App Platform / Docker.
+# Keep shared TypeScript bases and workspace manifests in the image.
+# Never ship secrets, local env files, or host build artifacts.
+
+.git
+.github
+.cursor
+.vscode
+.idea
+
+# Secrets and local env — never bake into an image
+.env
+.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/id.json
+**/wallet.json
+secrets/
+
+# Dependencies and build output (rebuilt inside the image)
+node_modules
+**/node_modules
+**/dist
+**/.vite
+**/*.tsbuildinfo
+packages/db/generated
+coverage
+.nyc_output
+logs
+*.log
+pids
+*.pid
+
+# Local scratch / evidence (may contain live RPC URLs)
+tmp
+.tmp
+.cache
+evidence
+uploads
+assets
+
+# Docs and tests are not required to compile the production image
+docs
+**/*.spec.ts
+**/__tests__
+vitest.config.ts
+.dockerignore

@@ -1,0 +1,76 @@
+# DigitalOcean App Platform — COPYRA
+#
+# Source Directory MUST be blank / repository root.
+# Dockerfile path: Dockerfile
+# Branch: dev
+#
+# Do not put secrets in this file. Set them in the App Platform
+# "App-Level Environment Variables" / encrypted vars UI.
+
+name: copyra
+region: nyc
+features:
+  - buildpack-stack=ubuntu-22
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
+
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: COPYRA-BOT/COPYRA
+      branch: dev
+      deploy_on_push: true
+    http_port: 41717
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    health_check:
+      http_path: /health
+    run_command: npm run start -w @copyra/api
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: API_HOST
+        value: "0.0.0.0"
+      - key: API_PORT
+        value: "41717"
+      # Set the rest as SECRET in the DO UI — never commit real values:
+      # DATABASE_URL, REDIS_URL, SESSION_SECRET, SOLANA_RPC_URL, SOLANA_WS_URL,
+      # SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY, EVM_*_RPC_URL, EVM_*_WS_URL,
+      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN, PUBLIC_API_URL,
+      # PUBLIC_WEB_URL, CORS_ORIGINS, TRADING_ENABLED, VITE_REOWN_PROJECT_ID,
+      # NEXT_PUBLIC_REOWN_PROJECT_ID
+      # Bot keys only if you intend to trade:
+      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
+
+  - name: web
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: COPYRA-BOT/COPYRA
+      branch: dev
+      deploy_on_push: true
+    http_port: 43127
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127
+    envs:
+      - key: NODE_ENV
+        value: production
+
+workers:
+  - name: worker
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: COPYRA-BOT/COPYRA
+      branch: dev
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: npm run start -w @copyra/worker
+    envs:
+      - key: NODE_ENV
+        value: production
