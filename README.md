@@ -6,12 +6,14 @@ This repository is a working local platform: API, worker, and dashboard. It is *
 
 ## What you can do in the dashboard
 
-- See live Solana slot and EVM block heads from Helius / Alchemy
+The UI is the original COPYRA `copyra.` frontend (Trading / Monitor / Leaderboard / PnL, SOL ↔ EVM modes, Connect, settings drawer). The in-page paper engine is gone. Numbers come from the live API:
+
+- Solana slot and EVM heads from Helius / Alchemy
 - Add, pause, and remove watched trader wallets
-- Toggle strategy settings, Option A / Option B exits, and the emergency stop
-- Connect a wallet with Reown AppKit and sign in (SIWE / SIWS)
-- Look up any address’s live native balance
-- Read honest empty states: no invented trades, balances, or signatures
+- Strategy settings, Option A / Option B exits, emergency stop
+- Phantom / MetaMask connect + SIWE / SIWS
+- Bot-wallet balance from RPC when a server key exists
+- Empty lists stay empty until a real on-chain event arrives
 
 Trading does **not** happen in the browser. The dashboard never receives `SOLANA_BOT_PRIVATE_KEY` or `EVM_BOT_PRIVATE_KEY`. Those exist only on the server, if you set them.
 

@@ -154,8 +154,8 @@ No BUY/SELL/SKIP message was sent in this session. Delivery of the formatted tem
 | Confirmation = chain state | **VERIFIED (negative + historical)** | Fake sig ≠ CONFIRMED. Historical sig is confirmed via `getSignatureStatuses`. A COPYRA-broadcast tx has never been confirmed. |
 | TP/SL / trailing | **VERIFIED (unit only)** | 16 exit tests passed. No live position has ever hit TP or SL. |
 | Backend trades with browser closed | **IMPLEMENTED, observe-only** | Worker process is independent of the dashboard. It cannot trade without a signing key. |
-| Wallet connect + SIWE/SIWS | **IMPLEMENTED, NOT VERIFIED in browser** | Reown AppKit + `/api/auth/nonce|verify|me` exist. HTTP `/api/auth/me` returns `{authenticated:false}` with no cookie. A real wallet signature has not been completed in this session. |
-| Frontend ↔ backend | **VERIFIED (HTTP)** | Vite `:43127` proxies `/api` and `/health` to Fastify `:41717`. `/health`, `/api/status`, `/api/settings`, `/api/traders`, `/api/positions`, `/api/signals`, `/api/trades`, `/api/events`, `/api/pnl`, `/api/balances`, `/api/auth/me`, `/api/notifications` all returned 200. Invalid trader address returned 400. |
+| Wallet connect + SIWE/SIWS | **IMPLEMENTED, NOT VERIFIED in browser** | Original Connect button + Phantom/MetaMask + `/api/auth/nonce|verify`. A real wallet signature has not been completed in this session. |
+| Frontend ↔ backend | **VERIFIED (HTTP)** | The uploaded `copyra.` UI is served on `:43127` and loads `/api/snapshot` (200) with live SOL USD, chain heads, Telegram, empty traders/positions. Vite proxies `/api` to Fastify `:41717`. |
 | Duplicate-trade prevention | **IMPLEMENTED, NOT VERIFIED** | Unique indexes + Redis lock code. No concurrent-signal test against Postgres. |
 | Withdrawals / emergency stop | **IMPLEMENTED, NOT VERIFIED** | Settings fields and skip path exist. No UI, no live engage. |
 | RPC outage / reconnect | **VERIFIED (unit failover)** | Pool fails over and cools down a dead endpoint. Live WS reconnect is untested (no WS subscriber). |
@@ -196,7 +196,7 @@ No BUY/SELL/SKIP message was sent in this session. Delivery of the formatted tem
 | Local Postgres 16 / Redis | Up. Settings row seeded at API boot. |
 | API (`apps/api`) | **Running** on `0.0.0.0:41717`. `/health` 200. `/api/status` returned live heads (Solana slot **453436938**, Ethereum 26123013, Base 52187976) and Telegram `@copyrafun_bot` / chat **Copyra bot** `canPostToChat=true`. |
 | Worker (`apps/worker`) | **Running**. Heartbeat written. 0 Solana subscriptions (no traders yet). Observe-only. |
-| Web (`apps/web`) | **Running** on `0.0.0.0:43127`. HTML 200; Vite compiled `main.tsx`, `wallet.tsx`, `Overview.tsx`. |
+| Web (`apps/web`) | **Running** on `0.0.0.0:43127`. Serves the uploaded COPYRA `copyra.` UI (`web/index.html`). Paper engine removed. `/api/snapshot` 200 with live SOL USD and chain heads. |
 | GitHub | Frontend/API/worker sources pushed to `https://github.com/COPYRA-BOT/COPYRA.git` on `main`. |
 | `copyra.fun` | **Not deployed.** This preview is the local Vite server, not the public domain. |
 

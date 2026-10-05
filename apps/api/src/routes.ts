@@ -7,6 +7,7 @@ import {
   explorerTxUrl,
   getDexscreenerMarket,
   getEvmBlockNumber,
+  getQuoteAssetPriceUsd,
   getSettings,
   getSlot,
   getSolanaBalances,
@@ -170,6 +171,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         trailingDropPct: z.number().positive().lt(100).optional(),
         followTraderSells: z.boolean().optional(),
         enabledChains: z.array(chainSchema).optional(),
+        ui: z.record(z.unknown()).optional(),
       })
       .parse(request.body);
 
@@ -490,5 +492,39 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       take: 40,
     });
     return jsonSafe(logs);
+  });
+
+  app.get('/api/snapshot', async () => {
+    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesRes] =
+      await Promise.all([
+        app.inject({ method: 'GET', url: '/api/status' }),
+        app.inject({ method: 'GET', url: '/api/settings' }),
+        app.inject({ method: 'GET', url: '/api/traders' }),
+        app.inject({ method: 'GET', url: '/api/positions' }),
+        app.inject({ method: 'GET', url: '/api/signals' }),
+        app.inject({ method: 'GET', url: '/api/trades' }),
+        app.inject({ method: 'GET', url: '/api/pnl' }),
+        app.inject({ method: 'GET', url: '/api/balances' }),
+      ]);
+
+    let solUsd = 0;
+    try {
+      solUsd = await getQuoteAssetPriceUsd(Chain.SOLANA);
+    } catch {
+      solUsd = 0;
+    }
+
+    return jsonSafe({
+      status: statusRes.json(),
+      settings: settingsRes.json(),
+      traders: traders.json(),
+      positions: positions.json(),
+      signals: signals.json(),
+      trades: trades.json(),
+      pnl: pnlRes.json(),
+      balances: balancesRes.json(),
+      solUsd,
+      readAt: new Date().toISOString(),
+    });
   });
 }

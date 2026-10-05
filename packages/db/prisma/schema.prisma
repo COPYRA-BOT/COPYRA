@@ -731,6 +731,9 @@ model StrategySettings {
   /// Running P&L baseline for the Telegram "Total P&L" line (spec §"Total P&L").
   pnlResetAt DateTime @default(now())
 
+  /// Dashboard-only extras from the original COPYRA UI (alloc %, blacklist).
+  ui Json?
+
   updatedAt DateTime @updatedAt
   updatedBy String?
 
