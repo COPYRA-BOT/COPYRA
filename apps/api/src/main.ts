@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { env, ensureSettings, initSentry, logger } from '@copyra/core';
+import { allowedWebOrigins, env, ensureSettings, initSentry, logger } from '@copyra/core';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
@@ -28,7 +28,7 @@ app.get('/health', async (_request, reply) =>
   }),
 );
 
-const corsOrigins = env.CORS_ORIGINS;
+const corsOrigins = allowedWebOrigins();
 await app.register(cors, {
   origin: corsOrigins.length > 0 ? corsOrigins : true,
   credentials: true,

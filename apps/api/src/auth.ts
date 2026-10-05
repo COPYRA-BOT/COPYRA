@@ -30,15 +30,17 @@ export function buildSiweMessage(input: {
   nonce: string;
   chainId: number;
   issuedAt: string;
+  webOrigin?: string;
 }): string {
-  const domain = new URL(env.PUBLIC_WEB_URL).host;
+  const origin = input.webOrigin ?? env.PUBLIC_WEB_URL;
+  const domain = new URL(origin).host;
   return [
     `${domain} wants you to sign in with your Ethereum account:`,
     input.address,
     '',
     'Sign in to COPYRA. This proves you control the wallet. COPYRA never asks for your private key.',
     '',
-    `URI: ${env.PUBLIC_WEB_URL}`,
+    `URI: ${origin}`,
     `Version: 1`,
     `Chain ID: ${input.chainId}`,
     `Nonce: ${input.nonce}`,
@@ -46,15 +48,21 @@ export function buildSiweMessage(input: {
   ].join('\n');
 }
 
-export function buildSiwsMessage(input: { address: string; nonce: string; issuedAt: string }): string {
-  const domain = new URL(env.PUBLIC_WEB_URL).host;
+export function buildSiwsMessage(input: {
+  address: string;
+  nonce: string;
+  issuedAt: string;
+  webOrigin?: string;
+}): string {
+  const origin = input.webOrigin ?? env.PUBLIC_WEB_URL;
+  const domain = new URL(origin).host;
   return [
     `${domain} wants you to sign in with your Solana account:`,
     input.address,
     '',
     'Sign in to COPYRA. This proves you control the wallet. COPYRA never asks for your private key or seed phrase.',
     '',
-    `URI: ${env.PUBLIC_WEB_URL}`,
+    `URI: ${origin}`,
     `Version: 1`,
     `Nonce: ${input.nonce}`,
     `Issued At: ${input.issuedAt}`,

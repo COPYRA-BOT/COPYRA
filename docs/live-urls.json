@@ -1,0 +1,7 @@
+{
+  "production": "https://copyra.fun",
+  "platform": "https://copyra.fun",
+  "healthPath": "/health",
+  "statusPath": "/api/status",
+  "notes": "Set platform to your DigitalOcean *.ondigitalocean.app URL (Networking tab) and mirror it in PUBLIC_PLATFORM_URL + CORS_ORIGINS. Both URLs serve the same deploy when DNS is correct."
+}

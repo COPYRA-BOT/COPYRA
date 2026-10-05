@@ -1,6 +1,7 @@
 // Configuration
 export * from './config/env.js';
 export * from './config/chains.js';
+export * from './config/public-origin.js';
 
 // Observability
 export * from './obs/logger.js';

@@ -1,12 +1,5 @@
-# DigitalOcean App Platform — COPYRA
-#
-# Source Directory MUST be blank / repository root.
-# Dockerfile path: Dockerfile
-# Branch: main (Autodeploy on push)
-#
-# Secrets stay in the App Platform encrypted env UI — never in this file.
-# Non-secret public URLs for copyra.fun are set below so the live domain
-# talks to the API on the same origin.
+# DigitalOcean App Platform — COPYRA (single image: API + dashboard + worker)
+# Push to GitHub main → autodeploy. See docs/DEPLOY.md and docs/live-urls.json.
 
 name: copyra
 region: nyc
@@ -16,14 +9,10 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
-# Primary domain. In the DO UI, also attach copyra.fun to this app and
-# point Cloudflare DNS (orange-cloud or grey) at the App Platform target.
 domains:
   - domain: copyra.fun
     type: PRIMARY
 
-# Same-origin routing: dashboard + /api + /health on https://copyra.fun
-# The API also serves apps/web/dist, so the domain can target `api` alone.
 ingress:
   rules:
     - match:
@@ -50,18 +39,17 @@ services:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    # Must match process listen port (PORT / API_PORT).
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     health_check:
       http_path: /health
-      initial_delay_seconds: 60
+      initial_delay_seconds: 35
       period_seconds: 10
       timeout_seconds: 5
       success_threshold: 1
-      failure_threshold: 6
-    run_command: npm run start -w @copyra/api
+      failure_threshold: 5
+    run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
         value: production
@@ -71,10 +59,14 @@ services:
         value: "8080"
       - key: API_PORT
         value: "8080"
+      - key: RUN_WORKER
+        value: "true"
       - key: PUBLIC_WEB_URL
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
         value: "https://copyra.fun"
+      # Set PUBLIC_PLATFORM_URL to your DO starter URL (Overview → Live App
+      # when using *.ondigitalocean.app). Add the same host to CORS_ORIGINS.
       - key: CORS_ORIGINS
         value: "https://copyra.fun"
       - key: TRADING_ENABLED
@@ -84,35 +76,5 @@ services:
       - key: EVM_TRADING_ENABLED
         value: "false"
       # Encrypted App-Level secrets in the DO UI — never commit:
-      # DATABASE_URL (public Postgres; real password — not the UI label "show-password"),
-      # REDIS_URL (public rediss://, not private-), SESSION_SECRET (>=32 chars),
-      # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
-      # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN,
-      # VITE_REOWN_PROJECT_ID, NEXT_PUBLIC_REOWN_PROJECT_ID
-      # Bot keys only if you intend to trade:
-      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
-
-workers:
-  - name: worker
-    dockerfile_path: Dockerfile
-    source_dir: /
-    github:
-      repo: COPYRA-BOT/COPYRA
-      branch: main
-      deploy_on_push: true
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    run_command: npm run start -w @copyra/worker
-    envs:
-      - key: NODE_ENV
-        value: production
-      - key: PUBLIC_WEB_URL
-        value: "https://copyra.fun"
-      - key: PUBLIC_API_URL
-        value: "https://copyra.fun"
-      - key: TRADING_ENABLED
-        value: "false"
-      - key: SOL_TRADING_ENABLED
-        value: "false"
-      - key: EVM_TRADING_ENABLED
-        value: "false"
+      # DATABASE_URL, REDIS_URL, SESSION_SECRET, RPC/Telegram/Reown vars,
+      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY (only if trading)

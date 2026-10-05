@@ -2,16 +2,22 @@
 
 Live site: **https://copyra.fun**
 
-Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`). Fixes landed here are pushed to GitHub so the live domain updates.
+Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
-## Processes
+**Before you push:** run `npm run deploy:verify` (lint, types, tests, production build). GitHub Actions runs the same check on `main`.
 
-| Service | Command | Port | Role |
-|---|---|---|---|
-| api | `npm run start -w @copyra/api` | `8080` in Docker / App Platform (`PORT`), `41717` locally via `API_PORT` | Fastify HTTP + WS **and** the built dashboard (`apps/web/dist`) on the same origin |
-| worker | `npm run start -w @copyra/worker` | none | monitors + exits |
+**After deploy:** open the URLs in `docs/live-urls.json` — production **https://copyra.fun** and your `*.ondigitalocean.app` platform URL (same build).
 
-Build order inside Docker: `npm ci && npm run db:generate && npm run build`.
+## Processes (one Docker build)
+
+| Process | How it runs on App Platform |
+|---|---|
+| API + dashboard | `scripts/start-production.sh` → Fastify on `:8080`, serves `apps/web/dist` |
+| Worker | Same container, background (`RUN_WORKER=true`) |
+
+Docker caches the `npm ci` layer when lockfiles are unchanged (~2× faster redeploys). Only **one** component builds the image (no separate worker build).
+
+Build order inside Docker: cached `npm ci` → `db:generate` → `build`.
 
 ## DigitalOcean App Platform (exact settings)
 
@@ -30,10 +36,9 @@ The production Dockerfile expects the **repository root** as the build context.
 
 | Component | Type | HTTP port | Run command |
 |---|---|---|---|
-| `api` | Web service | **`8080`** | `npm run start -w @copyra/api` |
-| `worker` | Worker | none | `npm run start -w @copyra/worker` |
+| `api` | Web service | **`8080`** | `/app/scripts/start-production.sh` |
 
-The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so **https://copyra.fun** is one same-origin app (session cookies + Reown SIWE/SIWS work).
+The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so **https://copyra.fun** is one same-origin app (session cookies + Reown SIWE/SIWS work). Set `PUBLIC_PLATFORM_URL` and `CORS_ORIGINS` to include your `*.ondigitalocean.app` host so the DO default URL behaves the same.
 
 ### API health checks
 
@@ -41,7 +46,7 @@ The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so *
 |---|---|
 | HTTP Port | **`8080`** |
 | Health Check path | **`/health`** |
-| Initial Delay | **`60` seconds** |
+| Initial Delay | **`35` seconds** |
 
 ### Public (non-secret) env vars — set on the app / api component
 

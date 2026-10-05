@@ -13,6 +13,7 @@ import {
   getSolanaBalances,
   getStrategyConfig,
   monitorableChains,
+  resolveWebOrigin,
   solanaSigner,
   telegram,
   tradingBlockedReason,
@@ -153,7 +154,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.patch('/api/settings', async (request, reply) => {
+  app.patch('/api/settings', async (request) => {
     const body = z
       .object({
         tradingEnabled: z.boolean().optional(),
@@ -436,14 +437,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         : getAddress(body.address).toLowerCase();
     const { nonce, expiresAt } = await issueNonce(address, body.chain);
     const issuedAt = new Date().toISOString();
+    const webOrigin = resolveWebOrigin(
+      String(request.headers['x-forwarded-host'] ?? request.headers.host ?? ''),
+    );
     const message =
       body.chain === Chain.SOLANA
-        ? buildSiwsMessage({ address, nonce, issuedAt })
+        ? buildSiwsMessage({ address, nonce, issuedAt, webOrigin })
         : buildSiweMessage({
             address,
             nonce,
             chainId: CHAIN_CONFIGS[body.chain].chainId ?? 1,
             issuedAt,
+            webOrigin,
           });
     return { nonce, address, chain: body.chain, message, expiresAt };
   });

@@ -76,6 +76,8 @@ const schema = z.object({
   SESSION_SECRET: z.string().min(32, 'SESSION_SECRET must be at least 32 characters'),
   PUBLIC_API_URL: z.string().default('http://127.0.0.1:41717'),
   PUBLIC_WEB_URL: z.string().default('http://127.0.0.1:43127'),
+  /** DigitalOcean `*.ondigitalocean.app` URL — same deploy as copyra.fun for testing. */
+  PUBLIC_PLATFORM_URL: optionalUrl,
 
   SOLANA_RPC_URL: optionalUrl,
   SOLANA_WS_URL: optionalUrl,

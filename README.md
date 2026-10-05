@@ -19,7 +19,9 @@ Trading does **not** happen in the browser. The dashboard never receives `SOLANA
 
 ## Live site
 
-**https://copyra.fun** — DigitalOcean App Platform, auto-deploys from GitHub `main` (`COPYRA-BOT/COPYRA`). After each fix is pushed, wait for the DO deployment to go Healthy, then re-test that URL.
+**https://copyra.fun** — DigitalOcean App Platform, auto-deploys from GitHub `main` (`COPYRA-BOT/COPYRA`).
+
+Before push: `npm run deploy:verify`. After deploy: `npm run deploy:links` (also see `docs/live-urls.json` for production + platform URLs).
 
 The API serves the dashboard and `/api` on the same origin so wallet session cookies work on the main domain.
 

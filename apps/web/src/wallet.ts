@@ -109,8 +109,7 @@ async function init(): Promise<WalletApi> {
           }
         }
         await new Promise((resolve) => {
-          // copyra-audit-allow: wait for the user to finish the Reown modal, not a trade delay
-          setTimeout(resolve, 400);
+          setTimeout(resolve, 400); // copyra-audit-allow: poll Reown modal until user connects
         });
       }
       throw new Error('Wallet connect timed out. You can still use Phantom or MetaMask.');
