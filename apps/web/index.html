@@ -2,6 +2,7 @@
 <html lang="en" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>copyra.</title>
+<link rel="icon" type="image/png" href="/icons/favicon.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Inter+Tight:wght@800&display=swap">
 <style>
 :root{--bg:#F6F5F3;--sf:#fff;--sf2:#E6E3DC;--ln:#E3E0DA;--tx:#1C1D21;--mu:#7B7D84;--ac:#D57658;--gl:0 8px 24px rgba(213,118,88,.3);--g:#1F9D6B;--r:#D64550;--w:#C98A12;--sol:#6E56E0;--evm:#3F6FD8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0)}
@@ -10,9 +11,14 @@
 button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
 .h{position:sticky;top:env(safe-area-inset-top,0);z-index:20;height:64px;display:flex;align-items:center;gap:10px;padding:0 16px;background:var(--bg);border-bottom:1px solid var(--ln)}
 .ib{background:none;border:0;width:44px;height:44px;border-radius:14px;display:grid;place-items:center;color:var(--mu)}.ib svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}
-.logo{display:flex;align-items:center;gap:6px;font:800 30px/1 'Inter Tight',system-ui;letter-spacing:-.035em}.logo i{color:var(--ac);font-style:normal}
+.logo{display:flex;align-items:center;gap:8px;font:800 30px/1 'Inter Tight',system-ui;letter-spacing:-.035em}.logo i{color:var(--ac);font-style:normal}
+.logo img.brand{width:36px;height:36px;object-fit:contain;display:block;flex-shrink:0}
 .chip{display:flex;align-items:center;gap:8px;padding:6px 14px 6px 8px;border-radius:999px;border:2px solid rgba(110,200,140,.5);background:rgba(110,200,140,.08);color:var(--mu)}
-.tile{width:34px;height:34px;border-radius:10px;background:#CAE47F;display:grid;place-items:center}.tile svg{width:20px;fill:#1A1410}
+.chip.evm{border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.10)}
+.tile{width:34px;height:34px;border-radius:10px;overflow:hidden;background:#0b0b0d;display:grid;place-items:center;flex-shrink:0}
+.tile img{width:100%;height:100%;object-fit:cover;display:block}
+.chip.evm .tile{background:#f3f4f6}
+.chip.evm .tile img{object-fit:contain;padding:5px;box-sizing:border-box}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
 .red{background:var(--r);color:#fff}.sm{padding:7px 12px;border-radius:12px;font-size:13px}
@@ -41,16 +47,16 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 #md{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px}#md.o{display:flex}#md>div{background:var(--sf);border-radius:20px;padding:22px;width:min(440px,100%);max-height:90vh;overflow:auto}
 #ts{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 18px;border-radius:99px;z-index:60;display:none}
 @media(min-width:1024px){main{padding-left:32px;padding-right:32px}.card{padding:24px}.n{font-size:44px}.h{padding:0 32px}}
-@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo svg{width:22px;height:26px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}
+@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}
 .eb{margin:28px 0 8px}.sub{font-size:17px;margin:12px 0 20px}.big{width:100%;padding:16px}.tabs{gap:20px}.tab{font-size:16px}.card{padding:16px;border-radius:18px}.n{font-size:32px}table{font-size:13px}td,th{padding:8px 6px}
 .seg button{padding:10px 6px;font-size:15px}#md{align-items:flex-end;padding:0}#md>div{width:100%;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0))}#dr{width:100%}.row>.btn{flex:1 1 auto}#ts{width:max-content;max-width:90vw;text-align:center}}
 @media(max-width:380px){#ml{display:none}.logo{font-size:21px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
 <header class="h"><button class="ib" onclick="nav.classList.toggle('o')" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
-<div class="logo"><svg width="30" height="34" viewBox="0 0 30 34"><defs><linearGradient id="f" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#E8432A"/><stop offset="1" stop-color="#FFB23E"/></linearGradient></defs><path d="M15 2c1 7 10 10 10 19a10 10 0 0 1-20 0c0-4 2-6 4-8 0 3 1 4 3 4-2-6 0-11 3-15z" fill="url(#f)"/></svg>copyra<i>.</i></div>
+<div class="logo"><img class="brand" src="/icons/copyra.png" width="36" height="36" alt="COPYRA">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
-<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><svg viewBox="0 0 24 24"><path d="M20 3c-6 0-12 4-14 12l-2 5 5-2c8-2 11-9 11-15z"/></svg></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
+<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img id="mi" src="/icons/solana.png" width="34" height="34" alt="Solana"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
 <button class="ib" id="th" aria-label="Theme"></button><button class="btn pri" id="cn">Connect</button></header>
 <div id="nav"></div><div id="dr"></div><div id="sc" onclick="nav.classList.remove('o');dr.classList.remove('o')"></div><div id="md"><div></div></div><div id="ts"></div>
 <main><div class="eb">The Copyra ecosystem</div><h1>Follow the smart money<i>.</i></h1><p class="sub">Every wallet. Every chain. Your rules.</p>
@@ -223,7 +229,7 @@ function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pt
  return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'—'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'—'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'—'}</b></div></div>
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
 <div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${H.slice(0,60).map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div></div>`}
-function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
+function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const mi=$('#mi');if(mi){mi.src=w?'/icons/solana.png':'/icons/evm.png';mi.alt=w?'Solana':'EVM'}$('#mc')?.classList.toggle('evm',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
  {const a=wallet[M];$('#cn').textContent=a?'● '+a.slice(0,4)+'…'+a.slice(-4):'Connect';$('#cn').title=a?M.toUpperCase()+' wallet connected':'Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
  $('#th').innerHTML=document.documentElement.dataset.theme=='dark'?'<svg viewBox="0 0 24 24" class="ib" style="width:26px"><circle cx="12" cy="12" r="4" stroke="currentColor" fill="none" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.8"/></svg>':'<svg viewBox="0 0 24 24" style="width:26px"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
  $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="M='${x}';draw()">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
@@ -301,11 +307,11 @@ refresh();draw();
 #ft .bt{max-width:1200px;margin:24px auto 0;padding-top:18px;border-top:1px solid var(--ln);color:var(--mu);font-size:13px;display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between}
 .dv{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--ln)}.pill{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--sf2);color:var(--mu)}.pill.g{background:rgba(61,220,151,.15);color:var(--g)}
 .cd{font-family:ui-monospace,Menlo,monospace;word-break:break-all;background:var(--bg);border:1px solid var(--ln);border-radius:12px;padding:10px;font-size:13px}
-@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo svg{width:18px!important;height:22px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#ml{font-size:13px}}
+@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo img.brand{width:26px!important;height:26px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#ml{font-size:13px}}
 @media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}}
 @media(max-width:760px){#ft .fw{grid-template-columns:1fr 1fr}#ft .fw>div:first-child{grid-column:1/-1}}
 </style>
-<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
+<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.png" width="28" height="28" alt="COPYRA">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
 <div class="so"><a href="https://x.com/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on X"><svg viewBox="0 0 24 24"><path d="M18.2 2H21l-6.5 7.4L22 22h-6l-4.7-6.2L5.8 22H3l7-8L2 2h6.1l4.3 5.7L18.2 2zm-1 18h1.6L7 3.9H5.3L17.2 20z"/></svg></a><a href="https://t.me/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on Telegram"><svg viewBox="0 0 24 24"><path d="M21.5 3.3L2.7 10.6c-.9.4-.9 1.2 0 1.5l4.8 1.5 1.8 5.5c.2.6.5.6.9.2l2.6-2.4 4.9 3.6c.9.5 1.5.2 1.7-.8L22.9 4.5c.3-1.2-.4-1.7-1.4-1.2zM8.5 13l9.6-6c.5-.3.9-.1.5.2l-8 7.2-.3 3.4L8.5 13z"/></svg></a></div></div>
 <div><b>Platform</b><a onclick="T='trading';draw();scrollTo(0,0)">Trading</a><a onclick="T='board';draw();scrollTo(0,0)">Leaderboard</a><a onclick="CPY.go('ref')">Referrals</a></div>
 <div><b>Security</b><a onclick="CPY.go('dev')">Devices &amp; passkeys</a><a onclick="CPY.go('acct')">Account &amp; 2FA</a><a onclick="CPY.info('sec')">How we protect you</a></div>
