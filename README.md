@@ -1,0 +1,82 @@
+# COPYRA
+
+On-chain copy trading for Solana and EVM. The engine watches real trader wallets, decodes confirmed transactions, qualifies first buys, and — only when a server-side bot key is present — broadcasts real Jupiter or KyberSwap swaps.
+
+This repository is a working local platform: API, worker, and dashboard. It is **not** production-ready until a dedicated funded bot key exists and a COPYRA-signed transaction has confirmed on-chain. See `docs/READINESS.md`.
+
+## What you can do in the dashboard
+
+- See live Solana slot and EVM block heads from Helius / Alchemy
+- Add, pause, and remove watched trader wallets
+- Toggle strategy settings, Option A / Option B exits, and the emergency stop
+- Connect a wallet with Reown AppKit and sign in (SIWE / SIWS)
+- Look up any address’s live native balance
+- Read honest empty states: no invented trades, balances, or signatures
+
+Trading does **not** happen in the browser. The dashboard never receives `SOLANA_BOT_PRIVATE_KEY` or `EVM_BOT_PRIVATE_KEY`. Those exist only on the server, if you set them.
+
+## Requirements
+
+- Node.js 20.11+
+- Postgres 16
+- Redis
+
+## Run locally
+
+```bash
+cp .env.example .env
+# fill DATABASE_URL, REDIS_URL, RPC URLs, SESSION_SECRET, Telegram, VITE_REOWN_PROJECT_ID
+npm install
+npm run db:generate
+npm run db:migrate
+npm run dev
+```
+
+That starts:
+
+| Process | Port |
+|---|---|
+| API (`apps/api`) | `41717` |
+| Dashboard (`apps/web`) | `43127` |
+| Worker (`apps/worker`) | no HTTP port — Helius log subscriptions + heartbeat |
+
+Open `http://127.0.0.1:43127`. Vite proxies `/api` and `/health` to the API so session cookies stay same-origin.
+
+Useful commands:
+
+```bash
+npm test
+npm run audit:all
+npm run verify:providers
+npm run dev:api
+npm run dev:web
+npm run dev:worker
+```
+
+## Observe-only vs live trading
+
+Leave the bot private keys blank to run observe-only:
+
+1. Worker subscribes to watched Solana wallets
+2. Buys are decoded and qualified against the real market-cap window
+3. The signal is stored as `BLOCKED_NO_SIGNER`
+4. Nothing is signed or broadcast
+
+Set `TRADING_ENABLED=true` **and** a dedicated bot key only when you intend to spend that wallet’s funds.
+
+## Repo layout
+
+```
+apps/api       Fastify HTTP + WebSocket API
+apps/worker    Solana log monitor and heartbeat
+apps/web       Vite + React + Tailwind dashboard
+packages/core  RPC, decode, qualify, size, exits, Jupiter, KyberSwap, Telegram
+packages/db    Prisma schema and client
+docs/          Audit and readiness evidence
+```
+
+## Socials
+
+- X: https://x.com/copyrafun
+- Telegram: https://t.me/copyrafun
+- Domain: https://copyra.fun
