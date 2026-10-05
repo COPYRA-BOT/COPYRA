@@ -16,7 +16,7 @@ Build order: `npm run db:generate && npm run db:migrate && npm run build`.
 
 ## Railway
 
-Create three services from this repo. Set the start command per service. Use a public Postgres URL (not a `private-` DigitalOcean host unless the service is in that VPC). Redis is required.
+Create three services from this repo. Set the start command per service. Use a public Postgres URL (host **without** the `private-` prefix) unless the service is in that VPC. From this environment the public host `db-pgsql-nyc1-98023-do-user-45647566-0.k.db.ondigitalocean.com:25060` is reachable; keep the app egress IP on Trusted Sources. Redis is required.
 
 Point `copyra.fun` at the web service. Set:
 

@@ -1,7 +1,7 @@
 # COPYRA production readiness
 
-**As of:** 2026-10-05 02:46 UTC
-**Verdict: NOT production-ready.** The dashboard, API, and worker are running locally with real RPC decode/quote/unsigned-build. COPYRA still has no bot signing key and has never broadcast a transaction from this codebase.
+**As of:** 2026-10-05 11:49 UTC
+**Verdict: NOT production-ready.** The dashboard, API, and worker now persist to the public DigitalOcean Postgres host. COPYRA still has no bot signing key and has never broadcast a transaction from this codebase.
 
 This document marks an item **VERIFIED** only when a command was run in this environment and produced real evidence. Code existing, compiling, or looking complete is not enough.
 
@@ -122,7 +122,7 @@ KyberSwap Base / Arbitrum / BNB returned live routes and unsigned calldata. **No
 | Frontend ↔ backend | **VERIFIED (HTTP, prior session)** | `copyra.` UI + `/api/snapshot`. |
 | Telegram migrate_to_chat_id | **VERIFIED (unit parse)** | Retry path exists. Live migrate not re-triggered. |
 | `copyra.fun` / Railway | **NOT VERIFIED** | `docs/DEPLOY.md` + Dockerfile only. |
-| Production DigitalOcean Postgres | **NOT VERIFIED** | `private-` host unreachable. Local Postgres 16 is used. |
+| Production DigitalOcean Postgres | **VERIFIED reachable** | Public host `db-pgsql-nyc1-98023-do-user-45647566-0.k.db.ondigitalocean.com:25060` accepted SSL from this machine (egress `35.163.190.53`). Prisma applied 3 migrations. API `/api/snapshot` returned `settingsId=1` and worker heartbeat `running` from that database. The literal password `show-password` was rejected; the previously supplied `doadmin` password worked on the public hostname. **Rotate it.** The `private-` hostname is still not used. |
 
 ### Final audit questions (spec §28)
 
@@ -144,7 +144,8 @@ KyberSwap Base / Arbitrum / BNB returned live routes and unsigned calldata. **No
 
 | Process | Status |
 |---|---|
-| Local Postgres 16 / Redis | Used by API/worker |
+| DigitalOcean Postgres (public host) | **Connected.** Schema migrated. Settings row id=1. |
+| Local Redis | Used by API/worker |
 | API | Fastify `:41717` |
 | Worker | Solana logs + EVM polls + exit marks + reconcile |
 | Web | Vite `:43127`, uploaded `copyra.` UI + Reown module |
@@ -156,7 +157,7 @@ KyberSwap Base / Arbitrum / BNB returned live routes and unsigned calldata. **No
 ## 6. Required from you
 
 1. **Rotate every credential that was pasted into chat.**
-2. Public DigitalOcean `DATABASE_URL` (host without `private-`) plus this host's egress IP on Trusted Sources.
+2. Keep egress IP `35.163.190.53` on the database Trusted Sources list. Rotate the `doadmin` password that was pasted into chat and send only a new URL.
 3. A **fresh dedicated** trading wallet, funded with a tiny amount (~0.05 SOL), with its key placed only in the host secret store. Never paste it into chat.
 4. Add at least one real Solana trader in the dashboard, set `TRADING_ENABLED=true` only when you intend to spend that wallet.
 5. Point `copyra.fun` at Railway after a confirmed tiny fill.

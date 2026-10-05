@@ -24,7 +24,7 @@ An item is **complete** only after the evidence column is filled with a real RPC
 | 18 | User-wallet Jupiter swap confirmed | **NO** | needs a browser wallet signature |
 | 19 | Reown connect + SIWE/SIWS in a browser | **NO** | needs a wallet extension |
 | 20 | Duplicate-signal race against Postgres | **NO** | not load-tested |
-| 21 | DigitalOcean production database | **NO** | `private-` host unreachable |
+| 21 | DigitalOcean production database | **yes, public host** | SSL + migrate deploy 2026-10-05 11:48 from egress `35.163.190.53`. Rotate the chat-pasted password. |
 | 22 | Railway / `copyra.fun` 24/7 | **NO** | not deployed |
 | 23 | Credentials rotated after chat paste | **NO** | operator action |
 | 24 | Security review of a funded live system | **NO** | do this before meaningful capital |

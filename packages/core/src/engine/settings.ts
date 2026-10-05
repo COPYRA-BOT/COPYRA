@@ -16,14 +16,21 @@ export async function ensureSettings(): Promise<StrategySettings> {
   if (existing) return existing;
 
   const defaultChains = executableChains().map((c) => c.chain);
-  const created = await prisma.strategySettings.create({
-    data: {
-      id: 1,
-      enabledChains: defaultChains.length > 0 ? defaultChains : [Chain.SOLANA],
-    },
-  });
-  log.info({ enabledChains: created.enabledChains }, 'Seeded default strategy settings from spec');
-  return created;
+  try {
+    const created = await prisma.strategySettings.create({
+      data: {
+        id: 1,
+        enabledChains: defaultChains.length > 0 ? defaultChains : [Chain.SOLANA],
+      },
+    });
+    log.info({ enabledChains: created.enabledChains }, 'Seeded default strategy settings from spec');
+    return created;
+  } catch (error) {
+    // API and worker can both seed the singleton on a fresh database.
+    const raced = await prisma.strategySettings.findUnique({ where: { id: 1 } });
+    if (raced) return raced;
+    throw error;
+  }
 }
 
 export async function getSettings(): Promise<StrategySettings> {
