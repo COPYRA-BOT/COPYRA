@@ -27,11 +27,20 @@ loadRootEnv();
  * it defaults to true only when at least one chain trading flag is true.
  */
 function normalizeTradingFlags(): void {
-  const truthy = (v: string | undefined) => v === 'true' || v === '1';
+  const truthy = (v: string | undefined) => {
+    if (v === undefined) return false;
+    const n = v.trim().toLowerCase();
+    return n === 'true' || n === '1' || n === 'yes' || n === 'on';
+  };
   const sol = process.env.SOL_TRADING_ENABLED;
   const evm = process.env.EVM_TRADING_ENABLED;
   if (process.env.TRADING_ENABLED === undefined && (sol !== undefined || evm !== undefined)) {
     process.env.TRADING_ENABLED = truthy(sol) || truthy(evm) ? 'true' : 'false';
+  }
+  // DigitalOcean / UI sometimes stores TRUE / True — normalize before Zod.
+  for (const key of ['TRADING_ENABLED', 'SOL_TRADING_ENABLED', 'EVM_TRADING_ENABLED'] as const) {
+    const raw = process.env[key];
+    if (raw !== undefined) process.env[key] = truthy(raw) ? 'true' : 'false';
   }
 }
 normalizeTradingFlags();
@@ -39,7 +48,11 @@ normalizeTradingFlags();
 const bool = z
   .string()
   .optional()
-  .transform((v) => v === 'true' || v === '1');
+  .transform((v) => {
+    if (v === undefined) return false;
+    const n = v.trim().toLowerCase();
+    return n === 'true' || n === '1' || n === 'yes' || n === 'on';
+  });
 
 const optionalUrl = z
   .string()

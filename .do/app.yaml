@@ -70,11 +70,15 @@ services:
       - key: CORS_ORIGINS
         value: "https://copyra.fun"
       - key: TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: SOL_TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: EVM_TRADING_ENABLED
-        value: "false"
-      # Encrypted App-Level secrets in the DO UI — never commit:
-      # DATABASE_URL, REDIS_URL, SESSION_SECRET, RPC/Telegram/Reown vars,
-      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY (only if trading)
+        value: "true"
+      # Encrypted App-Level secrets scoped to ALL components — never commit:
+      # DATABASE_URL, REDIS_URL, SESSION_SECRET,
+      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,
+      # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
+      # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+      # VITE_REOWN_PROJECT_ID, NEXT_PUBLIC_REOWN_PROJECT_ID
+      # Bot keys alone are not enough — RPC URLs must be on the api component too.

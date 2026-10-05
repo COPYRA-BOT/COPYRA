@@ -32,7 +32,7 @@ function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
 }
 
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/funds', async (request) => {
+  app.get('/api/funds', async (request, reply) => {
     const query = z
       .object({
         chain: chainSchema.optional(),
@@ -40,19 +40,29 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       })
       .parse(request.query);
     const chain = query.chain ?? (query.mode === 'evm' ? Chain.BASE : Chain.SOLANA);
-    const funds = await getTradingAvailableQuote(chain);
-    return jsonSafe({
-      chain,
-      ...funds,
-      buckets: {
-        trading: funds.availableQuote,
-        savings: funds.savingsQuote,
-        onChain: funds.onChainQuote,
-      },
-      note: funds.configured
-        ? 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
-        : 'No bot signing key — deposit destination and withdraw are unavailable until SOLANA_BOT_PRIVATE_KEY / EVM_BOT_PRIVATE_KEY is set on the host.',
-    });
+    try {
+      const funds = await getTradingAvailableQuote(chain);
+      return jsonSafe({
+        chain,
+        ...funds,
+        buckets: {
+          trading: funds.availableQuote,
+          savings: funds.savingsQuote,
+          onChain: funds.onChainQuote,
+        },
+        note: funds.configured
+          ? 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
+          : 'No bot signing key — deposit destination and withdraw are unavailable until the host secret store has the Solana/EVM bot signing material.',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(503).send({
+        error: message,
+        chain,
+        hint:
+          'Set SOLANA_RPC_URL / EVM_*_RPC_URL (and WS) as encrypted App-Level env vars scoped to ALL components, then redeploy. Bot keys alone are not enough to read balances.',
+      });
+    }
   });
 
   app.post('/api/funds/move', async (request, reply) => {

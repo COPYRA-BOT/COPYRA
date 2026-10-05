@@ -56,22 +56,52 @@ PUBLIC_API_URL=https://copyra.fun
 CORS_ORIGINS=https://copyra.fun
 PORT=8080
 API_HOST=0.0.0.0
-TRADING_ENABLED=false
-SOL_TRADING_ENABLED=false
-EVM_TRADING_ENABLED=false
+TRADING_ENABLED=true
+SOL_TRADING_ENABLED=true
+EVM_TRADING_ENABLED=true
 ```
 
-A checked-in example lives at `.do/app.yaml` (no secrets).
+Use lowercase `true` / `false` (or `1` / `0`). Values like `True` / `TRUE` are now accepted by the API, but prefer lowercase.
 
-### Encrypted secrets (DO UI only)
+### Required for live balances / deposit / withdraw (encrypted, App-Level, ALL components)
 
-| Key | Notes |
-|---|---|
-| `DATABASE_URL` | Public Postgres URL with `sslmode=require`. Host **without** `private-`. Use the **real** database password from the DO control panel — do **not** paste the UI label `show-password`. |
-| `REDIS_URL` | Managed Redis **`rediss://`** + **PUBLIC** hostname (not `private-`). |
-| `SESSION_SECRET` | ≥32 random hex/bytes. |
+Bot keys alone are not enough. The **api** and **worker** must both see RPC URLs:
 
-Also set RPC / Telegram / Reown vars from `.env.example`. Bot signing keys only when you intend to trade.
+```
+DATABASE_URL=
+REDIS_URL=
+SESSION_SECRET=
+SOLANA_BOT_PRIVATE_KEY=
+EVM_BOT_PRIVATE_KEY=
+SOLANA_RPC_URL=
+SOLANA_WS_URL=
+SOLANA_RPC_FALLBACK_URLS=
+JUPITER_API_KEY=
+EVM_ETHEREUM_RPC_URL=
+EVM_ETHEREUM_WS_URL=
+EVM_BASE_RPC_URL=
+EVM_BASE_WS_URL=
+EVM_ARBITRUM_RPC_URL=
+EVM_ARBITRUM_WS_URL=
+EVM_BSC_RPC_URL=
+EVM_BSC_WS_URL=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+VITE_REOWN_PROJECT_ID=
+NEXT_PUBLIC_REOWN_PROJECT_ID=
+```
+
+Scope every encrypted var to **App-Level → All components** (or both `api` and `worker`). If RPCs are only on the worker, `/api/funds` and `/api/balances` fail with `SOLANA_RPC_URL is not configured`.
+
+After editing env: **Force Rebuild and Deploy**. Then confirm:
+
+- `GET /api/status` → `trading.envGuard: true`, `signers.*.available: true`, chain heads present
+- `GET /api/funds?mode=sol` → `configured: true` with `onChainQuote`
+- Dashboard: enable the trading switch (settings DB row)
+
+### Cloudflare HTTPS `526`
+
+`http://copyra.fun` may work while `https://copyra.fun` returns **526**. In Cloudflare SSL/TLS set mode to **Full** (or Full strict once DO has a valid cert), and ensure the origin is the App Platform ingress — not a dead IP.
 
 ### Cloudflare + DNS
 
