@@ -11,16 +11,20 @@ import {
 import { Chain } from '@copyra/db';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { readSession } from './auth.js';
+import { type AuthMode, readSession } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
 const chainSchema = z.nativeEnum(Chain);
 
-async function requireSession(request: FastifyRequest, reply: FastifyReply) {
-  const session = await readSession(request);
+async function requireSession(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  mode?: AuthMode,
+) {
+  const session = await readSession(request, mode);
   if (!session) {
     reply.code(401).send({
-      error: 'Connect a wallet and sign in first. COPYRA never asks for your private key.',
+      error: `Connect your ${mode === 'evm' ? 'EVM' : 'Solana'} wallet and sign in first. Each mode has its own account session.`,
     });
     return null;
   }
@@ -42,12 +46,13 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         mode: z.enum(['sol', 'evm']).optional(),
       })
       .parse(request.query);
-    const chain = query.chain ?? (query.mode === 'evm' ? Chain.BASE : Chain.SOLANA);
-    const session = await readSession(request);
+    const mode: AuthMode = query.mode ?? (query.chain === Chain.SOLANA || !query.chain ? 'sol' : 'evm');
+    const chain = query.chain ?? modeChain(mode);
+    const session = await readSession(request, mode);
     const userId = session?.user.id;
     if (multiUserCustodyEnabled() && !userId) {
       return reply.code(401).send({
-        error: 'Sign in with your wallet to view your custody balances.',
+        error: `Sign in with your ${mode === 'evm' ? 'EVM' : 'Solana'} wallet to view custody balances.`,
       });
     }
     try {
@@ -80,8 +85,6 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/funds/move', async (request, reply) => {
-    const session = await requireSession(request, reply);
-    if (!session) return;
     const body = z
       .object({
         mode: z.enum(['sol', 'evm']),
@@ -90,6 +93,8 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         chain: chainSchema.optional(),
       })
       .parse(request.body);
+    const session = await requireSession(request, reply, body.mode);
+    if (!session) return;
     const chain = modeChain(body.mode, body.chain);
     try {
       const result = await moveBucket({
@@ -105,8 +110,6 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/funds/deposit/build', async (request, reply) => {
-    const session = await requireSession(request, reply);
-    if (!session) return;
     const body = z
       .object({
         mode: z.enum(['sol', 'evm']),
@@ -114,6 +117,8 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         chain: chainSchema.optional(),
       })
       .parse(request.body);
+    const session = await requireSession(request, reply, body.mode);
+    if (!session) return;
 
     try {
       if (body.mode === 'sol') {
@@ -150,7 +155,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/funds/deposit/broadcast', async (request, reply) => {
-    const session = await requireSession(request, reply);
+    const session = await requireSession(request, reply, 'sol');
     if (!session) return;
     const body = z
       .object({
@@ -174,7 +179,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/funds/deposit/record-evm', async (request, reply) => {
-    const session = await requireSession(request, reply);
+    const session = await requireSession(request, reply, 'evm');
     if (!session) return;
     const body = z
       .object({
@@ -201,16 +206,16 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post('/api/funds/withdraw', async (request, reply) => {
-    const session = await requireSession(request, reply);
-    if (!session) return;
     const body = z
       .object({
         mode: z.enum(['sol', 'evm']),
         amount: z.number().positive(),
-        fromBucket: z.enum(['savings', 'trading']).default('savings'),
+        fromBucket: z.enum(['savings', 'trading']).default('trading'),
         chain: chainSchema.optional(),
       })
       .parse(request.body);
+    const session = await requireSession(request, reply, body.mode);
+    if (!session) return;
 
     const chain = modeChain(body.mode, body.chain);
     if (body.mode === 'sol' && session.user.chain !== Chain.SOLANA) {

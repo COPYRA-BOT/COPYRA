@@ -14,10 +14,11 @@ import { readSession } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
 async function requireSession(request: FastifyRequest, reply: FastifyReply) {
-  const session = await readSession(request);
+  // Swaps are Solana-only — always bind to the SOL mode session.
+  const session = await readSession(request, 'sol');
   if (!session) {
     reply.code(401).send({
-      error: 'Connect a wallet and sign in first. COPYRA never asks for your private key.',
+      error: 'Connect your Solana wallet and sign in first.',
     });
     return null;
   }

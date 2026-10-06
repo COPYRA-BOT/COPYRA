@@ -120,17 +120,29 @@ const f=(e,u,d=UI[e].d)=>(u/UI[e].k).toFixed(d),usd=(e,u)=>'$'+(u/UI[e].k*UI[e].
 const cashOf=e=>Object.values(S[e].cash).reduce((a,b)=>a+b,0),openP=e=>S[e].pos,invOf=e=>openP(e).reduce((a,p)=>a+p.inv*p.rem,0);
 const log=(e,h)=>{S[e].act.unshift({t:new Date().toLocaleTimeString(),h,e});S[e].act.length=Math.min(S[e].act.length,80)};
 const toast=m=>{const t=$('#ts');t.textContent=m;t.style.display='block';clearTimeout(toast.i);toast.i=setTimeout(()=>t.style.display='none',2600)};
-async function api(method,path,body){const r=await fetch(path,{method,credentials:'include',headers:body?{'content-type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('Request failed '+r.status));return j}
+async function api(method,path,body,opts){
+  const mode=(opts&&opts.mode)||M||'sol';
+  const headers={'x-copyra-mode':mode};
+  if(body)headers['content-type']='application/json';
+  const r=await fetch(path,{method,credentials:'include',headers,body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||('Request failed '+r.status));
+  return j;
+}
 const modeOf=c=>c==='SOLANA'?'sol':'evm';
 const chOf=c=>({SOLANA:'solana',BASE:'base',ARBITRUM:'arb',BSC:'bnb',ETHEREUM:'ethereum'}[c]||String(c).toLowerCase());
 function botFrom(status,settings){if(settings?.row?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';if(status?.trading?.blockedReason)return'PAUSED';if(settings?.row?.tradingEnabled&&status?.trading?.envGuard)return'ON';return'PAUSED'}
 function hydrate(snap){
  LIVE=snap;ERR=null;
  if(snap.solUsd>0)UI.sol.usd=snap.solUsd;
+ // Keep mode wallets aligned with independent sessions (never mix SOL/EVM accounts).
+ if(snap.auth?.sol?.address)wallet.sol=snap.auth.sol.address;
+ if(snap.auth?.evm?.address)wallet.evm=snap.auth.evm.address;
  const st=snap.settings||{}, row=st.row||{}, ui=row.ui||{};
  const status=snap.status||{};
  const traders=snap.traders||[], positions=snap.positions||[], signals=snap.signals||[], trades=snap.trades||[];
  for(const e of['sol','evm']){
+  const prev=S[e];
   const next=empty(e);
   next.bot=botFrom(status,st);
   next.set={...dflt(e),...(ui[e]||{})};
@@ -150,22 +162,38 @@ function hydrate(snap){
   if(row.trailingDropPct!=null)next.set.trTrail=Number(row.trailingDropPct);
   if(row.exitStrategy)next.set.tpMode=row.exitStrategy;
   const signer=e==='sol'?status.signers?.solana:status.signers?.evm;
-  const wallets=(snap.balances?.wallets)||[];
-  const scoped=wallets.find(w=>modeOf(w.chain)===e&&w.userScoped&&w.address);
+  // Prefer mode-scoped balance payload so SOL/EVM accounts never cross-contaminate.
+  const modeBal=snap.balances?.[e];
+  const wallets=modeBal?.wallets||(snap.balances?.wallets||[]).filter(w=>modeOf(w.chain)===e);
+  const scoped=wallets.find(w=>w.userScoped&&w.address);
   next.wa=scoped?.address||signer?.address||null;
   let savSum=0;
+  let sawRpc=false;
   for(const w of wallets){
-   const md=modeOf(w.chain); if(md!==e)continue;
+   if(w.error)continue;
    if(typeof w.native==='number'){
+    sawRpc=true;
     const ch=chOf(w.chain);
     if(next.cash[ch]==null)next.cash[ch]=0;
     next.cash[ch]=Math.round(w.native*UI[e].k);
    }
    if(typeof w.savings==='number'){
+    sawRpc=true;
     savSum+=w.savings;
    }
   }
   next.sav=Math.round(savSum*UI[e].k);
+  // Preserve last-good balances on transient RPC errors — never flash 0 while connected.
+  if(!sawRpc&&wallet[e]&&prev){
+   next.cash={...prev.cash};
+   next.sav=prev.sav;
+   if(!next.wa)next.wa=prev.wa;
+  }else if(sawRpc&&prev){
+   for(const ch of Object.keys(next.cash)){
+    const w=wallets.find(x=>chOf(x.chain)===ch);
+    if(w&&w.error&&prev.cash[ch]>0)next.cash[ch]=prev.cash[ch];
+   }
+  }
   const mine=traders.filter(t=>modeOf(t.chain)===e);
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
@@ -284,7 +312,7 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),inv=invOf(e),nx=Math.max
  return `${liveBanner(e)}
 <div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${f(e,cash+inv)} ${X.u}</div><div class="mu">≈ ${X.usd?usd(e,cash+inv):'price unread'}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>Available</small><b>${f(e,cash)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${f(e,inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${f(e,nx)} ${X.u}</b>${X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of available. Balance is the bot wallet on RPC${s.wa?' · '+s.wa.slice(0,4)+'…'+s.wa.slice(-4):' · no bot wallet configured'}.</p>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${f(e,nx)} ${X.u}</b>${X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of available. Balance is <b>your custody wallet</b> on RPC${s.wa?' · '+s.wa.slice(0,4)+'…'+s.wa.slice(-4):wallet[e]?' · sign in to load custody':' · connect wallet'}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${f(e,s.sav)} ${X.u}</div><div class="mu">Reserved on the bot wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
@@ -323,7 +351,8 @@ function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip
   else if(a){$('#cn').textContent='● '+a.slice(0,4)+'…'+a.slice(-4);$('#cn').title=M.toUpperCase()+' wallet connected'}
   else {$('#cn').textContent='Connect Wallet';$('#cn').title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}}
  $('#th').innerHTML=document.documentElement.dataset.theme=='dark'?'<svg viewBox="0 0 24 24" class="ib" style="width:26px"><circle cx="12" cy="12" r="4" stroke="currentColor" fill="none" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.8"/></svg>':'<svg viewBox="0 0 24 24" style="width:26px"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
- $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="M='${x}';draw()">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
+ $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="switchMode('${x}')">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
+window.switchMode=(x)=>{if(M===x)return;M=x;T='trading';try{window.CopyraWallet?.setMode?.(M)}catch{};draw();refresh()};
 const md=(h)=>{const s=$('#md');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow='';box.innerHTML=h}s.classList.add('o')};
 const cl=()=>{const s=$('#md');s.classList.remove('o');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow=''}};
 async function bot(e,v){
@@ -384,11 +413,11 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
    if(e==='evm'&&st?.evm?.isDisconnected&&!window.CopyraWallet.getAddress('evm'))throw new Error('EVM wallet disconnected. Tap Connect Wallet.');
    const pick=$('#dc')?.value||'ethereum';
    const chainName=e==='sol'?'SOLANA':(EVM_DEP[pick]?.chain||'ETHEREUM');
-   const built=await api('POST','/api/funds/deposit/build',{mode:e,amount,chain:chainName});
+   const built=await api('POST','/api/funds/deposit/build',{mode:e,amount,chain:chainName},{mode:e});
    if(built.kind==='solana'){
     $('#ae').textContent='Sign the transfer in your wallet…';
     const signed=await window.CopyraWallet.signSolanaTransaction(built.transactionBase64);
-    const res=await api('POST','/api/funds/deposit/broadcast',{signedTransaction:signed,lastValidBlockHeight:built.lastValidBlockHeight,lamports:built.lamports});
+    const res=await api('POST','/api/funds/deposit/broadcast',{signedTransaction:signed,lastValidBlockHeight:built.lastValidBlockHeight,lamports:built.lamports},{mode:'sol'});
     if(!res.executed)throw new Error(res.error||'Deposit not confirmed on-chain yet. Check '+res.explorerUrl);
     cl();toast('Deposit confirmed'); await refresh();
    }else{
@@ -396,7 +425,7 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
     $('#ae').textContent=`Switching wallet to ${net}, then confirm USDC transfer…`;
     if(!built.data||!built.tokenAddress)throw new Error('Deposit build missing USDC transfer data. Redeploy may still be rolling out — hard-refresh after deploy.');
     const hash=await window.CopyraWallet.sendEvmErc20({tokenAddress:built.tokenAddress,data:built.data,chainId:built.chainId});
-    const res=await api('POST','/api/funds/deposit/record-evm',{chain:({8453:'BASE',42161:'ARBITRUM',56:'BSC',1:'ETHEREUM'}[built.chainId]||'BASE'),txHash:hash,amount});
+    const res=await api('POST','/api/funds/deposit/record-evm',{chain:({8453:'BASE',42161:'ARBITRUM',56:'BSC',1:'ETHEREUM'}[built.chainId]||'BASE'),txHash:hash,amount},{mode:'evm'});
     if(!res.executed)throw new Error(res.error||'Deposit not confirmed yet. Check '+res.explorerUrl);
     cl();toast('USDC deposit confirmed on '+net); await refresh();
    }
@@ -450,19 +479,22 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  const title=d==='t2s'?'Move to Savings':'Move to Trading';
  const chainFor=(chKey)=>e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
  const maxForChain=(chKey)=>{
-  if(e==='sol')return d==='t2s'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
-  const raw=d==='t2s'?(S.evm.cash[chKey]||0):S[e].sav;
-  // Savings is summed across EVM; per-chain move uses that chain's trading cash.
+  // t2s = from trading cash; s2t = from savings ledger only (deposits land in trading).
   if(d==='s2t')return Number(f(e,S[e].sav));
-  return Number(f(e,raw));
+  if(e==='sol')return Number(f(e,cashOf(e)));
+  return Number(f(e,S.evm.cash[chKey]||0));
  };
  const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'ethereum');
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh):'';
- md(`<h3>${title}</h3><p class="mu">Moves a reservation on your custody wallet. No separate chain transfer — trading size cannot spend savings until you move it back.</p>
+ const note=d==='s2t'
+  ?'Moves reserved savings back into trading. <b>Deposits already sit in Trading</b> — you only need this if you previously moved funds to Savings.'
+  :'Reserves part of your trading balance so the copy engine cannot spend it. No on-chain transfer.';
+ md(`<h3>${title}</h3><p class="mu">${note}</p>
 ${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
 <div id="mv-amt">${amtFieldHtml(e,X,maxForChain(defaultCh),'ma',null)}</div>
+<p class="mu" id="mvhint">${d==='s2t'&&Number(f(e,S[e].sav))<=0?'Savings is empty. Your deposited balance is in <b>Trading</b> — use Withdraw from Trading to send it out.':''}</p>
 <p class="rd" id="ae"></p>
-<div class="row"><button class="btn pri" id="ok">${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
+<div class="row"><button class="btn pri" id="ok"${d==='s2t'&&Number(f(e,S[e].sav))<=0?' disabled':''}>${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
  let readAmt=bindAmtField(e,'ma',maxForChain(defaultCh));
  const rebind=()=>{
   const ch=$('#mc')?.value||defaultCh;
@@ -475,9 +507,9 @@ ${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
   const chKey=$('#mc')?.value||defaultCh;
   const max=maxForChain(chKey);
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
-  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
+  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u}.`;
   try{
-   await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount,chain:chainFor(chKey)});
+   await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount,chain:chainFor(chKey)},{mode:e});
    cl();toast(title+' done'); await refresh();
   }catch(err){$('#ae').textContent=err.message}
  }
@@ -488,15 +520,16 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
  const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'ethereum');
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh):'';
  const maxFrom=()=>{
-  if(e==='sol')return $('#wb')?.value==='trading'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
+  const bucket=$('#wb')?.value||'trading';
+  if(bucket==='savings')return Number(f(e,S[e].sav));
+  if(e==='sol')return Number(f(e,cashOf(e)));
   const ch=$('#wc')?.value||defaultCh;
-  if($('#wb')?.value==='savings')return Number(f(e,S[e].sav));
   return Number(f(e,S.evm.cash[ch]||0));
  };
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. ${e==='evm'?'Sends USDC (ERC-20) on the selected network. Gas is ETH on Ethereum/Base/Arbitrum, BNB on BNB Chain.':''} Broadcast on-chain and confirmed on explorers — never a simulated fill.</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Deposits land in <b>Trading</b> — withdraw from Trading (not Savings) unless you reserved funds. ${e==='evm'?'Sends USDC (ERC-20). Gas: ETH on Ethereum/Base/Arbitrum, BNB on BNB Chain.':''}</p>
 ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
-<label>From</label><select id="wb"><option value="trading">Trading (available)</option><option value="savings">Savings</option></select>
+<label>From</label><select id="wb"><option value="trading" selected>Trading (available)</option><option value="savings">Savings</option></select>
 <div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets)}</div>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">Withdraw</button><button class="btn" onclick="cl()">Cancel</button></div>`);
@@ -505,18 +538,21 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   const max=maxFrom();
   $('#wd-amt').innerHTML=amtFieldHtml(e,X,max,'wa',presets);
   readAmt=bindAmtField(e,'wa',max);
+  if(($('#wb')?.value||'trading')==='savings'&&max<=0)$('#ae').textContent='Savings is empty. Switch From to Trading to withdraw your deposit.';
+  else $('#ae').textContent='';
  };
  $('#wb').onchange=rebind;
  if(e==='evm')$('#wc').onchange=rebind;
  $('#ok').onclick=async()=>{
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   const max=maxFrom();
-  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
+  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u}.`;
   const chKey=$('#wc')?.value||defaultCh;
   const chain=e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
+  const fromBucket=$('#wb').value||'trading';
   $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
   try{
-   const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket:$('#wb').value,chain});
+   const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain},{mode:e});
    if(!res.executed)throw new Error(res.error||('Not confirmed. '+ (res.explorerUrl||'')));
    cl();toast('Withdraw confirmed'); await refresh();
   }catch(err){$('#ae').textContent=err.message; $('#ok').disabled=false}
@@ -536,7 +572,14 @@ function settings(e){const s=S[e].set;$('#dr').innerHTML=`<div class="row sp"><h
    dr.classList.remove('o');toast('Settings saved');await refresh();
   }catch(err){$('#se').textContent=err.message}}}
 function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd',...allHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,h.size.toFixed(2),h.usd.toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
-$('#mc').onclick=()=>{M=M=='sol'?'evm':'sol';T='trading';draw();try{window.CopyraWallet?.setMode?.(M)}catch{}};
+$('#mc').onclick=()=>{
+  M=M=='sol'?'evm':'sol';T='trading';
+  // Mode switch is display-only — never logout or wipe the other account.
+  try{window.CopyraWallet?.setMode?.(M)}catch{}
+  draw();
+  // Refresh with the active mode header so the correct session is preferred for /me.
+  refresh();
+};
 $('#th').onclick=()=>{const h=document.documentElement;h.dataset.theme=h.dataset.theme=='dark'?'light':'dark';draw()};
 $('#sb').onclick=()=>{const i=$('#q');i.style.display=i.style.display=='none'?'block':'none';i.focus()};$('#q').oninput=e=>{q=e.target.value.toLowerCase();draw()};
 const b58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -561,7 +604,7 @@ async function sessionSign(e, connected){
     chainId:e==='evm'?chainId:undefined,
     clientOrigin:location.origin,
     clientHost:location.host
-  });
+  },{mode:e});
   if(!window.CopyraWallet?.signMessage)throw new Error('Wallet signer is not ready.');
   let signature;
   try{
@@ -572,7 +615,7 @@ async function sessionSign(e, connected){
     throw err;
   }
   try{
-    await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
+    await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature},{mode:e});
   }catch(err){
     throw new Error((err&&err.message)||'Sign-in failed. If you switched accounts or chains, reconnect and sign again.');
   }
@@ -580,31 +623,29 @@ async function sessionSign(e, connected){
 }
 async function finishConnect(e,N,connected){
   $('#ws')&&($('#ws').textContent='Approve the sign-in message in your wallet…');
+  // Sign-in writes only this mode's session cookie — the other mode stays signed in.
   const addr=await sessionSign(e,connected);
   wallet[e]=addr;
   try{localStorage.setItem('cpy_wallet_'+e,addr);localStorage.setItem('cpy_wallet_'+e+'_sticky','1')}catch{}
-  cl();toast(N+' wallet connected');draw();
+  cl();toast(N+' account signed in — balances load for this wallet only');
+  await refresh();
+  draw();
 }
 async function restoreWallets(){
-  // Keep both modes sticky until the user taps Disconnect.
-  // Prefer live AppKit/session addresses; fall back to localStorage sticky keys.
+  // Independent modes: restore SOL and EVM sessions separately. Never clear one for the other.
   try{
     const st=window.CopyraWallet?.getAccountStatus?.();
     const liveEvm=st?.evm?.address||window.CopyraWallet?.getAddress?.('evm')||null;
     const liveSol=st?.solAddress||window.CopyraWallet?.getAddress?.('sol')||null;
     let stickySol=null,stickyEvm=null;
     try{stickySol=localStorage.getItem('cpy_wallet_sol');stickyEvm=localStorage.getItem('cpy_wallet_evm')}catch{}
-    const me=await api('GET','/api/auth/me').catch(()=>null);
-    if(me?.authenticated&&me.user?.address){
-      if(me.user.chain==='SOLANA')wallet.sol=me.user.address;
-      else wallet.evm=me.user.address;
-    }
-    // Restore the other mode from sticky storage / live provider without wiping.
-    if(!wallet.sol&&(liveSol||stickySol))wallet.sol=liveSol||stickySol;
-    if(!wallet.evm&&(liveEvm||stickyEvm))wallet.evm=liveEvm||stickyEvm;
-    // If AppKit reconnected to a known sticky address, trust it (no silent clear).
-    if(liveEvm&&stickyEvm&&liveEvm.toLowerCase()===stickyEvm.toLowerCase())wallet.evm=liveEvm;
-    if(liveSol&&stickySol&&liveSol===stickySol)wallet.sol=liveSol;
+    const me=await api('GET','/api/auth/me',null,{mode:M}).catch(()=>null);
+    if(me?.sol?.address)wallet.sol=me.sol.address;
+    else if(liveSol||stickySol)wallet.sol=liveSol||stickySol;
+    if(me?.evm?.address)wallet.evm=me.evm.address;
+    else if(liveEvm||stickyEvm)wallet.evm=liveEvm||stickyEvm;
+    if(liveEvm&&me?.evm?.address&&liveEvm.toLowerCase()===me.evm.address.toLowerCase())wallet.evm=liveEvm;
+    if(liveSol&&me?.sol?.address&&liveSol===me.sol.address)wallet.sol=liveSol;
     try{
       if(wallet.sol)localStorage.setItem('cpy_wallet_sol',wallet.sol);
       if(wallet.evm)localStorage.setItem('cpy_wallet_evm',wallet.evm);
@@ -616,20 +657,18 @@ async function disconnectMode(e){
   wallet[e]=null;
   try{localStorage.removeItem('cpy_wallet_'+e);localStorage.removeItem('cpy_wallet_'+e+'_sticky')}catch{}
   try{await window.CopyraWallet?.disconnect?.(e)}catch{}
-  // Only revoke the HTTP session when disconnecting the mode that owns the session cookie.
-  try{
-    const me=await api('GET','/api/auth/me');
-    const sessionMode=me?.user?.chain==='SOLANA'?'sol':'evm';
-    if(me?.authenticated&&sessionMode===e)await api('POST','/api/auth/logout');
-  }catch{}
+  // Revoke ONLY this mode's session — the other mode keeps its account + funds.
+  try{await api('POST','/api/auth/logout',{mode:e}, {mode:e})}catch{}
+  // Clear cached balances for this mode only.
+  S[e]=empty(e);
   try{if(typeof user!=='undefined'&&user&&user.wallets){user.wallets[e]=null}}catch{}
   cl();
-  toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');
+  toast((e==='sol'?'Solana':'EVM')+' disconnected — other mode unchanged');
   draw();
   const cn=$('#cn');
   if(cn&&!wallet[M]){cn.textContent='Connect Wallet';cn.title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
 }
-// Re-attach sticky wallets when AppKit finishes reconnecting (never auto-disconnect).
+// Re-attach sticky EVM wallet on AppKit reconnect — never auto-disconnect SOL.
 window.addEventListener('copyra-wallet-account',(ev)=>{
   try{
     const detail=ev.detail||{};
@@ -637,8 +676,8 @@ window.addEventListener('copyra-wallet-account',(ev)=>{
     if(evmAddr){
       let sticky=null;try{sticky=localStorage.getItem('cpy_wallet_evm')}catch{}
       if(sticky&&sticky.toLowerCase()===String(evmAddr).toLowerCase())wallet.evm=evmAddr;
-      else if(!wallet.evm&&detail.evm?.isConnected){wallet.evm=evmAddr;try{localStorage.setItem('cpy_wallet_evm',evmAddr)}catch{}}
     }
+    // Do not clear wallet.evm on transient isDisconnected while sticky session exists.
     draw();
   }catch{}
 });

@@ -26,17 +26,20 @@ import type { FastifyInstance } from 'fastify';
 import { getAddress, isAddress } from 'viem';
 import { z } from 'zod';
 import {
+  type AuthMode,
+  authModeFromRequest,
   buildSiweMessage,
   buildSiwsMessage,
   createSession,
   issueNonce,
+  readBothSessions,
   readSession,
   revokeSession,
   verifyWalletSignature,
 } from './auth.js';
 import { jsonSafe } from './serialize.js';
 import { registerSwapRoutes } from './swap.js';
-import { buildBalancesResponse } from './balances.js';
+import { buildModeBalances } from './balances.js';
 
 const chainSchema = z.nativeEnum(Chain);
 
@@ -353,15 +356,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/balances', async (request) => {
-    const session = await readSession(request);
-    const built = await buildBalancesResponse(session?.user.id);
+    const sessions = await readBothSessions(request);
+    const [sol, evm] = await Promise.all([
+      buildModeBalances('sol', sessions.sol?.user.id),
+      buildModeBalances('evm', sessions.evm?.user.id),
+    ]);
     return jsonSafe({
-      multiUserCustody: built.multiUserCustody,
+      multiUserCustody: sol.multiUserCustody,
       buckets: {
         trading: 'Available trading balance after savings reservation and fee buffer (RPC).',
         savings: 'Reserved ledger bucket on your custody wallet — move between buckets in the dashboard; withdraw sends on-chain to your connected wallet.',
       },
-      wallets: built.wallets,
+      sol,
+      evm,
+      wallets: [...sol.wallets, ...evm.wallets],
     });
   });
 
@@ -573,6 +581,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const session = await createSession(address, body.chain, reply, {
       userAgent: request.headers['user-agent'],
       ip: request.ip,
+      cookies: request.cookies as Record<string, string | undefined>,
       secureCookie: (() => {
         const proto = String(request.headers['x-forwarded-proto'] ?? '')
           .split(',')[0]
@@ -586,26 +595,57 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         return undefined;
       })(),
     });
-    return { ok: true, address: verifyAddress, chain: body.chain, expiresAt: session.expiresAt };
+    return {
+      ok: true,
+      address: verifyAddress,
+      chain: body.chain,
+      mode: session.mode,
+      expiresAt: session.expiresAt,
+    };
   });
 
   app.get('/api/auth/me', async (request) => {
-    const session = await readSession(request);
-    if (!session) return { authenticated: false, user: null };
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const active = mode === 'evm' ? sessions.evm : sessions.sol;
     return {
-      authenticated: true,
-      user: {
-        id: session.user.id,
-        address: session.user.address,
-        chain: session.user.chain,
-        label: session.user.label,
-      },
+      authenticated: Boolean(sessions.sol || sessions.evm),
+      mode,
+      user: active
+        ? {
+            id: active.user.id,
+            address: active.user.address,
+            chain: active.user.chain,
+            label: active.user.label,
+          }
+        : null,
+      sol: sessions.sol
+        ? {
+            id: sessions.sol.user.id,
+            address: sessions.sol.user.address,
+            chain: sessions.sol.user.chain,
+            label: sessions.sol.user.label,
+          }
+        : null,
+      evm: sessions.evm
+        ? {
+            id: sessions.evm.user.id,
+            address: sessions.evm.user.address,
+            chain: sessions.evm.user.chain,
+            label: sessions.evm.user.label,
+          }
+        : null,
     };
   });
 
   app.post('/api/auth/logout', async (request, reply) => {
-    await revokeSession(request, reply);
-    return { ok: true };
+    const body = z
+      .object({ mode: z.enum(['sol', 'evm', 'all']).optional() })
+      .catch({})
+      .parse(request.body ?? {});
+    const mode = (body.mode ?? authModeFromRequest(request)) as AuthMode | 'all';
+    await revokeSession(request, reply, mode === 'all' ? 'all' : mode);
+    return { ok: true, mode };
   });
 
   app.get('/api/notifications', async (request) => {
@@ -637,9 +677,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/api/snapshot', async (request) => {
-    const session = await readSession(request);
-    const userId = session?.user.id;
-    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt, notifications, transfers, deposits] =
+    const sessions = await readBothSessions(request);
+    const solUserId = sessions.sol?.user.id;
+    const evmUserId = sessions.evm?.user.id;
+    const userIds = [solUserId, evmUserId].filter((id): id is string => Boolean(id));
+
+    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, solBal, evmBal, notifications, transfers, deposits] =
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
@@ -648,18 +691,23 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         app.inject({ method: 'GET', url: '/api/signals' }),
         app.inject({ method: 'GET', url: '/api/trades' }),
         app.inject({ method: 'GET', url: '/api/pnl' }),
-        buildBalancesResponse(userId),
+        buildModeBalances('sol', solUserId),
+        buildModeBalances('evm', evmUserId),
         app.inject({ method: 'GET', url: '/api/notifications?page=1&pageSize=40' }),
-        prisma.transfer.findMany({
-          where: userId ? { userId } : undefined,
-          orderBy: { requestedAt: 'desc' },
-          take: 80,
-        }),
-        prisma.custodyDeposit.findMany({
-          where: userId ? { userId } : undefined,
-          orderBy: { createdAt: 'desc' },
-          take: 80,
-        }),
+        userIds.length
+          ? prisma.transfer.findMany({
+              where: { userId: { in: userIds } },
+              orderBy: { requestedAt: 'desc' },
+              take: 80,
+            })
+          : Promise.resolve([]),
+        userIds.length
+          ? prisma.custodyDeposit.findMany({
+              where: { userId: { in: userIds } },
+              orderBy: { createdAt: 'desc' },
+              take: 80,
+            })
+          : Promise.resolve([]),
       ]);
 
     let solUsd = 0;
@@ -687,9 +735,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       notifications: notificationItems,
       transfers,
       deposits,
+      auth: {
+        sol: sessions.sol
+          ? { address: sessions.sol.user.address, chain: sessions.sol.user.chain, userId: sessions.sol.user.id }
+          : null,
+        evm: sessions.evm
+          ? { address: sessions.evm.user.address, chain: sessions.evm.user.chain, userId: sessions.evm.user.id }
+          : null,
+      },
       balances: {
-        multiUserCustody: balancesBuilt.multiUserCustody,
-        wallets: balancesBuilt.wallets,
+        multiUserCustody: solBal.multiUserCustody,
+        sol: solBal,
+        evm: evmBal,
+        // Flat list kept for older clients; hydrate prefers mode-scoped objects.
+        wallets: [...solBal.wallets, ...evmBal.wallets],
       },
       solUsd,
       readAt: new Date().toISOString(),
