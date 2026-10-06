@@ -9,12 +9,20 @@ import {
 } from './chains.js';
 
 describe('chain registry', () => {
-  it('marks Solana, Base, Arbitrum and BNB as executable when their RPC is configured', () => {
+  it('marks Solana / Base / Arbitrum / BNB executable only when their RPC URLs are set', () => {
     const executable = new Set(executableChains().map((c) => c.chain));
-    expect(executable.has(Chain.SOLANA)).toBe(true);
-    expect(executable.has(Chain.BASE)).toBe(true);
-    expect(executable.has(Chain.ARBITRUM)).toBe(true);
-    expect(executable.has(Chain.BSC)).toBe(true);
+    const expectIfRpc = (chain: Chain, envKey: string) => {
+      const configured = Boolean(process.env[envKey]?.trim());
+      if (configured) {
+        expect(executable.has(chain)).toBe(true);
+      } else {
+        expect(executable.has(chain)).toBe(false);
+      }
+    };
+    expectIfRpc(Chain.SOLANA, 'SOLANA_RPC_URL');
+    expectIfRpc(Chain.BASE, 'EVM_BASE_RPC_URL');
+    expectIfRpc(Chain.ARBITRUM, 'EVM_ARBITRUM_RPC_URL');
+    expectIfRpc(Chain.BSC, 'EVM_BSC_RPC_URL');
   });
 
   it('refuses to execute on Arc, Robinhood, Hyperliquid and Tron', () => {
