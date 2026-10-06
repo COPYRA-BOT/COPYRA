@@ -561,7 +561,7 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
   return bucket==='savings'?savOn(ch):tradeOn(ch);
  };
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Withdraw from <b>Trading</b> or <b>Savings</b> on the network where your balance sits. ${e==='evm'?'Sends USDC (ERC-20). Gas: ETH on Ethereum/Base/Arbitrum, BNB on BNB Chain.':''}</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Withdraw from <b>Trading</b> or <b>Savings</b> on the network where your balance sits. ${e==='evm'?'Sends USDC (ERC-20). If custody has no gas, your wallet will first send a tiny ETH/BNB top-up — USDC never pays gas.':''}</p>
 ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
 <label>From</label><select id="wb">${bucketOpts(defaultCh,defaultBucket)}</select>
 <div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets)}</div>
