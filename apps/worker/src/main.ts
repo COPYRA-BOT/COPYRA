@@ -19,8 +19,8 @@ await heartbeat('running', { monitor: 'solana-logs+evm-transfers+exits' });
 logger.info({}, 'COPYRA worker started — Solana logs, EVM polls, and exit marks are live');
 
 telegram.send(
-  '🟢 <b>WORKER ONLINE</b>\nSolana log subscriptions, Base/Arb/BNB transfer polls, and TP/SL marks are active. Closing the dashboard does not stop this process.',
-  { kind: 'worker-online' },
+  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again — Solana log subscriptions, Base/Arb/BNB USDC balance + transfer polls, and TP/SL marks are active. Closing the dashboard does not stop this process.',
+  { kind: 'redeploy-finished' },
 );
 
 const timer = setInterval(() => {

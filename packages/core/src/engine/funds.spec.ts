@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { parseUnits } from 'viem';
 
 /**
  * Pure math checks for the funds reservation model.
@@ -28,5 +29,17 @@ describe('funds reservation math', () => {
           ? onChain - feeBuffer - overReserve
           : 0n;
     expect(next).toBe(0n);
+  });
+
+  it('EVM USDC uses stable decimals (Base 6 / BSC 18) and no quote fee buffer', () => {
+    const baseRaw = parseUnits('12.5', 6);
+    const bscRaw = parseUnits('12.5', 18);
+    expect(baseRaw).toBe(12_500_000n);
+    expect(bscRaw).toBe(12_500_000_000_000_000_000n);
+    const feeBufferEvm = 0n;
+    const savings = parseUnits('2', 18);
+    const tradingSpendable =
+      bscRaw > feeBufferEvm + savings ? bscRaw - feeBufferEvm - savings : 0n;
+    expect(Number(tradingSpendable) / 1e18).toBe(10.5);
   });
 });

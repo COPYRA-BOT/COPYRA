@@ -6,14 +6,16 @@ import {
 } from '@copyra/core';
 import { Chain } from '@copyra/db';
 
+/** All chains the dashboard can show live trading balances for. */
+const BALANCE_CHAINS = [Chain.SOLANA, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as const;
+
 export async function buildBalancesResponse(userId?: string): Promise<{
   wallets: Array<Record<string, unknown>>;
   multiUserCustody: boolean;
 }> {
-  const chains = [Chain.SOLANA, Chain.BASE] as const;
   const wallets: Array<Record<string, unknown>> = [];
 
-  for (const chain of chains) {
+  for (const chain of BALANCE_CHAINS) {
     if (multiUserCustodyEnabled() && userId) {
       try {
         const funds = await getTradingAvailableQuote(chain, userId);
@@ -32,6 +34,8 @@ export async function buildBalancesResponse(userId?: string): Promise<{
             native: funds.availableQuote,
             onChainNative: funds.onChainQuote,
             savings: funds.savingsQuote,
+            assetSymbol: funds.assetSymbol,
+            assetDecimals: funds.assetDecimals,
             tokens: balances.tokens,
             slot: balances.slot.toString(),
             source: 'rpc',
@@ -45,6 +49,8 @@ export async function buildBalancesResponse(userId?: string): Promise<{
             native: funds.availableQuote,
             onChainNative: funds.onChainQuote,
             savings: funds.savingsQuote,
+            assetSymbol: funds.assetSymbol,
+            assetDecimals: funds.assetDecimals,
             source: 'rpc',
           });
         }
@@ -81,6 +87,8 @@ export async function buildBalancesResponse(userId?: string): Promise<{
           native: funds.availableQuote,
           onChainNative: funds.onChainQuote,
           savings: funds.savingsQuote,
+          assetSymbol: funds.assetSymbol,
+          assetDecimals: funds.assetDecimals,
           tokens: balances.tokens,
           slot: balances.slot.toString(),
           source: 'rpc',
@@ -93,6 +101,8 @@ export async function buildBalancesResponse(userId?: string): Promise<{
           native: funds.availableQuote,
           onChainNative: funds.onChainQuote,
           savings: funds.savingsQuote,
+          assetSymbol: funds.assetSymbol,
+          assetDecimals: funds.assetDecimals,
           source: 'rpc',
         });
       }

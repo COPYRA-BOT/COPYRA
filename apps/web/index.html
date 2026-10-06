@@ -97,6 +97,23 @@ const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:e=='sol'?20:20,maxPos:10,tpMode
 const empty=e=>({cash:e=='sol'?{solana:0}:{base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
+/** Pagination for activity / trade-history lists (10 rows per page). */
+let actPage={sol:1,evm:1,unified:1},histPage=1;
+const PAGE_N=10;
+function pageSlice(arr,page){const p=Math.max(1,page|0),start=(p-1)*PAGE_N;return{rows:arr.slice(start,start+PAGE_N),page:p,total:arr.length,pages:Math.max(1,Math.ceil(arr.length/PAGE_N))}}
+/** onClickTpl uses __P__ for the page number, e.g. "setActPage('sol',__P__)" */
+function pagerHtml(key,page,pages,onClickTpl){
+  if(pages<=1)return'';
+  const buttons=[];
+  for(let i=1;i<=pages;i++){
+    const fn=onClickTpl.replace(/__P__/g,String(i));
+    buttons.push(`<button type="button" class="btn sm ${i===page?'pri':''}" onclick="${fn}">${i}</button>`);
+  }
+  return `<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap" data-pager="${key}"><span class="mu" style="margin-right:4px">Page</span>${buttons.join('')}</div>`;
+}
+window.setActPage=(e,p)=>{actPage[e]=Math.max(1,p|0);draw()};
+window.setUnifiedActPage=(p)=>{actPage.unified=Math.max(1,p|0);draw()};
+window.setHistPage=(p)=>{histPage=Math.max(1,p|0);draw()};
 const f=(e,u,d=UI[e].d)=>(u/UI[e].k).toFixed(d),usd=(e,u)=>'$'+(u/UI[e].k*UI[e].usd).toLocaleString(undefined,{maximumFractionDigits:2}),sg=(x,d=2)=>(x>=0?'+':'')+x.toFixed(d);
 const cashOf=e=>Object.values(S[e].cash).reduce((a,b)=>a+b,0),openP=e=>S[e].pos,invOf=e=>openP(e).reduce((a,p)=>a+p.inv*p.rem,0);
 const log=(e,h)=>{S[e].act.unshift({t:new Date().toLocaleTimeString(),h,e});S[e].act.length=Math.min(S[e].act.length,80)};
@@ -134,6 +151,7 @@ function hydrate(snap){
   const wallets=(snap.balances?.wallets)||[];
   const scoped=wallets.find(w=>modeOf(w.chain)===e&&w.userScoped&&w.address);
   next.wa=scoped?.address||signer?.address||null;
+  let savSum=0;
   for(const w of wallets){
    const md=modeOf(w.chain); if(md!==e)continue;
    if(typeof w.native==='number'){
@@ -142,9 +160,10 @@ function hydrate(snap){
     next.cash[ch]=Math.round(w.native*UI[e].k);
    }
    if(typeof w.savings==='number'){
-    next.sav=Math.round(w.savings*UI[e].k);
+    savSum+=w.savings;
    }
   }
+  next.sav=Math.round(savSum*UI[e].k);
   const mine=traders.filter(t=>modeOf(t.chain)===e);
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
@@ -180,26 +199,56 @@ function hydrate(snap){
    const who=s.trader?.label||'Trader';
    const tok=s.token?.symbol||(s.tokenAddress||'').slice(0,6);
    const when=new Date(s.createdAt).toLocaleTimeString();
+   const ts=new Date(s.createdAt).getTime();
    if(s.status==='SKIPPED'||String(s.status).startsWith('BLOCKED')){
     const r=s.skipReason||s.status;
     next.skip.unshift({t:when,w:who+' → '+tok,r});
-    acts.push({t:when,h:`<b>${who}</b> → ${tok} — ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}`,e});
+    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok} — ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}`,e});
    }else{
-    acts.push({t:when,h:`<b>${who}</b> bought ${tok} — ${s.status} · source ${ (s.sourceTx||s.sourceTxHash||'').slice(0,8)}…`,e});
+    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok} — ${s.status} · source ${ (s.sourceTx||s.sourceTxHash||'').slice(0,8)}…`,e});
    }
   }
   for(const t of trades.filter(x=>modeOf(x.chain)===e)){
    const when=new Date(t.createdAt).toLocaleTimeString();
    const link=t.explorerUrl?` <a href="${t.explorerUrl}" target="_blank" rel="noopener">tx</a>`:' — no hash (not broadcast)';
-   acts.push({t:when,h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
+   acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
   }
-  if(e==='sol'){
-   for(const n of (snap.notifications||[]).slice(0,20)){
-    const when=new Date(n.createdAt||Date.now()).toLocaleTimeString();
-    acts.push({t:when,h:`Notify · ${(n.kind||n.channel||'telegram')} · ${(n.body||n.error||'sent').toString().slice(0,120)}`,e});
-   }
+  // On-chain custody activity (deposits / withdrawals / bucket moves).
+  const decimalsFor=(chain,sym)=>{
+   if(chain==='SOLANA'||sym==='SOL')return 9;
+   if(chain==='BSC')return 18;
+   return 6;
+  };
+  for(const d of (snap.deposits||[]).filter(x=>modeOf(x.chain)===e)){
+   const when=new Date(d.creditedAt||d.createdAt).toLocaleTimeString();
+   const dec=decimalsFor(d.chain,e==='sol'?'SOL':'USDC');
+   const amt=Number(d.amountRaw||0)/10**dec;
+   const explorer=d.txHash?` · ${String(d.txHash).slice(0,10)}…`:'';
+   acts.push({t:when,ts:new Date(d.creditedAt||d.createdAt).getTime(),h:`<b>Deposit</b> ${amt.toFixed(e==='sol'?3:2)} ${e==='sol'?'SOL':'USDC'} on ${d.chain} · ${d.status}${explorer}`,e,kind:'deposit'});
   }
-  next.act=acts.slice(0,40);
+  for(const tr of (snap.transfers||[]).filter(x=>modeOf(x.chain)===e)){
+   // Same-bucket + txHash rows mirror custodyDeposit — skip to avoid duplicate Deposit lines.
+   if(tr.fromBucket===tr.toBucket&&tr.txHash)continue;
+   const when=new Date(tr.confirmedAt||tr.requestedAt).toLocaleTimeString();
+   const dec=decimalsFor(tr.chain,tr.assetSymbol);
+   const amt=Number(tr.amountRaw||0)/10**dec;
+   let label;
+   if(tr.fromBucket==='TRADING'&&tr.toBucket==='SAVINGS')label='Move → Savings';
+   else if(tr.fromBucket==='SAVINGS'&&tr.toBucket==='TRADING'&&!tr.txHash)label='Move → Trading';
+   else if(tr.txHash)label='Withdraw';
+   else label='Transfer';
+   const link=tr.explorerUrl?` <a href="${tr.explorerUrl}" target="_blank" rel="noopener">tx</a>`:(tr.txHash?` · ${String(tr.txHash).slice(0,10)}…`:'');
+   acts.push({t:when,ts:new Date(tr.confirmedAt||tr.requestedAt).getTime(),h:`<b>${label}</b> ${amt.toFixed(e==='sol'?3:4)} ${tr.assetSymbol||(e==='sol'?'SOL':'USDC')} · ${tr.status}${link}`,e,kind:'transfer'});
+  }
+  for(const n of (snap.notifications||[])){
+   const kind=String(n.kind||'');
+   if(kind==='worker-online')continue;
+   const when=new Date(n.createdAt||Date.now()).toLocaleTimeString();
+   const body=(n.body||n.error||'sent').toString().replace(/<[^>]+>/g,' ').slice(0,140);
+   acts.push({t:when,ts:new Date(n.createdAt||Date.now()).getTime(),h:`Notify · ${kind||n.channel||'telegram'} · ${body}`,e,kind:'notify'});
+  }
+  acts.sort((a,b)=>(b.ts||0)-(a.ts||0));
+  next.act=acts.slice(0,200);
   next.skip=next.skip.slice(0,40);
   const lat=status.latency||{};
   if(lat.p50BroadcastMs!=null||lat.p50ConfirmMs!=null){
@@ -246,7 +295,7 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),inv=invOf(e),nx=Math.max
 ${e=='evm'?`<div class="card"><h3>Chains &amp; Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'—'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
 <div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>
 <div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on-chain.</p>'}</div></div>
-<div class="card"><h3>Recent Activity</h3><div class="act">${s.act.slice(0,25).map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. Add a trader and wait for a real transaction.</p>'}</div></div>
+${(()=>{const pg=pageSlice(s.act,actPage[e]||1);return`<div class="card"><h3>Recent Activity</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. Deposit, withdraw, or add a trader — on-chain activity appears here.</p>'}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
 <details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b> — ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded.</p>'}</div></details>`}
 const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
 const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
@@ -257,7 +306,7 @@ function monitor(){const tot=e=>UI[e].usd?(cashOf(e)+invOf(e)+S[e].sav)/UI[e].k*
 <div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}</div>
 <div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON')">Resume all engines</button></div>
 <div class="card"><h3>Open positions (all chains)</h3><div class="tw"><table><tr><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Invested</th><th>P&amp;L</th><th>MC</th></tr>${['sol','evm'].flatMap(e=>S[e].pos.map(p=>`<tr><td>${bd(e)}</td><td><b>${p.sym}</b></td><td>${CH[p.ch]||p.ch}</td><td>${p.tr.n}</td><td>${UI[e].usd?usd(e,p.inv*p.rem):f(e,p.inv*p.rem)}</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>$${(p.mc/1e6).toFixed(1)}M</td></tr>`)).join('')||'<tr><td class="mu">None</td></tr>'}</table></div></div>
-<div class="card"><h3>Unified activity</h3><div class="act">${['sol','evm'].flatMap(e=>S[e].act).slice(0,25).map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet.</p>'}</div></div>`}
+${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On-chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
 function board(){const rows=['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].tr.map(t=>({e,t,...stats(S[e].hist.filter(h=>h.trId==t.id||h.tr==t.n))}))).sort((a,b)=>(b.n>0)-(a.n>0)||(b.score??-1e9)-(a.score??-1e9));
  return segF()+`<div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'—'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'—'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'—'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet.</td></tr>'}</table></div>`}
 function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pts=W.map(h=>c+=h.usd),mx=Math.max(0,...pts),mn=Math.min(0,...pts),rg=mx-mn||1;
@@ -265,7 +314,7 @@ function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pt
  const nm={STOP_LOSS:'STOP LOSS',TAKE_PROFIT:'TAKE PROFIT',TRAILING_STOP:'TRAILING STOP'};
  return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'—'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'—'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'—'}</b></div></div>
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
-<div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${H.slice(0,60).map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div></div>`}
+${(()=>{const pg=pageSlice(H,histPage||1);return`<div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${pg.rows.map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div>${pagerHtml('hist',pg.page,pg.pages,'setHistPage(__P__)')}</div>`})()}`}
 function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
  {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
@@ -351,18 +400,28 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
   }catch(err){$('#ae').textContent=err.message; ds.disabled=false}
  }
 }
-function feeReserveQuote(e){return e==='sol'?0.01:0.002}
+function feeReserveQuote(e){return e==='sol'?0.01:0}
+function bestEvmChain(){
+  const order=['bnb','base','arb'];
+  let best='BSC',bestAmt=-1;
+  for(const ch of order){
+    const amt=Number(S.evm.cash[ch]||0);
+    if(amt>bestAmt){bestAmt=amt;best=({bnb:'BSC',base:'BASE',arb:'ARBITRUM'})[ch]}
+  }
+  return best;
+}
 /** Amount UI: number input + Max + slider; maxQuote is display units after fee reserve. */
 function amtFieldHtml(e,X,maxQuote,inputId,presets){
  const max=Math.max(0,Number(maxQuote)||0);
  const fee=feeReserveQuote(e);
- const step=e==='sol'?0.001:0.0001;
+ const step=e==='sol'?0.001:0.01;
+ const feeLabel=e==='sol'?`Fee reserve kept <b>${fee}</b> ${X.u}`:`Gas paid in native · no USDC reserve`;
  return `<label>Amount (${X.u})</label>
 <div class="amt-row"><input id="${inputId}" type="number" step="${step}" min="0" max="${max}" placeholder="0" value=""><button type="button" class="btn max" id="${inputId}_max">Max</button></div>
 <input type="range" class="amt-sl" id="${inputId}_sl" min="0" max="1000" value="0" ${max<=0?'disabled':''}>
-<div class="amt-meta"><span>Available <b id="${inputId}_avail">${max.toFixed(UI[e].d)}</b> ${X.u}</span><span>Fee reserve kept <b>${fee}</b> ${X.u}</span></div>
+<div class="amt-meta"><span>Available <b id="${inputId}_avail">${max.toFixed(UI[e].d)}</b> ${X.u}</span><span>${feeLabel}</span></div>
 ${presets&&presets.length?`<div class="row" style="gap:6px;margin:4px 0 8px;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>`:''}
-<p class="mu" id="${inputId}_net">You can move/withdraw up to <b>${max.toFixed(UI[e].d)} ${X.u}</b> after the on-chain fee reserve.</p>`;
+<p class="mu" id="${inputId}_net">You can move/withdraw up to <b>${max.toFixed(UI[e].d)} ${X.u}</b>${e==='sol'?' after the on-chain fee reserve':''}.</p>`;
 }
 function bindAmtField(e,inputId,maxQuote){
  const max=Math.max(0,Number(maxQuote)||0);
@@ -384,29 +443,55 @@ function bindAmtField(e,inputId,maxQuote){
 }
 function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  const title=d==='t2s'?'Move to Savings':'Move to Trading';
- const maxRaw=d==='t2s'?cashOf(e):S[e].sav;
- const maxQuote=Number(f(e,maxRaw));
+ const chainFor=(chKey)=>e==='sol'?'SOLANA':({bnb:'BSC',base:'BASE',arb:'ARBITRUM'}[chKey]||bestEvmChain());
+ const maxForChain=(chKey)=>{
+  if(e==='sol')return d==='t2s'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
+  const raw=d==='t2s'?(S.evm.cash[chKey]||0):S[e].sav;
+  // Savings is summed across EVM; per-chain move uses that chain's trading cash.
+  if(d==='s2t')return Number(f(e,S[e].sav));
+  return Number(f(e,raw));
+ };
+ const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'bnb');
+ const chainOpts=e==='evm'?['bnb','base','arb'].map(c=>`<option value="${c}" ${c===defaultCh?'selected':''}>${CH[c]} — ${(Number(f(e,S.evm.cash[c]||0))).toFixed(2)} USDC</option>`).join(''):'';
  md(`<h3>${title}</h3><p class="mu">Moves a reservation on your custody wallet. No separate chain transfer — trading size cannot spend savings until you move it back.</p>
-${amtFieldHtml(e,X,maxQuote,'ma',null)}
+${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
+<div id="mv-amt">${amtFieldHtml(e,X,maxForChain(defaultCh),'ma',null)}</div>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
- const readAmt=bindAmtField(e,'ma',maxQuote);
+ let readAmt=bindAmtField(e,'ma',maxForChain(defaultCh));
+ const rebind=()=>{
+  const ch=$('#mc')?.value||defaultCh;
+  const max=maxForChain(ch);
+  $('#mv-amt').innerHTML=amtFieldHtml(e,X,max,'ma',null);
+  readAmt=bindAmtField(e,'ma',max);
+ };
+ if(e==='evm')$('#mc').onchange=rebind;
  $('#ok').onclick=async()=>{
+  const chKey=$('#mc')?.value||defaultCh;
+  const max=maxForChain(chKey);
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
-  if(amount>maxQuote+1e-12)return $('#ae').textContent=`Max available is ${maxQuote.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
+  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
   try{
-   await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount});
+   await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount,chain:chainFor(chKey)});
    cl();toast(title+' done'); await refresh();
   }catch(err){$('#ae').textContent=err.message}
  }
 }
 function wd(){const e=M,X=UI[e],a=wallet[e];
- const presets=e==='sol'?[0.01,0.02,0.05]:[0.001,0.002,0.005];
+ const presets=e==='sol'?[0.01,0.02,0.05]:[1,5,10];
  if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from your custody wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
- const maxFrom=()=>$('#wb')?.value==='trading'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
+ const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'bnb');
+ const chainOpts=e==='evm'?['bnb','base','arb'].map(c=>`<option value="${c}" ${c===defaultCh?'selected':''}>${CH[c]} — ${(Number(f(e,S.evm.cash[c]||0))).toFixed(2)} USDC</option>`).join(''):'';
+ const maxFrom=()=>{
+  if(e==='sol')return $('#wb')?.value==='trading'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
+  const ch=$('#wc')?.value||defaultCh;
+  if($('#wb')?.value==='savings')return Number(f(e,S[e].sav));
+  return Number(f(e,S.evm.cash[ch]||0));
+ };
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Broadcast on-chain and confirmed on explorers — never a simulated fill. Start with a small test amount.</p>
-<label>From</label><select id="wb"><option value="savings">Savings</option><option value="trading">Trading (available)</option></select>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. ${e==='evm'?'Sends USDC (ERC-20) on the selected network.':''} Broadcast on-chain and confirmed on explorers — never a simulated fill.</p>
+${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
+<label>From</label><select id="wb"><option value="trading">Trading (available)</option><option value="savings">Savings</option></select>
 <div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets)}</div>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">Withdraw</button><button class="btn" onclick="cl()">Cancel</button></div>`);
@@ -417,13 +502,16 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
   readAmt=bindAmtField(e,'wa',max);
  };
  $('#wb').onchange=rebind;
+ if(e==='evm')$('#wc').onchange=rebind;
  $('#ok').onclick=async()=>{
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   const max=maxFrom();
   if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
+  const chKey=$('#wc')?.value||defaultCh;
+  const chain=e==='sol'?'SOLANA':({bnb:'BSC',base:'BASE',arb:'ARBITRUM'}[chKey]||bestEvmChain());
   $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
   try{
-   const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket:$('#wb').value,chain:e==='sol'?'SOLANA':'BASE'});
+   const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket:$('#wb').value,chain});
    if(!res.executed)throw new Error(res.error||('Not confirmed. '+ (res.explorerUrl||'')));
    cl();toast('Withdraw confirmed'); await refresh();
   }catch(err){$('#ae').textContent=err.message; $('#ok').disabled=false}
@@ -489,41 +577,66 @@ async function finishConnect(e,N,connected){
   $('#ws')&&($('#ws').textContent='Approve the sign-in message in your wallet…');
   const addr=await sessionSign(e,connected);
   wallet[e]=addr;
-  try{localStorage.setItem('cpy_wallet_'+e,addr)}catch{}
+  try{localStorage.setItem('cpy_wallet_'+e,addr);localStorage.setItem('cpy_wallet_'+e+'_sticky','1')}catch{}
   cl();toast(N+' wallet connected');draw();
 }
 async function restoreWallets(){
-  // Only restore from authenticated session — never from AppKit cache alone
-  // (that kept showing an address after Disconnect).
-  wallet.sol=null; wallet.evm=null;
+  // Keep both modes sticky until the user taps Disconnect.
+  // Prefer live AppKit/session addresses; fall back to localStorage sticky keys.
   try{
-    const me=await api('GET','/api/auth/me');
+    const st=window.CopyraWallet?.getAccountStatus?.();
+    const liveEvm=st?.evm?.address||window.CopyraWallet?.getAddress?.('evm')||null;
+    const liveSol=st?.solAddress||window.CopyraWallet?.getAddress?.('sol')||null;
+    let stickySol=null,stickyEvm=null;
+    try{stickySol=localStorage.getItem('cpy_wallet_sol');stickyEvm=localStorage.getItem('cpy_wallet_evm')}catch{}
+    const me=await api('GET','/api/auth/me').catch(()=>null);
     if(me?.authenticated&&me.user?.address){
       if(me.user.chain==='SOLANA')wallet.sol=me.user.address;
       else wallet.evm=me.user.address;
-      try{localStorage.setItem('cpy_wallet_'+(me.user.chain==='SOLANA'?'sol':'evm'),me.user.address)}catch{}
-    }else{
-      try{localStorage.removeItem('cpy_wallet_sol');localStorage.removeItem('cpy_wallet_evm')}catch{}
     }
-  }catch{
-    try{localStorage.removeItem('cpy_wallet_sol');localStorage.removeItem('cpy_wallet_evm')}catch{}
-  }
+    // Restore the other mode from sticky storage / live provider without wiping.
+    if(!wallet.sol&&(liveSol||stickySol))wallet.sol=liveSol||stickySol;
+    if(!wallet.evm&&(liveEvm||stickyEvm))wallet.evm=liveEvm||stickyEvm;
+    // If AppKit reconnected to a known sticky address, trust it (no silent clear).
+    if(liveEvm&&stickyEvm&&liveEvm.toLowerCase()===stickyEvm.toLowerCase())wallet.evm=liveEvm;
+    if(liveSol&&stickySol&&liveSol===stickySol)wallet.sol=liveSol;
+    try{
+      if(wallet.sol)localStorage.setItem('cpy_wallet_sol',wallet.sol);
+      if(wallet.evm)localStorage.setItem('cpy_wallet_evm',wallet.evm);
+    }catch{}
+  }catch{}
   draw();
 }
 async function disconnectMode(e){
   wallet[e]=null;
-  try{localStorage.removeItem('cpy_wallet_'+e)}catch{}
+  try{localStorage.removeItem('cpy_wallet_'+e);localStorage.removeItem('cpy_wallet_'+e+'_sticky')}catch{}
   try{await window.CopyraWallet?.disconnect?.(e)}catch{}
-  try{await api('POST','/api/auth/logout')}catch{}
-  // Clear account-layer wallet mirrors so the header cannot snap back to an address.
+  // Only revoke the HTTP session when disconnecting the mode that owns the session cookie.
+  try{
+    const me=await api('GET','/api/auth/me');
+    const sessionMode=me?.user?.chain==='SOLANA'?'sol':'evm';
+    if(me?.authenticated&&sessionMode===e)await api('POST','/api/auth/logout');
+  }catch{}
   try{if(typeof user!=='undefined'&&user&&user.wallets){user.wallets[e]=null}}catch{}
   cl();
   toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');
   draw();
-  // Force label in case draw raced with an AppKit account event.
   const cn=$('#cn');
   if(cn&&!wallet[M]){cn.textContent='Connect Wallet';cn.title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
 }
+// Re-attach sticky wallets when AppKit finishes reconnecting (never auto-disconnect).
+window.addEventListener('copyra-wallet-account',(ev)=>{
+  try{
+    const detail=ev.detail||{};
+    const evmAddr=detail.evm?.address||detail.address;
+    if(evmAddr){
+      let sticky=null;try{sticky=localStorage.getItem('cpy_wallet_evm')}catch{}
+      if(sticky&&sticky.toLowerCase()===String(evmAddr).toLowerCase())wallet.evm=evmAddr;
+      else if(!wallet.evm&&detail.evm?.isConnected){wallet.evm=evmAddr;try{localStorage.setItem('cpy_wallet_evm',evmAddr)}catch{}}
+    }
+    draw();
+  }catch{}
+});
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  // Always show Open wallet list — including when already connected (same address ok).
  md(`<h3>${a0?'Reconnect ':'Connect '}${N} wallet</h3>
@@ -582,9 +695,10 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
   }
  })();
 }
-window.addEventListener('copyra-wallet-account',()=>{try{draw()}catch{}});
 window.addEventListener('copyra-wallet-ready',()=>{
   try{window.CopyraWallet?.setMode?.(M)}catch{}
+  // AppKit finished boot — re-hydrate sticky wallets without forcing disconnect.
+  try{restoreWallets()}catch{}
 });
 let cnWait=false;
 function beginConnectFromClick(){

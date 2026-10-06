@@ -30,19 +30,43 @@ import {
 import { NoSignerError, evmSigner, solanaSigner } from '../security/signer.js';
 import { solanaPool } from '../solana/connection.js';
 import { confirmSolanaTransaction, SOL_FEE_BUFFER_LAMPORTS } from '../solana/executor.js';
-import { readOnChainBalance, readOnChainBalanceForAddress, tradingWalletAddress } from './portfolio.js';
+import {
+  readOnChainBalance,
+  readOnChainBalanceForAddress,
+  snapshotBalance,
+  tradingWalletAddress,
+} from './portfolio.js';
 
 const log = componentLogger('funds');
 
 const NATIVE_ASSET = 'native';
 
-function savingsAsset(chain: Chain): { address: string; symbol: string; decimals: number } {
+/** Quote asset used for trading + savings ledger. EVM custody is USDC, not native gas. */
+function quoteAsset(chain: Chain): { address: string; symbol: string; decimals: number } {
   const config = chainConfig(chain);
+  if (config.kind === 'evm' && config.stableAsset) {
+    return {
+      address: config.stableAsset.toLowerCase(),
+      symbol: config.stableAssetSymbol ?? 'USDC',
+      decimals: config.stableAssetDecimals ?? 6,
+    };
+  }
   return {
     address: NATIVE_ASSET,
     symbol: config.nativeSymbol,
     decimals: config.nativeDecimals,
   };
+}
+
+function savingsAsset(chain: Chain): { address: string; symbol: string; decimals: number } {
+  return quoteAsset(chain);
+}
+
+function feeBufferRaw(chain: Chain): bigint {
+  const config = chainConfig(chain);
+  if (config.kind === 'solana') return SOL_FEE_BUFFER_LAMPORTS;
+  // EVM gas is paid in native ETH/BNB — do not subtract from USDC trading balance.
+  return 0n;
 }
 
 export async function getSavingsRawForAddress(chain: Chain, address: string): Promise<bigint> {
@@ -77,9 +101,9 @@ async function resolveFundsWallet(chain: Chain, userId?: string): Promise<string
 }
 
 export async function getSavingsQuote(chain: Chain): Promise<number> {
-  const config = chainConfig(chain);
+  const asset = quoteAsset(chain);
   const raw = await getSavingsRaw(chain);
-  return Number(raw) / 10 ** config.nativeDecimals;
+  return Number(raw) / 10 ** asset.decimals;
 }
 
 /**
@@ -96,7 +120,10 @@ export async function getTradingAvailableQuote(
   address: string | null;
   configured: boolean;
   multiUser: boolean;
+  assetSymbol: string;
+  assetDecimals: number;
 }> {
+  const asset = quoteAsset(chain);
   let address: string | null = null;
   if (multiUserCustodyEnabled() && userId) {
     try {
@@ -115,6 +142,8 @@ export async function getTradingAvailableQuote(
       address: null,
       configured: false,
       multiUser: multiUserCustodyEnabled(),
+      assetSymbol: asset.symbol,
+      assetDecimals: asset.decimals,
     };
   }
   let balance;
@@ -128,12 +157,15 @@ export async function getTradingAvailableQuote(
       address,
       configured: false,
       multiUser: multiUserCustodyEnabled(),
+      assetSymbol: asset.symbol,
+      assetDecimals: asset.decimals,
     };
   }
   const savingsRaw = await getSavingsRawForAddress(chain, address);
-  const config = chainConfig(chain);
-  const savingsQuote = Number(savingsRaw) / 10 ** config.nativeDecimals;
-  const availableQuote = Math.max(0, balance.totalQuote - savingsQuote);
+  const savingsQuote = Number(savingsRaw) / 10 ** asset.decimals;
+  // availableQuote is already fee-adjusted from the live RPC read for Solana;
+  // for EVM USDC there is no quote-asset fee reserve.
+  const availableQuote = Math.max(0, balance.availableQuote - savingsQuote);
   return {
     onChainQuote: balance.totalQuote,
     savingsQuote,
@@ -141,6 +173,8 @@ export async function getTradingAvailableQuote(
     address,
     configured: true,
     multiUser: multiUserCustodyEnabled(),
+    assetSymbol: asset.symbol,
+    assetDecimals: asset.decimals,
   };
 }
 
@@ -195,30 +229,29 @@ export async function moveBucket(input: {
   }
   await assertCustodyOperationsAllowed(input.userId);
   const address = await resolveFundsWallet(input.chain, input.userId);
-  const config = chainConfig(input.chain);
-  const scale = 10 ** config.nativeDecimals;
+  const asset = quoteAsset(input.chain);
+  const scale = 10 ** asset.decimals;
   const amountRaw = BigInt(Math.floor(input.amountQuote * scale));
   if (amountRaw <= 0n) throw new Error('Amount is too small.');
 
   const balance = await readOnChainBalanceForAddress(input.chain, address);
   const currentSavings = await getSavingsRawForAddress(input.chain, address);
   const onChainRaw = BigInt(Math.floor(balance.totalQuote * scale));
-  const feeBuffer =
-    config.kind === 'solana' ? SOL_FEE_BUFFER_LAMPORTS : BigInt(Math.floor(0.002 * scale));
+  const feeBuffer = feeBufferRaw(input.chain);
   const tradingSpendable = onChainRaw > feeBuffer + currentSavings ? onChainRaw - feeBuffer - currentSavings : 0n;
 
   let nextSavings = currentSavings;
   if (input.direction === 't2s') {
     if (amountRaw > tradingSpendable) {
       throw new Error(
-        `Only ${(Number(tradingSpendable) / scale).toFixed(6)} ${config.nativeSymbol} is available in trading after reserves.`,
+        `Only ${(Number(tradingSpendable) / scale).toFixed(6)} ${asset.symbol} is available in trading after reserves.`,
       );
     }
     nextSavings = currentSavings + amountRaw;
   } else {
     if (amountRaw > currentSavings) {
       throw new Error(
-        `Only ${(Number(currentSavings) / scale).toFixed(6)} ${config.nativeSymbol} is in savings.`,
+        `Only ${(Number(currentSavings) / scale).toFixed(6)} ${asset.symbol} is in savings.`,
       );
     }
     nextSavings = currentSavings - amountRaw;
@@ -230,8 +263,8 @@ export async function moveBucket(input: {
       userId: input.userId,
       fromBucket: input.direction === 't2s' ? BalanceBucket.TRADING : BalanceBucket.SAVINGS,
       toBucket: input.direction === 't2s' ? BalanceBucket.SAVINGS : BalanceBucket.TRADING,
-      assetAddress: NATIVE_ASSET,
-      assetSymbol: config.nativeSymbol,
+      assetAddress: asset.address,
+      assetSymbol: asset.symbol,
       amountRaw: amountRaw.toString(),
       status: TxStatus.CONFIRMED,
       confirmedAt: new Date(),
@@ -506,7 +539,8 @@ export async function withdrawToWallet(input: {
 }> {
   if (!(input.amountQuote > 0)) throw new Error('Withdraw amount must be positive.');
   const config = chainConfig(input.chain);
-  const scale = 10 ** config.nativeDecimals;
+  const asset = quoteAsset(input.chain);
+  const scale = 10 ** asset.decimals;
   const amountRaw = BigInt(Math.floor(input.amountQuote * scale));
   if (amountRaw <= 0n) throw new Error('Withdraw amount is too small.');
 
@@ -522,10 +556,10 @@ export async function withdrawToWallet(input: {
   const funds = await getTradingAvailableQuote(input.chain, input.userId);
   if (input.fromBucket === 'savings') {
     if (input.amountQuote > funds.savingsQuote + 1e-12) {
-      throw new Error(`Savings only holds ${funds.savingsQuote.toFixed(6)} ${config.nativeSymbol}.`);
+      throw new Error(`Savings only holds ${funds.savingsQuote.toFixed(6)} ${asset.symbol}.`);
     }
   } else if (input.amountQuote > funds.availableQuote + 1e-12) {
-    throw new Error(`Trading only holds ${funds.availableQuote.toFixed(6)} ${config.nativeSymbol} available.`);
+    throw new Error(`Trading only holds ${funds.availableQuote.toFixed(6)} ${asset.symbol} available.`);
   }
 
   let txHash: string;
@@ -565,6 +599,9 @@ export async function withdrawToWallet(input: {
     error = confirmation.error;
     confirmedAt = confirmation.status === TxStatus.CONFIRMED ? confirmation.confirmedAt : null;
   } else {
+    if (!config.stableAsset) {
+      throw new Error(`No USDC contract configured for ${input.chain} — cannot withdraw.`);
+    }
     const account = multiUserCustodyEnabled()
       ? await userEvmAccount(input.userId)
       : evmSigner.requireAccount();
@@ -575,9 +612,16 @@ export async function withdrawToWallet(input: {
       chain: viemChain(input.chain),
       transport: http(rpcUrl, { timeout: 20_000 }),
     });
+    // Withdraw USDC (ERC-20), never native BNB/ETH mistaken for the trading balance.
+    const data = encodeFunctionData({
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [getAddress(input.toAddress), amountRaw],
+    });
     const hash = await wallet.sendTransaction({
-      to: getAddress(input.toAddress),
-      value: amountRaw,
+      to: getAddress(config.stableAsset),
+      data,
+      value: 0n,
       account,
       chain: viemChain(input.chain),
     });
@@ -607,8 +651,8 @@ export async function withdrawToWallet(input: {
       userId: input.userId,
       fromBucket: input.fromBucket === 'savings' ? BalanceBucket.SAVINGS : BalanceBucket.TRADING,
       toBucket: BalanceBucket.TRADING,
-      assetAddress: NATIVE_ASSET,
-      assetSymbol: config.nativeSymbol,
+      assetAddress: asset.address,
+      assetSymbol: asset.symbol,
       amountRaw: amountRaw.toString(),
       status,
       txHash,
@@ -688,6 +732,17 @@ export async function recordEvmCustodyDeposit(input: {
       confirmedAt: confirmation.status === TxStatus.CONFIRMED ? new Date() : null,
     },
   });
+
+  // Refresh dashboard balance snapshot from live RPC (USDC, not native).
+  if (confirmation.status === TxStatus.CONFIRMED) {
+    try {
+      const address = await resolveFundsWallet(input.chain, input.userId);
+      const balance = await readOnChainBalanceForAddress(input.chain, address);
+      await snapshotBalance(input.chain, balance, BalanceBucket.TRADING);
+    } catch (err) {
+      log.warn({ err, chain: input.chain }, 'Post-deposit balance snapshot failed');
+    }
+  }
 
   return {
     txHash: input.txHash,

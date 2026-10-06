@@ -8,7 +8,7 @@ import { chainConfig } from '../config/chains.js';
 import { getQuoteAssetPriceUsd } from '../market/index.js';
 import { componentLogger } from '../obs/logger.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
-import { getNativeBalance } from '../evm/tokens.js';
+import { getErc20Balance, getNativeBalance } from '../evm/tokens.js';
 import { getSpendableSol } from '../solana/executor.js';
 import type { PortfolioState } from './types.js';
 
@@ -46,23 +46,23 @@ export interface OnChainBalance {
   blockOrSlot: bigint;
   readAt: Date;
   address: string;
+  assetAddress: string;
+  assetSymbol: string;
+  assetDecimals: number;
 }
 
 /**
- * Reads the quote-asset balance straight from the chain.
- *
- * Never returns a cached or database value: a sizing decision made against a
- * stale balance is how a bot over-commits and starts producing failed
- * transactions. The read block/slot is returned so staleness is measurable.
+ * Reads the trading balance straight from the chain.
+ * Solana → native SOL. EVM → USDC (stableAsset) when configured, else native.
  */
 export async function readOnChainBalanceForAddress(
   chain: Chain,
   address: string,
 ): Promise<OnChainBalance> {
   const config = chainConfig(chain);
-  const quotePriceUsd = await getQuoteAssetPriceUsd(chain);
 
   if (config.kind === 'solana') {
+    const quotePriceUsd = await getQuoteAssetPriceUsd(chain);
     const { spendableSol, rawLamports, slot } = await getSpendableSol(address);
     const totalQuote = Number(rawLamports) / 1e9;
     return {
@@ -73,9 +73,32 @@ export async function readOnChainBalanceForAddress(
       blockOrSlot: slot,
       readAt: new Date(),
       address,
+      assetAddress: 'native',
+      assetSymbol: 'SOL',
+      assetDecimals: 9,
     };
   }
 
+  // Custody deposits are USDC — never surface native BNB/ETH as "USDC" on the dashboard.
+  if (config.stableAsset) {
+    const decimals = config.stableAssetDecimals ?? 6;
+    const token = await getErc20Balance(chain, config.stableAsset, address);
+    const totalQuote = Number(token.amountRaw) / 10 ** decimals;
+    return {
+      availableQuote: Math.max(0, totalQuote),
+      totalQuote,
+      quotePriceUsd: 1,
+      totalUsd: totalQuote,
+      blockOrSlot: token.blockNumber,
+      readAt: new Date(),
+      address,
+      assetAddress: config.stableAsset.toLowerCase(),
+      assetSymbol: config.stableAssetSymbol ?? 'USDC',
+      assetDecimals: decimals,
+    };
+  }
+
+  const quotePriceUsd = await getQuoteAssetPriceUsd(chain);
   const native = await getNativeBalance(chain, address);
   const totalQuote = Number(native.amountRaw) / 10 ** config.nativeDecimals;
   const gasReserve = 0.002;
@@ -87,6 +110,9 @@ export async function readOnChainBalanceForAddress(
     blockOrSlot: native.blockNumber,
     readAt: new Date(),
     address,
+    assetAddress: 'native',
+    assetSymbol: config.nativeSymbol,
+    assetDecimals: config.nativeDecimals,
   };
 }
 
@@ -102,24 +128,24 @@ export async function snapshotBalance(
   balance: OnChainBalance,
   bucket: BalanceBucket = BalanceBucket.TRADING,
 ): Promise<void> {
-  const config = chainConfig(chain);
-  const raw = BigInt(Math.round(balance.totalQuote * 10 ** config.nativeDecimals)).toString();
+  const assetAddress = balance.assetAddress || 'native';
+  const raw = BigInt(Math.round(balance.totalQuote * 10 ** balance.assetDecimals)).toString();
   await prisma.walletBalance.upsert({
     where: {
       chain_address_bucket_assetAddress: {
         chain,
         address: balance.address,
         bucket,
-        assetAddress: config.quoteAsset || 'native',
+        assetAddress,
       },
     },
     create: {
       chain,
       address: balance.address,
       bucket,
-      assetAddress: config.quoteAsset || 'native',
-      assetSymbol: config.nativeSymbol,
-      decimals: config.nativeDecimals,
+      assetAddress,
+      assetSymbol: balance.assetSymbol,
+      decimals: balance.assetDecimals,
       amountRaw: raw,
       priceUsd: balance.quotePriceUsd,
       valueUsd: balance.totalUsd,
@@ -134,6 +160,8 @@ export async function snapshotBalance(
       readAtBlock: balance.blockOrSlot,
       readAt: balance.readAt,
       source: 'rpc',
+      assetSymbol: balance.assetSymbol,
+      decimals: balance.assetDecimals,
     },
   });
 }

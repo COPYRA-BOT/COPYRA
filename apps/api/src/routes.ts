@@ -608,17 +608,38 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true };
   });
 
-  app.get('/api/notifications', async () => {
-    const logs = await prisma.notificationLog.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: 40,
+  app.get('/api/notifications', async (request) => {
+    const query = z
+      .object({
+        page: z.coerce.number().int().positive().default(1),
+        pageSize: z.coerce.number().int().positive().max(50).default(10),
+      })
+      .parse(request.query);
+    const skip = (query.page - 1) * query.pageSize;
+    // Drop noisy worker-online heartbeats from the operator feed.
+    const where = { NOT: { kind: 'worker-online' } };
+    const [total, logs] = await Promise.all([
+      prisma.notificationLog.count({ where }),
+      prisma.notificationLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: query.pageSize,
+      }),
+    ]);
+    return jsonSafe({
+      items: logs,
+      page: query.page,
+      pageSize: query.pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / query.pageSize)),
     });
-    return jsonSafe(logs);
   });
 
   app.get('/api/snapshot', async (request) => {
     const session = await readSession(request);
-    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt, notifications] =
+    const userId = session?.user.id;
+    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt, notifications, transfers, deposits] =
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
@@ -627,8 +648,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         app.inject({ method: 'GET', url: '/api/signals' }),
         app.inject({ method: 'GET', url: '/api/trades' }),
         app.inject({ method: 'GET', url: '/api/pnl' }),
-        buildBalancesResponse(session?.user.id),
-        app.inject({ method: 'GET', url: '/api/notifications' }),
+        buildBalancesResponse(userId),
+        app.inject({ method: 'GET', url: '/api/notifications?page=1&pageSize=40' }),
+        prisma.transfer.findMany({
+          where: userId ? { userId } : undefined,
+          orderBy: { requestedAt: 'desc' },
+          take: 80,
+        }),
+        prisma.custodyDeposit.findMany({
+          where: userId ? { userId } : undefined,
+          orderBy: { createdAt: 'desc' },
+          take: 80,
+        }),
       ]);
 
     let solUsd = 0;
@@ -638,6 +669,13 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       solUsd = 0;
     }
 
+    const notifBody = notifications.json() as { items?: unknown[] } | unknown[];
+    const notificationItems = Array.isArray(notifBody)
+      ? notifBody
+      : notifBody && typeof notifBody === 'object' && Array.isArray((notifBody as { items?: unknown[] }).items)
+        ? (notifBody as { items: unknown[] }).items
+        : [];
+
     return jsonSafe({
       status: statusRes.json(),
       settings: settingsRes.json(),
@@ -646,7 +684,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       signals: signals.json(),
       trades: trades.json(),
       pnl: pnlRes.json(),
-      notifications: notifications.json(),
+      notifications: notificationItems,
+      transfers,
+      deposits,
       balances: {
         multiUserCustody: balancesBuilt.multiUserCustody,
         wallets: balancesBuilt.wallets,
