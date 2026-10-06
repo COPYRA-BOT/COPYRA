@@ -39,6 +39,13 @@ const EVM_CHAIN_ADD: Record<
     blockExplorerUrls: string[];
   }
 > = {
+  1: {
+    chainId: '0x1',
+    chainName: 'Ethereum',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://ethereum.publicnode.com'],
+    blockExplorerUrls: ['https://etherscan.io'],
+  },
   8453: {
     chainId: '0x2105',
     chainName: 'Base',

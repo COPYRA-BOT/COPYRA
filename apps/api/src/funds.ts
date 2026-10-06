@@ -30,7 +30,8 @@ async function requireSession(request: FastifyRequest, reply: FastifyReply) {
 function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
   if (mode === 'sol') return Chain.SOLANA;
   if (preferred && preferred !== Chain.SOLANA) return preferred;
-  return Chain.BASE;
+  // Default EVM custody network: Ethereum mainnet (USDC + ETH gas).
+  return Chain.ETHEREUM;
 }
 
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
@@ -141,7 +142,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         ...intent,
         kind: 'evm',
         fromAddress: session.user.address,
-        note: 'Pick Base, Arbitrum, or BNB Chain in the deposit modal. This builds a real USDC token transfer on that network (not Ethereum mainnet). Your wallet must switch to the same network and hold USDC + a little native gas.',
+        note: 'Pick Ethereum, Base, Arbitrum, or BNB Chain in the deposit modal. This builds a real USDC token transfer on that network. Your wallet must switch to the same network and hold USDC + a little native gas (ETH on Ethereum/Base/Arbitrum, BNB on BNB Chain).',
       });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

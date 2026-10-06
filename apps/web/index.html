@@ -77,8 +77,10 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 <button class="btn pri big" onclick="addT()">+&nbsp; Add trader</button>
 <div class="tabs" id="tabs"></div><input id="q" placeholder="Search traders, tokens, history" style="display:none;margin-top:14px"><div id="v"></div></main>
 <script>
-const $=s=>document.querySelector(s),UI={sol:{u:'SOL',k:1e9,usd:0,d:3,ch:['solana']},evm:{u:'USDC',k:1e6,usd:1,d:2,ch:['base','arb','bnb']}};
-const CH={solana:'Solana',base:'Base',arb:'Arbitrum',bnb:'BNB Chain',ethereum:'Ethereum'};
+const $=s=>document.querySelector(s),UI={sol:{u:'SOL',k:1e9,usd:0,d:3,ch:['solana']},evm:{u:'USDC',k:1e6,usd:1,d:2,ch:['ethereum','base','arb','bnb']}};
+const CH={solana:'Solana',ethereum:'Ethereum',base:'Base',arb:'Arbitrum',bnb:'BNB Chain'};
+const EVM_CH_KEYS=['ethereum','base','arb','bnb'];
+const EVM_CH_TO_CHAIN={ethereum:'ETHEREUM',base:'BASE',arb:'ARBITRUM',bnb:'BSC'};
 const band=m=>m<1e6?0:m<3e6?20:m<7e6?30:m<12e6?40:m<2e7?50:0;
 function sizePos(o){const{eng,total,avail,inv,al,mc,maxMc,minMc,maxDep,maxTok,liq,sUsd,score=1,min,res,chAv=1/0}=o;
  if(mc>=maxMc)return{rej:'MARKET_CAP_TOO_HIGH'};const b=band(mc);if(mc<minMc||!b)return{rej:'MARKET_CAP_TOO_LOW'};
@@ -94,7 +96,7 @@ function stats(r){const n=r.length,w=r.filter(x=>x.usd>0).length,l=r.filter(x=>x
  return{n,w,l,wr,pnl,best:n?Math.max(...r.map(x=>x.usd)):null,worst:n?Math.min(...r.map(x=>x.usd)):null,score:n?wr*Math.log(1+n)/10+Math.sign(pnl)*Math.log(1+Math.abs(pnl)):null}}
 const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN_BLACKLISTED:'Token is blacklisted',NOT_FIRST_BUY:'Only the first buy per token is copied',LIQUIDITY_TOO_LOW:'Pool liquidity below your minimum',MAX_OPEN_POSITIONS:'Max open positions reached',INSUFFICIENT_CHAIN_LIQUIDITY:'Not enough USDC pre-positioned on this chain (no bridging during trades)',MARKET_CAP_TOO_HIGH:'Market cap above your limit',MARKET_CAP_TOO_LOW:'Market cap below your limit or the $1M band floor',MAX_DEPLOYED:'Max capital already deployed',INSUFFICIENT_BALANCE:'Available balance below minimum trade',TRADE_BELOW_MINIMUM:'Calculated trade below minimum',MINIMUM_RESERVE:'Trade would break your minimum reserve',NO_ROUTE:'No swap route found',PRICE_IMPACT_TOO_HIGH:'Price impact above your limit',NOT_A_BUY:'Not a buy',BLOCKED_NO_SIGNER:'Qualified, but no server signing key is configured so nothing was broadcast',BLOCKED_DISABLED:'Qualified, but trading is disabled by the host or settings guard',IS_SELL:'Trader sold — not an entry'};
 const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:e=='sol'?20:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:5e4,minMc:1,maxMc:20,maxDep:80,maxTok:50,bl:''});
-const empty=e=>({cash:e=='sol'?{solana:0}:{base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
+const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
 /** Pagination for activity / trade-history lists (10 rows per page). */
@@ -345,18 +347,19 @@ const rm=(id,n)=>md(`<h3>Remove trader?</h3><p class="mu">Open positions stay mo
 function dep(){const e=M,X=UI[e],addr=S[e].wa,a=wallet[e];
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  const EVM_DEP={
-  base:{chain:'BASE',label:'Base',gas:'ETH',hint:'Native Circle USDC (6 decimals)'},
-  arb:{chain:'ARBITRUM',label:'Arbitrum',gas:'ETH',hint:'Native Circle USDC (6 decimals)'},
-  bnb:{chain:'BSC',label:'BNB Chain',gas:'BNB',hint:'Binance-Peg USDC (18 decimals)'},
+  ethereum:{chain:'ETHEREUM',label:'Ethereum',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
+  base:{chain:'BASE',label:'Base',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
+  arb:{chain:'ARBITRUM',label:'Arbitrum',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
+  bnb:{chain:'BSC',label:'BNB Chain',gas:'BNB',hint:'Binance-Peg USDC (18 decimals) — gas in BNB'},
  };
- const chainOpts=e==='evm'?X.ch.filter(c=>EVM_DEP[c]).map(c=>`<option value="${c}">${EVM_DEP[c].label} — USDC</option>`).join(''):'';
+ const chainOpts=e==='evm'?X.ch.filter(c=>EVM_DEP[c]).map(c=>`<option value="${c}">${EVM_DEP[c].label} — USDC (${EVM_DEP[c].gas} gas)</option>`).join(''):'';
  md(`<h3>Deposit ${X.u}</h3>
 ${e==='evm'?`<label>Network</label><select id="dc">${chainOpts}</select>
-<p class="mu" id="dchain">Pick <b>Base</b>, <b>Arbitrum</b>, or <b>BNB Chain</b>. USDC is the dollar token on that network (same token standard on all three — not Ethereum mainnet). Your wallet will switch to the network you pick.</p>`:''}
+<p class="mu" id="dchain">Pick <b>Ethereum</b>, <b>Base</b>, <b>Arbitrum</b>, or <b>BNB Chain</b>. Deposit USDC on that network; pay gas in <b>ETH</b> (Ethereum/Base/Arbitrum) or <b>BNB</b> (BNB Chain). Your wallet switches to the network you pick.</p>`:''}
 <label>${e==='evm'?'Your custody wallet (receives USDC)':'Trading wallet (custody)'}</label><input readonly value="${addr||'Sign in to provision your custody wallet'}">
 <label>Amount (${X.u})</label><input id="da" type="number" step="any" min="0" placeholder="${presets[0]}">
 <div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>
-<p class="mu" id="dhelp">${addr?(e==='sol'?`Send real SOL from your connected wallet to your custody address. Confirmed on Solana RPC.`:`Sends a real USDC token transfer to your custody wallet on the selected network. Keep a little ${EVM_DEP.base.gas} / ${EVM_DEP.bnb.gas} for gas.`):'Sign in and connect a wallet to deposit.'}</p>
+<p class="mu" id="dhelp">${addr?(e==='sol'?`Send real SOL from your connected wallet to your custody address. Confirmed on Solana RPC.`:`Sends a real USDC token transfer to your custody wallet on the selected network. Keep a little ETH (or BNB on BNB Chain) for gas.`):'Sign in and connect a wallet to deposit.'}</p>
 <p class="rd" id="ae"></p>
 <div class="row" style="margin-top:12px">
 ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:a?'':'<button class="btn pri" onclick="cl();conn()">Connect Wallet first</button>'}
@@ -364,8 +367,8 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
 <button class="btn" onclick="cl()">Close</button></div>`);
  const syncChainHelp=()=>{
   if(e!=='evm')return;
-  const key=$('#dc')?.value||'base';
-  const meta=EVM_DEP[key]||EVM_DEP.base;
+  const key=$('#dc')?.value||'ethereum';
+  const meta=EVM_DEP[key]||EVM_DEP.ethereum;
   $('#dhelp').innerHTML=`Deposit <b>USDC on ${meta.label}</b> (${meta.hint}). Wallet switches to ${meta.label}. You need USDC + a little <b>${meta.gas}</b> for gas on that network. Confirmed on-chain via RPC — never a fake fill.`;
  };
  if(e==='evm'){$('#dc').onchange=syncChainHelp;syncChainHelp()}
@@ -379,8 +382,8 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
    const st=window.CopyraWallet.getAccountStatus?.();
    if(e==='evm'&&st?.evm?.isConnecting)throw new Error('Wallet still connecting — wait a moment, then try again.');
    if(e==='evm'&&st?.evm?.isDisconnected&&!window.CopyraWallet.getAddress('evm'))throw new Error('EVM wallet disconnected. Tap Connect Wallet.');
-   const pick=$('#dc')?.value||'base';
-   const chainName=e==='sol'?'SOLANA':(EVM_DEP[pick]?.chain||'BASE');
+   const pick=$('#dc')?.value||'ethereum';
+   const chainName=e==='sol'?'SOLANA':(EVM_DEP[pick]?.chain||'ETHEREUM');
    const built=await api('POST','/api/funds/deposit/build',{mode:e,amount,chain:chainName});
    if(built.kind==='solana'){
     $('#ae').textContent='Sign the transfer in your wallet…';
@@ -402,13 +405,15 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
 }
 function feeReserveQuote(e){return e==='sol'?0.01:0}
 function bestEvmChain(){
-  const order=['bnb','base','arb'];
-  let best='BSC',bestAmt=-1;
-  for(const ch of order){
+  let best='ETHEREUM',bestAmt=-1;
+  for(const ch of EVM_CH_KEYS){
     const amt=Number(S.evm.cash[ch]||0);
-    if(amt>bestAmt){bestAmt=amt;best=({bnb:'BSC',base:'BASE',arb:'ARBITRUM'})[ch]}
+    if(amt>bestAmt){bestAmt=amt;best=EVM_CH_TO_CHAIN[ch]}
   }
   return best;
+}
+function evmChainOptsHtml(defaultCh){
+  return EVM_CH_KEYS.map(c=>`<option value="${c}" ${c===defaultCh?'selected':''}>${CH[c]} — ${(Number(f('evm',S.evm.cash[c]||0))).toFixed(2)} USDC</option>`).join('');
 }
 /** Amount UI: number input + Max + slider; maxQuote is display units after fee reserve. */
 function amtFieldHtml(e,X,maxQuote,inputId,presets){
@@ -443,7 +448,7 @@ function bindAmtField(e,inputId,maxQuote){
 }
 function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  const title=d==='t2s'?'Move to Savings':'Move to Trading';
- const chainFor=(chKey)=>e==='sol'?'SOLANA':({bnb:'BSC',base:'BASE',arb:'ARBITRUM'}[chKey]||bestEvmChain());
+ const chainFor=(chKey)=>e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
  const maxForChain=(chKey)=>{
   if(e==='sol')return d==='t2s'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
   const raw=d==='t2s'?(S.evm.cash[chKey]||0):S[e].sav;
@@ -451,8 +456,8 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
   if(d==='s2t')return Number(f(e,S[e].sav));
   return Number(f(e,raw));
  };
- const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'bnb');
- const chainOpts=e==='evm'?['bnb','base','arb'].map(c=>`<option value="${c}" ${c===defaultCh?'selected':''}>${CH[c]} — ${(Number(f(e,S.evm.cash[c]||0))).toFixed(2)} USDC</option>`).join(''):'';
+ const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'ethereum');
+ const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh):'';
  md(`<h3>${title}</h3><p class="mu">Moves a reservation on your custody wallet. No separate chain transfer — trading size cannot spend savings until you move it back.</p>
 ${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
 <div id="mv-amt">${amtFieldHtml(e,X,maxForChain(defaultCh),'ma',null)}</div>
@@ -480,8 +485,8 @@ ${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
 function wd(){const e=M,X=UI[e],a=wallet[e];
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,5,10];
  if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from your custody wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
- const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'bnb');
- const chainOpts=e==='evm'?['bnb','base','arb'].map(c=>`<option value="${c}" ${c===defaultCh?'selected':''}>${CH[c]} — ${(Number(f(e,S.evm.cash[c]||0))).toFixed(2)} USDC</option>`).join(''):'';
+ const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'ethereum');
+ const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh):'';
  const maxFrom=()=>{
   if(e==='sol')return $('#wb')?.value==='trading'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
   const ch=$('#wc')?.value||defaultCh;
@@ -489,7 +494,7 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
   return Number(f(e,S.evm.cash[ch]||0));
  };
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. ${e==='evm'?'Sends USDC (ERC-20) on the selected network.':''} Broadcast on-chain and confirmed on explorers — never a simulated fill.</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. ${e==='evm'?'Sends USDC (ERC-20) on the selected network. Gas is ETH on Ethereum/Base/Arbitrum, BNB on BNB Chain.':''} Broadcast on-chain and confirmed on explorers — never a simulated fill.</p>
 ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
 <label>From</label><select id="wb"><option value="trading">Trading (available)</option><option value="savings">Savings</option></select>
 <div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets)}</div>
@@ -508,7 +513,7 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   const max=maxFrom();
   if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
   const chKey=$('#wc')?.value||defaultCh;
-  const chain=e==='sol'?'SOLANA':({bnb:'BSC',base:'BASE',arb:'ARBITRUM'}[chKey]||bestEvmChain());
+  const chain=e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
   $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
   try{
    const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket:$('#wb').value,chain});

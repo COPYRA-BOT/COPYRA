@@ -7,7 +7,13 @@ import {
 import { Chain } from '@copyra/db';
 
 /** All chains the dashboard can show live trading balances for. */
-const BALANCE_CHAINS = [Chain.SOLANA, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as const;
+const BALANCE_CHAINS = [
+  Chain.SOLANA,
+  Chain.ETHEREUM,
+  Chain.BASE,
+  Chain.ARBITRUM,
+  Chain.BSC,
+] as const;
 
 export async function buildBalancesResponse(userId?: string): Promise<{
   wallets: Array<Record<string, unknown>>;

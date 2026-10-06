@@ -7,8 +7,8 @@ import { chainConfig } from '../config/chains.js';
  * never native BNB/ETH mislabeled as trading balance.
  */
 describe('EVM trading balance asset', () => {
-  it('Base / Arbitrum / BSC expose USDC stableAsset for custody reads', () => {
-    for (const chain of [Chain.BASE, Chain.ARBITRUM, Chain.BSC]) {
+  it('Ethereum / Base / Arbitrum / BSC expose USDC stableAsset for custody reads', () => {
+    for (const chain of [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC]) {
       const config = chainConfig(chain);
       expect(config.kind).toBe('evm');
       expect(config.stableAsset).toBeTruthy();
@@ -19,9 +19,14 @@ describe('EVM trading balance asset', () => {
     }
   });
 
-  it('BSC USDC uses 18 decimals (Binance-Peg); Base/Arb use 6', () => {
+  it('BSC USDC uses 18 decimals (Binance-Peg); Ethereum/Base/Arb use 6', () => {
     expect(chainConfig(Chain.BSC).stableAssetDecimals).toBe(18);
+    expect(chainConfig(Chain.ETHEREUM).stableAssetDecimals).toBe(6);
     expect(chainConfig(Chain.BASE).stableAssetDecimals).toBe(6);
     expect(chainConfig(Chain.ARBITRUM).stableAssetDecimals).toBe(6);
+    expect(chainConfig(Chain.ETHEREUM).nativeSymbol).toBe('ETH');
+    expect(chainConfig(Chain.ETHEREUM).stableAsset?.toLowerCase()).toBe(
+      '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    );
   });
 });
