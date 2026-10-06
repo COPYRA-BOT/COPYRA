@@ -73,6 +73,12 @@ type WalletApi = {
     valueWei: string;
     chainId: number;
   }) => Promise<string>;
+  /** Real ERC-20 transfer (USDC) — value 0, calldata = transfer(recipient, amount). */
+  sendEvmErc20: (input: {
+    tokenAddress: string;
+    data: string;
+    chainId: number;
+  }) => Promise<string>;
 };
 
 declare global {
@@ -134,6 +140,9 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
       throw new Error(error ?? 'Wallet is not ready.');
     },
     async sendEvmNative() {
+      throw new Error(error ?? 'Wallet is not ready.');
+    },
+    async sendEvmErc20() {
       throw new Error(error ?? 'Wallet is not ready.');
     },
   };
@@ -618,6 +627,39 @@ async function init(): Promise<WalletApi> {
             from: checksumFrom,
             to: input.to,
             value: hexValue,
+            chainId: `0x${input.chainId.toString(16)}`,
+          },
+        ],
+      });
+      return String(hash);
+    },
+
+    async sendEvmErc20(input) {
+      const provider = evmProvider();
+      if (!provider?.request) throw new Error('EVM wallet not connected.');
+      const from = readEvmAddress();
+      if (!from) throw new Error('EVM wallet address missing.');
+      const checksumFrom = getAddress(from);
+      const token = getAddress(input.tokenAddress);
+      const data = input.data.startsWith('0x') ? input.data : `0x${input.data}`;
+      try {
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: `0x${input.chainId.toString(16)}` }],
+        });
+      } catch {
+        /* already on chain */
+      }
+      // Real on-chain ERC-20 transfer — value 0, calldata = transfer(to, amount).
+      // Wallets may preview locally; we never invent a fill — confirmation is via RPC.
+      const hash = await provider.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: checksumFrom,
+            to: token,
+            data,
+            value: '0x0',
             chainId: `0x${input.chainId.toString(16)}`,
           },
         ],

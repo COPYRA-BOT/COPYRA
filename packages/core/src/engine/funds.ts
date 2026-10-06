@@ -10,7 +10,7 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
-import { createWalletClient, getAddress, http, parseEther } from 'viem';
+import { createWalletClient, encodeFunctionData, erc20Abi, getAddress, http, parseUnits } from 'viem';
 import { chainConfig, explorerTxUrl } from '../config/chains.js';
 import { confirmEvmTransaction } from '../evm/executor.js';
 import { viemChain } from '../evm/clients.js';
@@ -313,14 +313,24 @@ export async function buildSolanaDepositTransaction(input: {
   };
 }
 
-/** EVM deposit intent: user wallet sends native value to the bot address. */
+/** EVM deposit intent: ERC-20 USDC `transfer` to the user's custody wallet (real on-chain). */
 export async function buildEvmDepositIntent(input: {
   chain: Chain;
   amountNative: number;
   userId: string;
 }): Promise<{
+  kind: 'erc20';
+  /** USDC contract — `eth_sendTransaction.to` */
   to: `0x${string}`;
-  valueWei: string;
+  tokenAddress: `0x${string}`;
+  /** Custody wallet receiving USDC */
+  recipient: `0x${string}`;
+  /** ABI-encoded transfer(recipient, amount) */
+  data: `0x${string}`;
+  valueWei: '0';
+  amountRaw: string;
+  decimals: number;
+  symbol: string;
   chainId: number;
   nativeSymbol: string;
 }> {
@@ -328,18 +338,39 @@ export async function buildEvmDepositIntent(input: {
   if (config.kind !== 'evm' || config.chainId == null) {
     throw new Error('EVM deposit requires an EVM chain.');
   }
+  if (!config.stableAsset) {
+    throw new Error(`No USDC contract configured for ${input.chain}.`);
+  }
   await assertCustodyOperationsAllowed(input.userId);
   await assertDepositWithinCaps({
     userId: input.userId,
     chain: input.chain,
     amountQuote: input.amountNative,
   });
-  const to = (await resolveFundsWallet(input.chain, input.userId)) as `0x${string}`;
   if (!(input.amountNative > 0)) throw new Error('Deposit amount must be positive.');
-  const valueWei = parseEther(String(input.amountNative)).toString();
+
+  const recipient = getAddress(await resolveFundsWallet(input.chain, input.userId));
+  const tokenAddress = getAddress(config.stableAsset);
+  const decimals = config.stableAssetDecimals ?? 6;
+  const amountRaw = parseUnits(String(input.amountNative), decimals);
+  if (amountRaw <= 0n) throw new Error('Deposit amount is too small.');
+
+  const data = encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'transfer',
+    args: [recipient, amountRaw],
+  });
+
   return {
-    to,
-    valueWei,
+    kind: 'erc20',
+    to: tokenAddress,
+    tokenAddress,
+    recipient,
+    data,
+    valueWei: '0',
+    amountRaw: amountRaw.toString(),
+    decimals,
+    symbol: config.stableAssetSymbol ?? 'USDC',
     chainId: config.chainId,
     nativeSymbol: config.nativeSymbol,
   };
@@ -627,7 +658,10 @@ export async function recordEvmCustodyDeposit(input: {
     90_000,
     config.requiredConfirmations,
   );
-  const amountRaw = BigInt(Math.floor(input.amountQuote * 10 ** config.nativeDecimals)).toString();
+  const decimals = config.stableAssetDecimals ?? config.nativeDecimals;
+  const assetAddress = (config.stableAsset ?? NATIVE_ASSET).toLowerCase();
+  const assetSymbol = config.stableAssetSymbol ?? config.nativeSymbol;
+  const amountRaw = parseUnits(String(input.amountQuote), decimals).toString();
 
   await recordCustodyDeposit({
     userId: input.userId,
@@ -644,8 +678,8 @@ export async function recordEvmCustodyDeposit(input: {
       userId: input.userId,
       fromBucket: BalanceBucket.TRADING,
       toBucket: BalanceBucket.TRADING,
-      assetAddress: NATIVE_ASSET,
-      assetSymbol: config.nativeSymbol,
+      assetAddress,
+      assetSymbol,
       amountRaw,
       status: confirmation.status,
       txHash: input.txHash,

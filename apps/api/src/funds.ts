@@ -138,10 +138,10 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         userId: session.user.id,
       });
       return jsonSafe({
-        kind: 'evm',
         ...intent,
+        kind: 'evm',
         fromAddress: session.user.address,
-        note: 'Send this transaction from your connected EVM wallet. Funds move on-chain to your COPYRA custody wallet.',
+        note: 'Sign this ERC-20 USDC transfer in your wallet. Funds move on-chain to your COPYRA custody wallet. You need a small amount of native gas (BNB/ETH).',
       });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
