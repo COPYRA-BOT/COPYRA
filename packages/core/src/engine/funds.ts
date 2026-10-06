@@ -38,12 +38,32 @@ import {
   tradingWalletAddress,
 } from './portfolio.js';
 
+/** EVM chains used for custody USDC deposit / move / withdraw. */
+export const EVM_FUNDS_CHAINS: readonly Chain[] = [
+  Chain.BSC,
+  Chain.BASE,
+  Chain.ARBITRUM,
+  Chain.ETHEREUM,
+];
+
 /** Tiny native top-up so custody can broadcast an ERC-20 withdraw (USDC itself never pays gas). */
 const EVM_WITHDRAW_GAS_FLOOR_WEI: Record<string, bigint> = {
   ETHEREUM: parseUnits('0.0004', 18),
   BASE: parseUnits('0.00005', 18),
   ARBITRUM: parseUnits('0.00005', 18),
   BSC: parseUnits('0.0003', 18),
+};
+
+/**
+ * USDC kept in Trading on each EVM chain so Move→Savings cannot drain the wallet
+ * before custody has native gas. Native gas is still required to broadcast; this
+ * reserve is the quote-side buffer mirrored across every EVM network.
+ */
+const EVM_USDC_GAS_RESERVE: Record<string, string> = {
+  ETHEREUM: '0.50',
+  BASE: '0.10',
+  ARBITRUM: '0.10',
+  BSC: '0.15',
 };
 
 /** How much native the connected wallet should send so custody can pay one USDC transfer. */
@@ -54,6 +74,15 @@ export function recommendedEvmWithdrawTopUpWei(chain: Chain, custodyNativeWei: b
     return floor;
   }
   return floor - custodyNativeWei + floor / 5n;
+}
+
+/** Quote-unit USDC gas reserve for an EVM chain (0 on Solana). */
+export function evmUsdcGasReserveQuote(chain: Chain): number {
+  const config = chainConfig(chain);
+  if (config.kind !== 'evm' || !config.stableAsset) return 0;
+  const decimals = config.stableAssetDecimals ?? 6;
+  const raw = parseUnits(EVM_USDC_GAS_RESERVE[chain] ?? '0.15', decimals);
+  return Number(raw) / 10 ** decimals;
 }
 
 const log = componentLogger('funds');
@@ -84,7 +113,12 @@ function savingsAsset(chain: Chain): { address: string; symbol: string; decimals
 function feeBufferRaw(chain: Chain): bigint {
   const config = chainConfig(chain);
   if (config.kind === 'solana') return SOL_FEE_BUFFER_LAMPORTS;
-  // EVM gas is paid in native ETH/BNB — do not subtract from USDC trading balance.
+  // Keep a small USDC slice in Trading so Move→Savings cannot empty the chain
+  // before native gas is funded on that same network.
+  if (config.kind === 'evm' && config.stableAsset) {
+    const decimals = config.stableAssetDecimals ?? 6;
+    return parseUnits(EVM_USDC_GAS_RESERVE[chain] ?? '0.15', decimals);
+  }
   return 0n;
 }
 
@@ -135,7 +169,12 @@ export async function getTradingAvailableQuote(
 ): Promise<{
   onChainQuote: number;
   savingsQuote: number;
+  /** Spendable by copy engine + Move→Savings (after USDC gas reserve on EVM). */
   availableQuote: number;
+  /** Max withdrawable from Trading (on-chain minus savings; includes USDC gas reserve). */
+  withdrawableQuote: number;
+  /** USDC kept in Trading so the chain is not drained before native gas is funded. */
+  gasReserveQuote: number;
   address: string | null;
   configured: boolean;
   multiUser: boolean;
@@ -143,6 +182,18 @@ export async function getTradingAvailableQuote(
   assetDecimals: number;
 }> {
   const asset = quoteAsset(chain);
+  const empty = {
+    onChainQuote: 0,
+    savingsQuote: 0,
+    availableQuote: 0,
+    withdrawableQuote: 0,
+    gasReserveQuote: 0,
+    address: null as string | null,
+    configured: false,
+    multiUser: multiUserCustodyEnabled(),
+    assetSymbol: asset.symbol,
+    assetDecimals: asset.decimals,
+  };
   let address: string | null = null;
   if (multiUserCustodyEnabled() && userId) {
     try {
@@ -153,48 +204,131 @@ export async function getTradingAvailableQuote(
   } else {
     address = tradingWalletAddress(chain);
   }
-  if (!address) {
-    return {
-      onChainQuote: 0,
-      savingsQuote: 0,
-      availableQuote: 0,
-      address: null,
-      configured: false,
-      multiUser: multiUserCustodyEnabled(),
-      assetSymbol: asset.symbol,
-      assetDecimals: asset.decimals,
-    };
-  }
+  if (!address) return empty;
   let balance;
   try {
     balance = await readOnChainBalanceForAddress(chain, address);
   } catch {
-    return {
-      onChainQuote: 0,
-      savingsQuote: 0,
-      availableQuote: 0,
-      address,
-      configured: false,
-      multiUser: multiUserCustodyEnabled(),
-      assetSymbol: asset.symbol,
-      assetDecimals: asset.decimals,
-    };
+    return { ...empty, address };
   }
   const savingsRaw = await getSavingsRawForAddress(chain, address);
   const savingsQuote = Number(savingsRaw) / 10 ** asset.decimals;
-  // availableQuote is already fee-adjusted from the live RPC read for Solana;
-  // for EVM USDC there is no quote-asset fee reserve.
-  const availableQuote = Math.max(0, balance.availableQuote - savingsQuote);
+  const config = chainConfig(chain);
+  const gasReserveQuote = config.kind === 'evm' ? evmUsdcGasReserveQuote(chain) : 0;
+  // Solana: availableQuote from RPC is already fee-buffered.
+  // EVM: withdrawable = full USDC minus savings; available keeps a USDC gas reserve in Trading.
+  const withdrawableQuote = Math.max(0, balance.totalQuote - savingsQuote);
+  const availableQuote =
+    config.kind === 'solana'
+      ? Math.max(0, balance.availableQuote - savingsQuote)
+      : Math.max(0, withdrawableQuote - gasReserveQuote);
   return {
     onChainQuote: balance.totalQuote,
     savingsQuote,
     availableQuote,
+    withdrawableQuote,
+    gasReserveQuote,
     address,
     configured: true,
     multiUser: multiUserCustodyEnabled(),
     assetSymbol: asset.symbol,
     assetDecimals: asset.decimals,
   };
+}
+
+export type EvmChainFundsRow = {
+  chain: Chain;
+  chainId: number;
+  custodyAddress: string | null;
+  onChainQuote: number;
+  savingsQuote: number;
+  availableQuote: number;
+  withdrawableQuote: number;
+  gasReserveQuote: number;
+  nativeSymbol: string;
+  custodyNativeWei: string;
+  recommendedTopUpWei: string;
+  needsTopUp: boolean;
+  configured: boolean;
+};
+
+/** Live USDC + native-gas snapshot for every EVM custody network. */
+export async function listEvmChainFunds(userId: string): Promise<EvmChainFundsRow[]> {
+  const rows: EvmChainFundsRow[] = [];
+  for (const chain of EVM_FUNDS_CHAINS) {
+    const config = chainConfig(chain);
+    const funds = await getTradingAvailableQuote(chain, userId);
+    let gas = {
+      custodyNativeWei: '0',
+      recommendedTopUpWei: '0',
+      needsTopUp: true,
+      custodyAddress: funds.address,
+    };
+    if (funds.address && config.chainId != null) {
+      try {
+        gas = await prepareEvmWithdrawGas({ chain, userId });
+      } catch {
+        /* keep needsTopUp true */
+      }
+    }
+    rows.push({
+      chain,
+      chainId: config.chainId ?? 0,
+      custodyAddress: funds.address,
+      onChainQuote: funds.onChainQuote,
+      savingsQuote: funds.savingsQuote,
+      availableQuote: funds.availableQuote,
+      withdrawableQuote: funds.withdrawableQuote,
+      gasReserveQuote: funds.gasReserveQuote,
+      nativeSymbol: config.nativeSymbol,
+      custodyNativeWei: gas.custodyNativeWei,
+      recommendedTopUpWei: gas.recommendedTopUpWei,
+      needsTopUp: gas.needsTopUp,
+      configured: funds.configured,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Pick the best EVM chain for a funds action across all networks.
+ * Prefer chains that already have native gas when withdrawing.
+ */
+export async function pickBestEvmChain(input: {
+  userId: string;
+  prefer: 'trading' | 'savings' | 'total' | 'withdraw';
+  fromBucket?: 'trading' | 'savings';
+}): Promise<{ chain: Chain; rows: EvmChainFundsRow[] }> {
+  const rows = await listEvmChainFunds(input.userId);
+  const amountOf = (row: EvmChainFundsRow): number => {
+    if (input.prefer === 'total') return row.onChainQuote;
+    if (input.prefer === 'savings') return row.savingsQuote;
+    if (input.prefer === 'withdraw') {
+      return input.fromBucket === 'savings' ? row.savingsQuote : row.withdrawableQuote;
+    }
+    // prefer === 'trading'
+    return row.availableQuote;
+  };
+
+  let best = rows[0]?.chain ?? Chain.BSC;
+  let bestScore = -1;
+  for (const row of rows) {
+    const amt = amountOf(row);
+    if (!(amt > 0)) continue;
+    // Withdraw: strongly prefer a chain that already has custody gas.
+    const score =
+      input.prefer === 'withdraw' ? amt + (row.needsTopUp ? 0 : 1_000_000) : amt;
+    if (score > bestScore) {
+      bestScore = score;
+      best = row.chain;
+    }
+  }
+  // If nothing funded, still return the first executable chain (never silently ETH-only).
+  if (bestScore < 0) {
+    const funded = rows.find((r) => r.onChainQuote > 0);
+    best = funded?.chain ?? rows.find((r) => r.configured)?.chain ?? Chain.BSC;
+  }
+  return { chain: best, rows };
 }
 
 async function writeSavingsRaw(chain: Chain, address: string, amountRaw: bigint): Promise<void> {
@@ -614,8 +748,11 @@ export async function withdrawToWallet(input: {
     if (input.amountQuote > funds.savingsQuote + 1e-12) {
       throw new Error(`Savings only holds ${funds.savingsQuote.toFixed(6)} ${asset.symbol}.`);
     }
-  } else if (input.amountQuote > funds.availableQuote + 1e-12) {
-    throw new Error(`Trading only holds ${funds.availableQuote.toFixed(6)} ${asset.symbol} available.`);
+  } else if (input.amountQuote > funds.withdrawableQuote + 1e-12) {
+    // Withdraw may include the USDC gas reserve; Move/engine cannot spend that reserve.
+    throw new Error(
+      `Trading only holds ${funds.withdrawableQuote.toFixed(6)} ${asset.symbol} withdrawable.`,
+    );
   }
 
   let txHash: string;

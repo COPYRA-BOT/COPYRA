@@ -3,8 +3,10 @@ import {
   buildSolanaDepositTransaction,
   broadcastSolanaDeposit,
   getTradingAvailableQuote,
+  listEvmChainFunds,
   moveBucket,
   multiUserCustodyEnabled,
+  pickBestEvmChain,
   prepareEvmWithdrawGas,
   recordEvmCustodyDeposit,
   withdrawToWallet,
@@ -35,8 +37,8 @@ async function requireSession(
 function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
   if (mode === 'sol') return Chain.SOLANA;
   if (preferred && preferred !== Chain.SOLANA) return preferred;
-  // Default EVM custody network: Ethereum mainnet (USDC + ETH gas).
-  return Chain.ETHEREUM;
+  // Fallback only — callers should pick via pickBestEvmChain when possible.
+  return Chain.BSC;
 }
 
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
@@ -96,7 +98,28 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       .parse(request.body);
     const session = await requireSession(request, reply, body.mode);
     if (!session) return;
-    const chain = modeChain(body.mode, body.chain);
+    let chain = modeChain(body.mode, body.chain);
+    if (body.mode === 'evm') {
+      // Always resolve against live balances across all EVM chains — never stick on empty Ethereum.
+      const prefer = body.direction === 's2t' ? 'savings' : 'trading';
+      if (!body.chain || body.chain === Chain.SOLANA) {
+        const picked = await pickBestEvmChain({ userId: session.user.id, prefer });
+        chain = picked.chain;
+      } else {
+        // If the client picked a chain with nothing in that bucket, auto-correct.
+        try {
+          const funds = await getTradingAvailableQuote(body.chain, session.user.id);
+          const amt = prefer === 'savings' ? funds.savingsQuote : funds.availableQuote;
+          if (!(amt > 0)) {
+            const picked = await pickBestEvmChain({ userId: session.user.id, prefer });
+            chain = picked.chain;
+          }
+        } catch {
+          const picked = await pickBestEvmChain({ userId: session.user.id, prefer });
+          chain = picked.chain;
+        }
+      }
+    }
     try {
       const result = await moveBucket({
         chain,
@@ -104,7 +127,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         amountQuote: body.amount,
         userId: session.user.id,
       });
-      return jsonSafe({ ok: true, ...result });
+      return jsonSafe({ ok: true, ...result, chain });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -210,20 +233,60 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     const body = z
       .object({
         mode: z.literal('evm'),
-        chain: chainSchema,
+        chain: chainSchema.optional(),
+        /** When true (default), return gas+balance for every EVM custody chain. */
+        allChains: z.boolean().optional(),
       })
       .parse(request.body);
     const session = await requireSession(request, reply, 'evm');
     if (!session) return;
-    if (body.chain === Chain.SOLANA) {
-      return reply.code(400).send({ error: 'Use an EVM chain for withdraw prepare.' });
-    }
     try {
+      if (body.allChains !== false && !body.chain) {
+        const rows = await listEvmChainFunds(session.user.id);
+        const picked = await pickBestEvmChain({
+          userId: session.user.id,
+          prefer: 'withdraw',
+          fromBucket: 'trading',
+        });
+        return jsonSafe({ chains: rows, bestChain: picked.chain });
+      }
+      const chain = body.chain && body.chain !== Chain.SOLANA ? body.chain : (
+        await pickBestEvmChain({ userId: session.user.id, prefer: 'withdraw' })
+      ).chain;
       const prep = await prepareEvmWithdrawGas({
-        chain: body.chain,
+        chain,
         userId: session.user.id,
       });
       return jsonSafe(prep);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/funds/evm/overview', async (request, reply) => {
+    const session = await requireSession(request, reply, 'evm');
+    if (!session) return;
+    try {
+      const rows = await listEvmChainFunds(session.user.id);
+      const forTrading = await pickBestEvmChain({
+        userId: session.user.id,
+        prefer: 'trading',
+      });
+      const forSavings = await pickBestEvmChain({
+        userId: session.user.id,
+        prefer: 'savings',
+      });
+      const forWithdraw = await pickBestEvmChain({
+        userId: session.user.id,
+        prefer: 'withdraw',
+        fromBucket: 'trading',
+      });
+      return jsonSafe({
+        chains: rows,
+        bestTradingChain: forTrading.chain,
+        bestSavingsChain: forSavings.chain,
+        bestWithdrawChain: forWithdraw.chain,
+      });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -241,27 +304,27 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     const session = await requireSession(request, reply, body.mode);
     if (!session) return;
 
-    // Prefer the chain the client picked (where the balance sits). Fall back per mode.
     let chain = modeChain(body.mode, body.chain);
-    if (body.mode === 'evm' && !body.chain) {
-      // Auto-pick the EVM chain with the largest balance in the requested bucket.
-      const candidates = [Chain.BSC, Chain.BASE, Chain.ARBITRUM, Chain.ETHEREUM];
-      let best = chain;
-      let bestAmt = -1;
-      for (const c of candidates) {
+    if (body.mode === 'evm') {
+      // Scan all EVM chains: prefer the network that holds the bucket AND already has gas.
+      const picked = await pickBestEvmChain({
+        userId: session.user.id,
+        prefer: 'withdraw',
+        fromBucket: body.fromBucket,
+      });
+      if (!body.chain || body.chain === Chain.SOLANA) {
+        chain = picked.chain;
+      } else {
+        // Respect client chain when it actually holds the bucket; otherwise correct it.
         try {
-          const funds = await getTradingAvailableQuote(c, session.user.id);
+          const funds = await getTradingAvailableQuote(body.chain, session.user.id);
           const amt =
-            body.fromBucket === 'savings' ? funds.savingsQuote : funds.availableQuote;
-          if (amt > bestAmt) {
-            bestAmt = amt;
-            best = c;
-          }
+            body.fromBucket === 'savings' ? funds.savingsQuote : funds.withdrawableQuote;
+          chain = amt > 0 ? body.chain : picked.chain;
         } catch {
-          /* skip unreadable chain */
+          chain = picked.chain;
         }
       }
-      chain = best;
     }
     if (body.mode === 'sol' && session.user.chain !== Chain.SOLANA) {
       return reply.code(400).send({ error: 'Sign in with a Solana wallet to withdraw SOL.' });
@@ -283,14 +346,30 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith('CUSTODY_NEEDS_GAS:')) {
         const [, wei, symbol, custody, chainId] = message.split(':');
+        // Include sibling-chain gas snapshot so the UI can switch to a gas-ready network.
+        let altChains: Awaited<ReturnType<typeof listEvmChainFunds>> = [];
+        try {
+          altChains = await listEvmChainFunds(session.user.id);
+        } catch {
+          /* ignore */
+        }
+        const gasReady = altChains.filter(
+          (r) =>
+            !r.needsTopUp &&
+            (body.fromBucket === 'savings' ? r.savingsQuote : r.withdrawableQuote) > 0,
+        );
         return reply.code(400).send({
-          error: `Custody needs a tiny ${symbol} for network gas (USDC never pays gas).`,
+          error: gasReady.length
+            ? `Custody on ${chain} needs ${symbol} for gas. ${gasReady.map((g) => g.chain).join(', ')} already has gas — switch network or top up.`
+            : `Custody needs a tiny ${symbol} for network gas (USDC never pays gas). Your wallet will send a small top-up.`,
           code: 'CUSTODY_NEEDS_GAS',
           recommendedTopUpWei: wei,
           nativeSymbol: symbol,
           custodyAddress: custody,
           chainId: Number(chainId),
           chain,
+          chains: altChains,
+          gasReadyChains: gasReady.map((g) => g.chain),
         });
       }
       return reply.code(400).send({ error: message });

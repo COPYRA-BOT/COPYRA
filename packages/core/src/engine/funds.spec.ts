@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnits } from 'viem';
 import { Chain } from '@copyra/db';
-import { recommendedEvmWithdrawTopUpWei } from './funds.js';
+import {
+  evmUsdcGasReserveQuote,
+  recommendedEvmWithdrawTopUpWei,
+  EVM_FUNDS_CHAINS,
+} from './funds.js';
 
 /**
  * Pure math checks for the funds reservation model.
@@ -53,5 +57,27 @@ describe('funds reservation math', () => {
     // Already funded but broadcast failed → still ask for a full floor chunk (never "0").
     const retry = recommendedEvmWithdrawTopUpWei(Chain.BSC, parseUnits('0.001', 18));
     expect(retry).toBe(parseUnits('0.0003', 18));
+  });
+
+  it('every EVM funds chain keeps a USDC trading gas reserve for Move', () => {
+    for (const chain of EVM_FUNDS_CHAINS) {
+      const reserve = evmUsdcGasReserveQuote(chain);
+      expect(reserve).toBeGreaterThan(0);
+      expect(reserve).toBeLessThan(1);
+    }
+    // BSC peg USDC (18 dec) and Ethereum Circle USDC (6 dec) both expose a reserve.
+    expect(evmUsdcGasReserveQuote(Chain.BSC)).toBeCloseTo(0.15, 6);
+    expect(evmUsdcGasReserveQuote(Chain.ETHEREUM)).toBeCloseTo(0.5, 6);
+  });
+
+  it('Move→Savings leaves the USDC gas reserve in trading', () => {
+    const onChain = parseUnits('2', 18);
+    const savings = 0n;
+    const feeBuffer = parseUnits('0.15', 18);
+    const tradingSpendable =
+      onChain > feeBuffer + savings ? onChain - feeBuffer - savings : 0n;
+    expect(Number(tradingSpendable) / 1e18).toBeCloseTo(1.85, 6);
+    // Full drain to savings is blocked by the reserve.
+    expect(tradingSpendable < onChain).toBe(true);
   });
 });
