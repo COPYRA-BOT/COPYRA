@@ -278,7 +278,7 @@ export async function buildSolanaDepositTransaction(input: {
 
   const from = new PublicKey(input.fromAddress);
   const to = new PublicKey(toAddress);
-  // Sticky primary RPC: blockhash from Helius must not be simulated later on Alchemy
+  // Sticky primary RPC: blockhash from Helius must not be checked later on Alchemy
   // (that cross-endpoint hop caused "Blockhash not found" in deposit preflight).
   const { client: solClient } = solanaPool().primary();
   const balance = await solClient.getBalance(from, 'confirmed');
@@ -403,8 +403,8 @@ export async function broadcastSolanaDeposit(input: {
     throw new Error('Deposit must transfer to your COPYRA custody wallet for this account.');
   }
 
-  // Real on-chain broadcast: skip RPC preflight simulation (wallet already reviewed the tx).
-  // Stick to the primary RPC so we never re-simulate a Helius blockhash on Alchemy.
+  // Real on-chain broadcast: skip RPC preflight (wallet already reviewed the tx).
+  // Stick to the primary RPC so we never re-check a Helius blockhash on Alchemy.
   const { client: solClient } = solanaPool().primary();
   const signature = await solClient.sendRawTransaction(transaction.serialize(), {
     skipPreflight: true,
@@ -523,7 +523,7 @@ export async function withdrawToWallet(input: {
     } else {
       solanaSigner.sign(tx);
     }
-    // Real on-chain withdraw — no RPC preflight simulation hop across providers.
+    // Real on-chain withdraw — no RPC preflight hop across providers.
     txHash = await solClient.sendRawTransaction(tx.serialize(), {
       skipPreflight: true,
       maxRetries: 3,
