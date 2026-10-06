@@ -217,7 +217,28 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     const session = await requireSession(request, reply, body.mode);
     if (!session) return;
 
-    const chain = modeChain(body.mode, body.chain);
+    // Prefer the chain the client picked (where the balance sits). Fall back per mode.
+    let chain = modeChain(body.mode, body.chain);
+    if (body.mode === 'evm' && !body.chain) {
+      // Auto-pick the EVM chain with the largest balance in the requested bucket.
+      const candidates = [Chain.BSC, Chain.BASE, Chain.ARBITRUM, Chain.ETHEREUM];
+      let best = chain;
+      let bestAmt = -1;
+      for (const c of candidates) {
+        try {
+          const funds = await getTradingAvailableQuote(c, session.user.id);
+          const amt =
+            body.fromBucket === 'savings' ? funds.savingsQuote : funds.availableQuote;
+          if (amt > bestAmt) {
+            bestAmt = amt;
+            best = c;
+          }
+        } catch {
+          /* skip unreadable chain */
+        }
+      }
+      chain = best;
+    }
     if (body.mode === 'sol' && session.user.chain !== Chain.SOLANA) {
       return reply.code(400).send({ error: 'Sign in with a Solana wallet to withdraw SOL.' });
     }
@@ -233,7 +254,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         fromBucket: body.fromBucket,
         userId: session.user.id,
       });
-      return jsonSafe({ ok: true, ...result });
+      return jsonSafe({ ok: true, ...result, chain });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
