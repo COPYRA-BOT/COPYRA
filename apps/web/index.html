@@ -275,7 +275,7 @@ ${e=='evm'?`<label>Chain</label><select id="dc">${X.ch.map(c=>`<option value="${
 <label>Trading wallet (bot)</label><input readonly value="${addr||'No bot signing key — set SOLANA_BOT_PRIVATE_KEY / EVM_BOT_PRIVATE_KEY on the host'}">
 <label>Amount (${X.u})</label><input id="da" type="number" step="any" min="0" placeholder="${presets[0]}">
 <div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>
-<p class="mu">${addr?`Send a small test amount of real ${X.u} from your connected wallet to the trading wallet. Confirmed on-chain via RPC — never simulated.`:'Observe-only: there is no deposit destination until a bot key is configured.'}</p>
+<p class="mu">${addr?`Send a small test amount of real ${X.u} from your connected wallet to the trading wallet. Broadcast on-chain and confirmed via RPC — never a simulated fill.`:'Observe-only: there is no deposit destination until a bot key is configured.'}</p>
 <p class="rd" id="ae"></p>
 <div class="row" style="margin-top:12px">
 ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:a?'':'<button class="btn pri" onclick="cl();conn()">Connect Wallet first</button>'}
@@ -327,7 +327,7 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from the bot wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Requires the server bot signing key. Confirmed on explorers — never simulated. Start with a small test amount.</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Requires the server bot signing key. Broadcast on-chain and confirmed on explorers — never a simulated fill. Start with a small test amount.</p>
 <label>From</label><select id="wb"><option value="savings">Savings</option><option value="trading">Trading (available)</option></select>
 <label>Amount (${X.u})</label><input id="wa" type="number" step="any" min="0" placeholder="${presets[0]}">
 <div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-wamt="${p}">${p} ${X.u}</button>`).join('')}</div>
@@ -408,29 +408,36 @@ async function finishConnect(e,N,connected){
   cl();toast(N+' wallet connected');draw();
 }
 async function restoreWallets(){
-  try{
-    const w=await waitWallet(8000);
-    const sol=w?.getAddress?.('sol'); const evm=w?.getAddress?.('evm');
-    if(sol)wallet.sol=sol; if(evm)wallet.evm=evm;
-  }catch{}
+  // Only restore from authenticated session — never from AppKit cache alone
+  // (that kept showing an address after Disconnect).
+  wallet.sol=null; wallet.evm=null;
   try{
     const me=await api('GET','/api/auth/me');
     if(me?.authenticated&&me.user?.address){
       if(me.user.chain==='SOLANA')wallet.sol=me.user.address;
       else wallet.evm=me.user.address;
+      try{localStorage.setItem('cpy_wallet_'+(me.user.chain==='SOLANA'?'sol':'evm'),me.user.address)}catch{}
+    }else{
+      try{localStorage.removeItem('cpy_wallet_sol');localStorage.removeItem('cpy_wallet_evm')}catch{}
     }
-  }catch{}
-  for(const e of['sol','evm']){
-    try{const saved=localStorage.getItem('cpy_wallet_'+e); if(saved&&!wallet[e])wallet[e]=saved}catch{}
+  }catch{
+    try{localStorage.removeItem('cpy_wallet_sol');localStorage.removeItem('cpy_wallet_evm')}catch{}
   }
   draw();
 }
-function disconnectMode(e){
+async function disconnectMode(e){
   wallet[e]=null;
   try{localStorage.removeItem('cpy_wallet_'+e)}catch{}
-  window.CopyraWallet?.disconnect?.(e).catch(()=>{});
-  api('POST','/api/auth/logout').catch(()=>{});
-  cl();toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');draw();
+  try{await window.CopyraWallet?.disconnect?.(e)}catch{}
+  try{await api('POST','/api/auth/logout')}catch{}
+  // Clear account-layer wallet mirrors so the header cannot snap back to an address.
+  try{if(typeof user!=='undefined'&&user&&user.wallets){user.wallets[e]=null}}catch{}
+  cl();
+  toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');
+  draw();
+  // Force label in case draw raced with an AppKit account event.
+  const cn=$('#cn');
+  if(cn&&!wallet[M]){cn.textContent='Connect Wallet';cn.title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
 }
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  // Always show Open wallet list — including when already connected (same address ok).
@@ -497,6 +504,8 @@ window.addEventListener('copyra-wallet-ready',()=>{
 let cnWait=false;
 function beginConnectFromClick(){
   const e=M,N=e==='sol'?'Solana':'EVM';
+  // Already signed-in for this mode → open panel (Disconnect / reconnect), do not re-stamp connected.
+  if(wallet[e]){conn();return}
   const w=window.CopyraWallet;
   if(!w?.ready||!w.projectIdConfigured){conn();return}
   try{w.setMode?.(e)}catch{}

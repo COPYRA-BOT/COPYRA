@@ -218,9 +218,18 @@ export async function buildSolanaDepositTransaction(input: {
 
   const from = new PublicKey(input.fromAddress);
   const to = new PublicKey(toAddress);
-  const { value: latest } = await solanaPool().call('getLatestBlockhash', (c) =>
-    c.getLatestBlockhash('confirmed'),
-  );
+  // Sticky primary RPC: blockhash from Helius must not be simulated later on Alchemy
+  // (that cross-endpoint hop caused "Blockhash not found" in deposit preflight).
+  const { client: solClient } = solanaPool().primary();
+  const balance = await solClient.getBalance(from, 'confirmed');
+  // Keep a small fee buffer so Phantom / wallets can pay the network fee.
+  const feeBuffer = 5_000n;
+  if (BigInt(balance) < lamports + feeBuffer) {
+    throw new Error(
+      `Not enough SOL in the connected wallet. Need ~${((Number(lamports) + Number(feeBuffer)) / 1e9).toFixed(4)} SOL including fees; wallet has ${(balance / 1e9).toFixed(4)} SOL.`,
+    );
+  }
+  const latest = await solClient.getLatestBlockhash('confirmed');
 
   const message = new TransactionMessage({
     payerKey: from,
@@ -289,14 +298,14 @@ export async function broadcastSolanaDeposit(input: {
     throw new Error('signedTransaction is not a valid base64 VersionedTransaction.');
   }
 
-  const send = await solanaPool().call('sendRawTransaction', (client) =>
-    client.sendRawTransaction(transaction.serialize(), {
-      skipPreflight: false,
-      maxRetries: 0,
-      preflightCommitment: 'confirmed',
-    }),
-  );
-  const signature = send.value;
+  // Real on-chain broadcast: skip RPC preflight simulation (wallet already reviewed the tx).
+  // Stick to the primary RPC so we never re-simulate a Helius blockhash on Alchemy.
+  const { client: solClient } = solanaPool().primary();
+  const signature = await solClient.sendRawTransaction(transaction.serialize(), {
+    skipPreflight: true,
+    maxRetries: 3,
+    preflightCommitment: 'confirmed',
+  });
   const confirmation = await confirmSolanaTransaction(signature, input.lastValidBlockHeight, 60_000);
 
   await prisma.transfer.create({
@@ -366,9 +375,8 @@ export async function withdrawToWallet(input: {
 
   if (config.kind === 'solana') {
     const to = new PublicKey(input.toAddress);
-    const { value: latest } = await solanaPool().call('getLatestBlockhash', (c) =>
-      c.getLatestBlockhash('confirmed'),
-    );
+    const { client: solClient } = solanaPool().primary();
+    const latest = await solClient.getLatestBlockhash('confirmed');
     const message = new TransactionMessage({
       payerKey: new PublicKey(botAddress),
       recentBlockhash: latest.blockhash,
@@ -382,14 +390,12 @@ export async function withdrawToWallet(input: {
     }).compileToV0Message();
     const tx = new VersionedTransaction(message);
     solanaSigner.sign(tx);
-    const send = await solanaPool().call('sendRawTransaction', (client) =>
-      client.sendRawTransaction(tx.serialize(), {
-        skipPreflight: false,
-        maxRetries: 0,
-        preflightCommitment: 'confirmed',
-      }),
-    );
-    txHash = send.value;
+    // Real on-chain withdraw — no RPC preflight simulation hop across providers.
+    txHash = await solClient.sendRawTransaction(tx.serialize(), {
+      skipPreflight: true,
+      maxRetries: 3,
+      preflightCommitment: 'confirmed',
+    });
     const confirmation = await confirmSolanaTransaction(txHash, latest.lastValidBlockHeight, 60_000);
     status = confirmation.status;
     error = confirmation.error;

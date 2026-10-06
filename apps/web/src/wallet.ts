@@ -277,7 +277,8 @@ async function init(): Promise<WalletApi> {
   });
 
   const queryClient = new QueryClient();
-  const siteOrigin = window.location.origin || 'https://copyra.fun';
+  // Canonical verified site for wallet metadata — DO preview hosts get flagged by Phantom.
+  const siteOrigin = 'https://copyra.fun';
 
   const modal = createAppKit({
     adapters: [wagmiAdapter, solanaAdapter],
@@ -286,6 +287,7 @@ async function init(): Promise<WalletApi> {
     metadata: {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
+      // Always advertise the production domain so wallets trust the app.
       url: siteOrigin,
       icons: [`${siteOrigin}/icons/copyra.webp`],
     },
@@ -398,35 +400,39 @@ async function init(): Promise<WalletApi> {
   function openAppKit(mode: WalletMode): void {
     activeMode = mode;
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    mountHeaderConnectOverlay(mode);
-    // Sync — desktop browsers require the user-gesture. Always force the list,
-    // including when the same address is already linked.
+    // Remount overlay only when mode changes — avoids Chrome re-creating custom elements each click.
+    const wrap = document.getElementById('cn-wrap');
+    const overlayNs = wrap
+      ?.querySelector('appkit-button')
+      ?.getAttribute('namespace');
+    if (overlayNs !== namespace) {
+      mountHeaderConnectOverlay(mode);
+    }
+    // Connect view first (fast on Chrome). All Wallets stays one tap inside AppKit.
+    // Same formula as Phase 1 — sync open from the user-gesture, no await.
     try {
-      void modal.open({ view: 'AllWallets', namespace });
+      void modal.open({ view: 'Connect', namespace });
     } catch {
       try {
-        void modal.open({ view: 'Connect', namespace });
+        void modal.open({ view: 'Connect' });
       } catch {
         try {
-          void modal.open({ view: 'Connect' });
+          void modal.open({ view: 'AllWallets', namespace });
         } catch {
           /* ignore */
         }
       }
     }
+    // Only nudge if the first open was dropped (Chrome sometimes needs one retry).
     window.setTimeout(() => {
       if (!isAppKitOpen()) {
         try {
           void modal.open({ view: 'Connect', namespace });
         } catch {
-          try {
-            void modal.open({ view: 'AllWallets', namespace });
-          } catch {
-            /* ignore */
-          }
+          /* ignore */
         }
       }
-    }, 100);
+    }, 60);
   }
 
   async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {

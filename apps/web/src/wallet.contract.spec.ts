@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
  * Locks the AppKit formula behaviour we rely on for desktop Connect.
  */
 describe('wallet connect contract', () => {
-  it('opens AllWallets for the active namespace and never fakes modal-open', () => {
+  it('opens Connect for the active namespace quickly (Chrome-friendly)', () => {
     // Document the open order used by apps/web/src/wallet.ts openAppKit:
     const attempts: string[] = [];
     const open = (opts: { view: string; namespace?: string }) => {
@@ -13,11 +13,11 @@ describe('wallet connect contract', () => {
     };
     const namespace = 'solana';
     try {
-      open({ view: 'AllWallets', namespace });
-    } catch {
       open({ view: 'Connect', namespace });
+    } catch {
+      open({ view: 'AllWallets', namespace });
     }
-    expect(attempts[0]).toBe('AllWallets:solana');
+    expect(attempts[0]).toBe('Connect:solana');
   });
 
   it('does not instant-resolve same-address reconnect without seeing the modal open', () => {
