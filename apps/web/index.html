@@ -490,21 +490,21 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
   ?'Moves reserved savings back into trading. <b>Deposits already sit in Trading</b> — you only need this if you previously moved funds to Savings.'
   :'Reserves part of your trading balance so the copy engine cannot spend it. No on-chain transfer.';
  md(`<h3>${title}</h3><p class="mu">${note}</p>
-${e==='evm'?`<label>Network</label><select id="mc">${chainOpts}</select>`:''}
+${e==='evm'?`<label>Network</label><select id="mvch">${chainOpts}</select>`:''}
 <div id="mv-amt">${amtFieldHtml(e,X,maxForChain(defaultCh),'ma',null)}</div>
 <p class="mu" id="mvhint">${d==='s2t'&&Number(f(e,S[e].sav))<=0?'Savings is empty. Your deposited balance is in <b>Trading</b> — use Withdraw from Trading to send it out.':''}</p>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok"${d==='s2t'&&Number(f(e,S[e].sav))<=0?' disabled':''}>${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
  let readAmt=bindAmtField(e,'ma',maxForChain(defaultCh));
  const rebind=()=>{
-  const ch=$('#mc')?.value||defaultCh;
+  const ch=$('#mvch')?.value||defaultCh;
   const max=maxForChain(ch);
   $('#mv-amt').innerHTML=amtFieldHtml(e,X,max,'ma',null);
   readAmt=bindAmtField(e,'ma',max);
  };
- if(e==='evm')$('#mc').onchange=rebind;
+ if(e==='evm')$('#mvch').onchange=rebind;
  $('#ok').onclick=async()=>{
-  const chKey=$('#mc')?.value||defaultCh;
+  const chKey=$('#mvch')?.value||defaultCh;
   const max=maxForChain(chKey);
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u}.`;
