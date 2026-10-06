@@ -386,12 +386,25 @@ async function init(): Promise<WalletApi> {
 
   async function openAppKit(mode: WalletMode): Promise<void> {
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    // Jump straight to the full explorer so users see every wallet + WalletConnect QR,
-    // not only the one injected extension (Phantom).
+    // Desktop browsers often hang forever on AllWallets (explorer API). Connect
+    // paints immediately with featured wallets + All Wallets — same list users want.
+    const openOnce = () => modal.open({ view: 'Connect', namespace });
     try {
-      await modal.open({ view: 'AllWallets', namespace });
+      await Promise.race([
+        openOnce(),
+        sleep(1500), // copyra-audit-allow: do not block forever if AppKit open hangs on desktop
+      ]);
     } catch {
-      await modal.open({ view: 'Connect', namespace });
+      /* retry below */
+    }
+    // Desktop Chrome/Edge sometimes drop the first open() — nudge once if still closed.
+    try {
+      const state = modal.getState?.() as { open?: boolean } | undefined;
+      if (state && state.open === false) {
+        await Promise.race([openOnce(), sleep(1500)]); // copyra-audit-allow: second open nudge
+      }
+    } catch {
+      void openOnce();
     }
   }
 
@@ -409,19 +422,27 @@ async function init(): Promise<WalletApi> {
     },
 
     async connect(mode) {
-      // Clear a stale same-namespace session so the full list opens again
-      // (otherwise AppKit can skip straight to the already-injected Phantom).
+      // Open the wallet list FIRST so PC matches mobile speed. Do not await a
+      // slow disconnect/explorer call before the modal is visible.
+      const opening = openAppKit(mode);
+
+      // Soft-clear a stale injected session in the background (non-blocking).
       try {
         const existing = mode === 'sol' ? readSolAddress() : readEvmAddress();
         if (existing) {
-          await modal.disconnect(mode === 'sol' ? 'solana' : 'eip155');
-          await sleep(200);
+          void Promise.race([
+            modal.disconnect(mode === 'sol' ? 'solana' : 'eip155'),
+            sleep(500), // copyra-audit-allow: cap disconnect wait so popup is not delayed
+          ]).then(() => {
+            // Re-open list after soft disconnect in case AppKit closed itself.
+            void openAppKit(mode);
+          });
         }
       } catch {
         /* ignore */
       }
 
-      await openAppKit(mode);
+      await opening;
 
       const deadline = Date.now() + 180_000;
       while (Date.now() < deadline) {
