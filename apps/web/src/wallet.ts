@@ -400,10 +400,22 @@ async function init(): Promise<WalletApi> {
     return Number.isFinite(n) ? n : null;
   }
 
+  function isAppKitOpen(): boolean {
+    try {
+      if (modal.getState?.()?.open) return true;
+    } catch {
+      /* ignore */
+    }
+    // w3m-modal always exists in the DOM; only `.open` means the list is visible.
+    return Boolean(
+      document.querySelector('w3m-modal.open') || document.querySelector('appkit-modal.open'),
+    );
+  }
+
   function openAppKit(mode: WalletMode): void {
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    // Always force the Connect wallet list — even if this address is already linked.
     // Must stay sync (no await) so desktop browsers keep the user-gesture.
+    // Always force the Connect wallet list — even if this address is already linked.
     try {
       void modal.open({ view: 'Connect', namespace });
     } catch {
@@ -413,15 +425,13 @@ async function init(): Promise<WalletApi> {
         /* ignore */
       }
     }
-    // Desktop nudge: if the first open was dropped, retry momentarily.
     window.setTimeout(() => {
-      try {
-        const state = modal.getState?.() as { open?: boolean } | undefined;
-        if (!state?.open) {
+      if (!isAppKitOpen()) {
+        try {
           void modal.open({ view: 'Connect', namespace });
+        } catch {
+          /* ignore */
         }
-      } catch {
-        void modal.open({ view: 'Connect', namespace });
       }
     }, 120);
   }
@@ -429,43 +439,47 @@ async function init(): Promise<WalletApi> {
   async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {
     // Snapshot any already-connected address so we don't instant-resolve and skip the popup
     // when the user opens the list again for the same wallet.
-    const prior =
-      mode === 'sol' ? readSolAddress() : readEvmAddress();
+    const prior = mode === 'sol' ? readSolAddress() : readEvmAddress();
     const priorNorm = prior ? prior.toLowerCase() : null;
     const started = Date.now();
     let sawModalOpen = false;
 
     while (Date.now() - started < 180_000) {
-      const state = modal.getState?.() as { open?: boolean } | undefined;
-      const isOpen = Boolean(state?.open);
+      const isOpen = isAppKitOpen();
       if (isOpen) sawModalOpen = true;
+
+      // Wait until the list actually opens — never fake "open".
+      if (!sawModalOpen) {
+        await sleep(180);
+        continue;
+      }
 
       if (mode === 'sol') {
         const address = readSolAddress();
-        if (address && sawModalOpen && !isOpen) {
-          // Modal opened then closed with a Solana address (same or new).
-          await sleep(150);
+        // Modal opened then closed with a Solana address (same or new) — accept.
+        if (address && !isOpen) {
+          await sleep(120);
           return { address, chain: 'SOLANA', mode };
         }
         // Address changed while modal still open — accept the new pick.
-        if (address && sawModalOpen && priorNorm && address.toLowerCase() !== priorNorm) {
+        if (address && priorNorm && address.toLowerCase() !== priorNorm) {
           try {
             await modal.close();
           } catch {
             /* ignore */
           }
-          await sleep(150);
+          await sleep(120);
           return { address, chain: 'SOLANA', mode };
         }
       } else {
         if (evmAccount.isConnecting) {
-          await sleep(150);
+          await sleep(120);
           continue;
         }
         const address = readEvmAddress();
-        if (address && sawModalOpen && !isOpen) {
+        if (address && !isOpen) {
           const chainId = readEvmChainId() ?? 1;
-          await sleep(150);
+          await sleep(120);
           return {
             address,
             chain: evmChainFromId(chainId),
@@ -473,14 +487,14 @@ async function init(): Promise<WalletApi> {
             mode,
           };
         }
-        if (address && sawModalOpen && priorNorm && address.toLowerCase() !== priorNorm) {
+        if (address && priorNorm && address.toLowerCase() !== priorNorm) {
           const chainId = readEvmChainId() ?? 1;
           try {
             await modal.close();
           } catch {
             /* ignore */
           }
-          await sleep(150);
+          await sleep(120);
           return {
             address,
             chain: evmChainFromId(chainId),
@@ -489,11 +503,9 @@ async function init(): Promise<WalletApi> {
           };
         }
       }
-      await sleep(200);
+      await sleep(180);
     }
-    throw new Error(
-      'Wallet connect timed out. Tap Open full wallet list again and pick a wallet.',
-    );
+    throw new Error('Wallet connect timed out. Tap Connect Wallet again to reopen the list.');
   }
 
   return {

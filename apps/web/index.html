@@ -3,7 +3,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>copyra.</title>
 <link rel="icon" type="image/png" href="/icons/favicon.png">
-<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Inter+Tight:wght@800&display=swap">
 <style>
 :root{--bg:#F6F5F3;--sf:#fff;--sf2:#E6E3DC;--ln:#E3E0DA;--tx:#1C1D21;--mu:#7B7D84;--ac:#D57658;--gl:0 8px 24px rgba(213,118,88,.3);--g:#1F9D6B;--r:#D64550;--w:#C98A12;--sol:#6E56E0;--evm:#3F6FD8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0)}
@@ -57,7 +56,7 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 <header class="h"><button class="ib" onclick="nav.classList.toggle('o')" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
 <div class="logo"><img class="brand" src="/icons/copyra.png" width="36" height="36" alt="COPYRA">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
-<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img id="mi" src="/icons/solana.svg" width="34" height="34" alt="Solana"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
+<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img id="mi" src="/icons/solana.png" width="34" height="34" alt="Solana"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
 <button class="ib" id="th" aria-label="Theme"></button><button class="btn pri" id="cn">Connect Wallet</button></header>
 <div id="nav"></div><div id="dr"></div><div id="sc" onclick="nav.classList.remove('o');dr.classList.remove('o')"></div><div id="md"><div></div></div><div id="ts"></div>
 <main><div class="eb">The Copyra ecosystem</div><h1>Follow the smart money<i>.</i></h1><p class="sub">Every wallet. Every chain. Your rules.</p>
@@ -233,7 +232,7 @@ function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pt
  return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'—'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'—'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'—'}</b></div></div>
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
 <div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${H.slice(0,60).map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div></div>`}
-function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const mi=$('#mi');if(mi){mi.src=w?'/icons/solana.svg':'/icons/evm.svg';mi.alt=w?'Solana':'EVM'}$('#mc')?.classList.toggle('evm',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
+function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const mi=$('#mi');if(mi){mi.src=w?'/icons/solana.png':'/icons/evm.png';mi.alt=w?'Solana':'EVM'}$('#mc')?.classList.toggle('evm',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
  {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
   else if(a){$('#cn').textContent='● '+a.slice(0,4)+'…'+a.slice(-4);$('#cn').title=M.toUpperCase()+' wallet connected'}
@@ -449,7 +448,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
     const openNow=()=>{
       $('#ae').textContent='';
       $('#ws').textContent='Opening wallet list…';
-      // Desktop: open MUST run inside this click (user gesture).
+      // Desktop: open MUST run inside this click (user gesture) — before any await.
       try{w.openModal(e)}catch{}
       awaitPick().then(afterPick).catch(onFail);
     };
@@ -468,8 +467,18 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
 window.addEventListener('copyra-wallet-account',()=>{try{draw()}catch{}});
 // Always open AppKit in the SAME click tick (desktop user-gesture). Works every time, even if already connected.
 $('#cn').onclick=()=>{
-  if(window.CopyraWallet?.ready){
-    try{window.CopyraWallet.openModal(M)}catch{}
+  const e=M,N=e==='sol'?'Solana':'EVM';
+  const w=window.CopyraWallet;
+  if(w?.ready&&w.projectIdConfigured){
+    try{w.openModal(e)}catch{}
+    w.waitForConnection(e).then(async(connected)=>{
+      toast('Approve the sign-in in your wallet…');
+      await finishConnect(e,N,connected);
+    }).catch((err)=>{
+      toast((err&&err.message)||'Tap Connect Wallet again to reopen the list.');
+      conn();
+    });
+    return;
   }
   conn();
 };
