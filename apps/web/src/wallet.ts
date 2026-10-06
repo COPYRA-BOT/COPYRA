@@ -305,7 +305,7 @@ async function init(): Promise<WalletApi> {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
       url: siteOrigin,
-      icons: [`${siteOrigin}/icons/copyra.svg`],
+      icons: [`${siteOrigin}/icons/copyra.png`],
     },
     // Match platform UI fonts; high z-index so desktop AppKit sits above our modals.
     themeMode: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
@@ -402,8 +402,8 @@ async function init(): Promise<WalletApi> {
 
   function openAppKit(mode: WalletMode): void {
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    // CRITICAL for desktop: do NOT await a hanging promise before the modal paints,
-    // and call open() synchronously from a user-gesture click stack.
+    // Always force the Connect wallet list — even if this address is already linked.
+    // Must stay sync (no await) so desktop browsers keep the user-gesture.
     try {
       void modal.open({ view: 'Connect', namespace });
     } catch {
@@ -413,31 +413,48 @@ async function init(): Promise<WalletApi> {
         /* ignore */
       }
     }
-    // Desktop Chrome sometimes needs a second nudge after layout.
-    requestAnimationFrame(() => {
+    // Desktop nudge: if the first open was dropped, retry momentarily.
+    window.setTimeout(() => {
       try {
         const state = modal.getState?.() as { open?: boolean } | undefined;
-        if (state && state.open === false) {
+        if (!state?.open) {
           void modal.open({ view: 'Connect', namespace });
         }
       } catch {
         void modal.open({ view: 'Connect', namespace });
       }
-    });
+    }, 120);
   }
 
   async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {
-    const deadline = Date.now() + 180_000;
-    while (Date.now() < deadline) {
+    // Snapshot any already-connected address so we don't instant-resolve and skip the popup
+    // when the user opens the list again for the same wallet.
+    const prior =
+      mode === 'sol' ? readSolAddress() : readEvmAddress();
+    const priorNorm = prior ? prior.toLowerCase() : null;
+    const started = Date.now();
+    let sawModalOpen = false;
+
+    while (Date.now() - started < 180_000) {
+      const state = modal.getState?.() as { open?: boolean } | undefined;
+      const isOpen = Boolean(state?.open);
+      if (isOpen) sawModalOpen = true;
+
       if (mode === 'sol') {
         const address = readSolAddress();
-        if (address) {
+        if (address && sawModalOpen && !isOpen) {
+          // Modal opened then closed with a Solana address (same or new).
+          await sleep(150);
+          return { address, chain: 'SOLANA', mode };
+        }
+        // Address changed while modal still open — accept the new pick.
+        if (address && sawModalOpen && priorNorm && address.toLowerCase() !== priorNorm) {
           try {
             await modal.close();
           } catch {
             /* ignore */
           }
-          await sleep(200);
+          await sleep(150);
           return { address, chain: 'SOLANA', mode };
         }
       } else {
@@ -446,14 +463,24 @@ async function init(): Promise<WalletApi> {
           continue;
         }
         const address = readEvmAddress();
-        if (address) {
+        if (address && sawModalOpen && !isOpen) {
+          const chainId = readEvmChainId() ?? 1;
+          await sleep(150);
+          return {
+            address,
+            chain: evmChainFromId(chainId),
+            chainId,
+            mode,
+          };
+        }
+        if (address && sawModalOpen && priorNorm && address.toLowerCase() !== priorNorm) {
           const chainId = readEvmChainId() ?? 1;
           try {
             await modal.close();
           } catch {
             /* ignore */
           }
-          await sleep(200);
+          await sleep(150);
           return {
             address,
             chain: evmChainFromId(chainId),
@@ -462,10 +489,10 @@ async function init(): Promise<WalletApi> {
           };
         }
       }
-      await sleep(250);
+      await sleep(200);
     }
     throw new Error(
-      'Wallet connect timed out. Use All Wallets / WalletConnect QR in the AppKit list, then try again.',
+      'Wallet connect timed out. Tap Open full wallet list again and pick a wallet.',
     );
   }
 

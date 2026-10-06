@@ -2,8 +2,8 @@
 <html lang="en" data-theme="dark"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>copyra.</title>
+<link rel="icon" type="image/png" href="/icons/favicon.png">
 <link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">
-<link rel="alternate icon" type="image/png" href="/icons/favicon.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Inter+Tight:wght@800&display=swap">
 <style>
 :root{--bg:#F6F5F3;--sf:#fff;--sf2:#E6E3DC;--ln:#E3E0DA;--tx:#1C1D21;--mu:#7B7D84;--ac:#D57658;--gl:0 8px 24px rgba(213,118,88,.3);--g:#1F9D6B;--r:#D64550;--w:#C98A12;--sol:#6E56E0;--evm:#3F6FD8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0)}
@@ -55,7 +55,7 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
 <header class="h"><button class="ib" onclick="nav.classList.toggle('o')" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
-<div class="logo"><img class="brand" src="/icons/copyra.svg" width="36" height="36" alt="COPYRA">copyra<i>.</i></div>
+<div class="logo"><img class="brand" src="/icons/copyra.png" width="36" height="36" alt="COPYRA">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
 <button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img id="mi" src="/icons/solana.svg" width="34" height="34" alt="Solana"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
 <button class="ib" id="th" aria-label="Theme"></button><button class="btn pri" id="cn">Connect Wallet</button></header>
@@ -415,32 +415,25 @@ function disconnectMode(e){
   cl();toast((e==='sol'?'Solana':'EVM')+' wallet disconnected');draw();
 }
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
- const st=window.CopyraWallet?.getAccountStatus?.();
- if(a0){
-  const line=e==='evm'&&st?.evm
-    ?(st.evm.isConnecting?'Connecting…':st.evm.isDisconnected?'Session wallet saved — reconnect to refresh.':('Connected Wallet: '+a0))
-    :('Connected Wallet: '+a0);
-  md(`<h3>${N} wallet</h3><p class="mu">${line}</p><p class="mu">Connected in ${e.toUpperCase()} Mode only. ${e=='sol'?'EVM':'SOL'} Mode uses a separate wallet. This proves identity for deposit / withdraw — the bot key on the server is what copy-trades.</p><input readonly value="${a0}"><div class="row" style="margin-top:12px"><button class="btn red" id="dx">Disconnect</button><button class="btn" onclick="cl()">Close</button></div>`);
-  $('#dx').onclick=()=>disconnectMode(e);
-  return;
- }
- // Official Reown formula: mount <appkit-button> (modern <w3m-core-button>) in the modal.
- md(`<h3>Connect ${N} wallet</h3>
-<p class="mu">Tap <b>Open full wallet list</b> (or the WalletConnect button). Desktop browsers require that click so the list can pop — MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, All Wallets…</p>
+ // Always show Open wallet list — including when already connected (same address ok).
+ md(`<h3>${a0?'Reconnect ':'Connect '}${N} wallet</h3>
+${a0?`<p class="mu">Connected Wallet: <b style="color:var(--tx)">${a0}</b>. You can open the list again anytime — same address is fine.</p>`:''}
+<p class="mu">Tap <b>Open full wallet list</b> to pop the Reown wallet picker (MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, All Wallets…).</p>
 <div id="akhost" style="width:100%;margin:14px 0;min-height:48px"></div>
 <button class="btn pri" id="bw" style="width:100%">Open full wallet list</button>
-<p class="mu" id="ws">Preparing…</p>
+${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconnect</button>`:''}
+<p class="mu" id="ws">Ready — tap Open full wallet list.</p>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
- // Let AppKit sit above our dialog on desktop (z-index + non-blocking backdrop).
+ // Transparent backdrop so AppKit is clickable on desktop.
  const shell=$('#md'); if(shell){shell.style.background='transparent';shell.style.pointerEvents='none'; const box=shell.firstElementChild; if(box){box.style.pointerEvents='auto';box.style.boxShadow='0 16px 48px rgba(0,0,0,.45)'}}
+ if(a0)$('#dx').onclick=()=>disconnectMode(e);
  (async()=>{
   try{
     const w=await waitWallet();
     if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, redeploy, then hard-refresh.');
     const host=$('#akhost');
     if(host&&w.mountConnectButton)w.mountConnectButton(host,e);
-    $('#ws').textContent='Tap Open full wallet list — the Reown popup uses Figtree like the rest of COPYRA.';
     const awaitPick=()=>w.waitForConnection
       ? w.waitForConnection(e)
       : w.connect(e,{skipOpen:true});
@@ -451,16 +444,19 @@ function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
     const onFail=(err)=>{
       const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
       $('#ae').textContent=msg;
-      $('#ws').textContent='Tap Open full wallet list again.';
+      $('#ws').textContent='Tap Open full wallet list again anytime.';
     };
-    $('#bw').onclick=()=>{
+    const openNow=()=>{
       $('#ae').textContent='';
-      // Desktop: open MUST run inside this click (user gesture). Do not await first.
+      $('#ws').textContent='Opening wallet list…';
+      // Desktop: open MUST run inside this click (user gesture).
       try{w.openModal(e)}catch{}
       awaitPick().then(afterPick).catch(onFail);
     };
-    // If wallet was already warm, also try open once here (still in first paint after click chain on mobile).
-    if(w.ready){ try{w.openModal(e); awaitPick().then(afterPick).catch(()=>{$('#ws').textContent='If the list did not appear, tap Open full wallet list.';});}catch{} }
+    $('#bw').onclick=openNow;
+    // Also wire the official <appkit-button> click → same wait loop.
+    const ak=host&&host.querySelector('appkit-button');
+    if(ak)ak.addEventListener('click',()=>{ $('#ae').textContent=''; $('#ws').textContent='Opening wallet list…'; awaitPick().then(afterPick).catch(onFail); },{passive:true});
   }catch(err){
     const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
     $('#ae').textContent=msg;
@@ -470,11 +466,10 @@ function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  })();
 }
 window.addEventListener('copyra-wallet-account',()=>{try{draw()}catch{}});
-// Open AppKit in the SAME click tick on desktop (user-gesture required).
+// Always open AppKit in the SAME click tick (desktop user-gesture). Works every time, even if already connected.
 $('#cn').onclick=()=>{
-  const e=M;
-  if(!wallet[e]&&window.CopyraWallet?.ready){
-    try{window.CopyraWallet.openModal(e)}catch{}
+  if(window.CopyraWallet?.ready){
+    try{window.CopyraWallet.openModal(M)}catch{}
   }
   conn();
 };
@@ -501,7 +496,7 @@ restoreWallets();
 @media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}}
 @media(max-width:760px){#ft .fw{grid-template-columns:1fr 1fr}#ft .fw>div:first-child{grid-column:1/-1}}
 </style>
-<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.svg" width="28" height="28" alt="COPYRA">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
+<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.png" width="28" height="28" alt="COPYRA">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
 <div class="so"><a href="https://x.com/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on X"><svg viewBox="0 0 24 24"><path d="M18.2 2H21l-6.5 7.4L22 22h-6l-4.7-6.2L5.8 22H3l7-8L2 2h6.1l4.3 5.7L18.2 2zm-1 18h1.6L7 3.9H5.3L17.2 20z"/></svg></a><a href="https://t.me/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on Telegram"><svg viewBox="0 0 24 24"><path d="M21.5 3.3L2.7 10.6c-.9.4-.9 1.2 0 1.5l4.8 1.5 1.8 5.5c.2.6.5.6.9.2l2.6-2.4 4.9 3.6c.9.5 1.5.2 1.7-.8L22.9 4.5c.3-1.2-.4-1.7-1.4-1.2zM8.5 13l9.6-6c.5-.3.9-.1.5.2l-8 7.2-.3 3.4L8.5 13z"/></svg></a></div></div>
 <div><b>Platform</b><a onclick="T='trading';draw();scrollTo(0,0)">Trading</a><a onclick="T='board';draw();scrollTo(0,0)">Leaderboard</a><a onclick="CPY.go('ref')">Referrals</a></div>
 <div><b>Security</b><a onclick="CPY.go('dev')">Devices &amp; passkeys</a><a onclick="CPY.go('acct')">Account &amp; 2FA</a><a onclick="CPY.info('sec')">How we protect you</a></div>
