@@ -126,8 +126,9 @@ function hydrate(snap){
   if(row.trailingDropPct!=null)next.set.trTrail=Number(row.trailingDropPct);
   if(row.exitStrategy)next.set.tpMode=row.exitStrategy;
   const signer=e==='sol'?status.signers?.solana:status.signers?.evm;
-  next.wa=signer?.address||null;
   const wallets=(snap.balances?.wallets)||[];
+  const scoped=wallets.find(w=>modeOf(w.chain)===e&&w.userScoped&&w.address);
+  next.wa=scoped?.address||signer?.address||null;
   for(const w of wallets){
    const md=modeOf(w.chain); if(md!==e)continue;
    if(typeof w.native==='number'){

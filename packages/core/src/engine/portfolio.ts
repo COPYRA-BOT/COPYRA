@@ -55,10 +55,10 @@ export interface OnChainBalance {
  * stale balance is how a bot over-commits and starts producing failed
  * transactions. The read block/slot is returned so staleness is measurable.
  */
-export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> {
-  const address = tradingWalletAddress(chain);
-  if (!address) throw new NoTradingWalletError(chain);
-
+export async function readOnChainBalanceForAddress(
+  chain: Chain,
+  address: string,
+): Promise<OnChainBalance> {
   const config = chainConfig(chain);
   const quotePriceUsd = await getQuoteAssetPriceUsd(chain);
 
@@ -78,7 +78,6 @@ export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> 
 
   const native = await getNativeBalance(chain, address);
   const totalQuote = Number(native.amountRaw) / 10 ** config.nativeDecimals;
-  // Hold back gas. An EVM exit that cannot pay for itself is a trapped position.
   const gasReserve = 0.002;
   return {
     availableQuote: Math.max(0, totalQuote - gasReserve),
@@ -89,6 +88,12 @@ export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> 
     readAt: new Date(),
     address,
   };
+}
+
+export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> {
+  const address = tradingWalletAddress(chain);
+  if (!address) throw new NoTradingWalletError(chain);
+  return readOnChainBalanceForAddress(chain, address);
 }
 
 /** Persists a balance snapshot so the dashboard can show read-time and source. */

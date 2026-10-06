@@ -20,32 +20,32 @@ describe('owner wallet gate', () => {
   });
 
   it('rejects clearly non-owner Solana address when owner is configured', async () => {
-    const { ownerWalletForChain, isOwnerWallet, assertOwnerWallet } = await import(
+    const { ownerWalletForChain, isOwnerWallet, assertAdminWallet } = await import(
       './owner-wallet.js'
     );
     const owner = ownerWalletForChain(Chain.SOLANA);
     if (!owner) {
-      expect(() => assertOwnerWallet('7EqQdEUSxH4xviK3jY5W8s2nQv8m1kP9oL3rT6uY2xA', Chain.SOLANA)).toThrow(
-        /OWNER_WALLET_SOLANA/,
+      expect(() => assertAdminWallet('7EqQdEUSxH4xviK3jY5W8s2nQv8m1kP9oL3rT6uY2xA', Chain.SOLANA)).toThrow(
+        /OWNER_WALLET_SOLANA|admin/i,
       );
       return;
     }
     expect(isOwnerWallet(owner, Chain.SOLANA)).toBe(true);
     expect(isOwnerWallet('11111111111111111111111111111111', Chain.SOLANA)).toBe(false);
-    expect(() => assertOwnerWallet('11111111111111111111111111111111', Chain.SOLANA)).toThrow(
-      /owner wallet/i,
+    expect(() => assertAdminWallet('11111111111111111111111111111111', Chain.SOLANA)).toThrow(
+      /admin/i,
     );
   });
 
   it('rejects clearly non-owner EVM address when owner is configured', async () => {
-    const { ownerWalletForChain, isOwnerWallet, assertOwnerWallet } = await import(
+    const { ownerWalletForChain, isOwnerWallet, assertAdminWallet } = await import(
       './owner-wallet.js'
     );
     const owner = ownerWalletForChain(Chain.BASE);
     if (!owner) {
       expect(() =>
-        assertOwnerWallet('0x0000000000000000000000000000000000000001', Chain.BASE),
-      ).toThrow(/OWNER_WALLET_EVM/);
+        assertAdminWallet('0x0000000000000000000000000000000000000001', Chain.BASE),
+      ).toThrow(/OWNER_WALLET_EVM|admin/i);
       return;
     }
     expect(isOwnerWallet(owner, Chain.BASE)).toBe(true);

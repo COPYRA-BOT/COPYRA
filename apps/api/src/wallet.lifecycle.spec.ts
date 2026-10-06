@@ -44,13 +44,12 @@ describe('wallet session lifecycle contracts', () => {
     expect(msgBase).toContain('Chain ID: 8453');
   });
 
-  it('owner gate blocks non-owner deposit/withdraw/trade', async () => {
-    const { assertOwnerWallet } = await import('@copyra/core');
+  it('admin gate blocks non-admin emergency actions', async () => {
+    const { assertAdminWallet } = await import('@copyra/core');
     try {
-      assertOwnerWallet('0x0000000000000000000000000000000000000001', Chain.BASE);
-      // If OWNER_WALLET_EVM is unset, assert throws config error; if set, throws owner mismatch.
+      assertAdminWallet('0x0000000000000000000000000000000000000001', Chain.BASE);
     } catch (error) {
-      expect(String(error)).toMatch(/OWNER_WALLET|owner wallet/i);
+      expect(String(error)).toMatch(/OWNER_WALLET|admin/i);
     }
   });
 

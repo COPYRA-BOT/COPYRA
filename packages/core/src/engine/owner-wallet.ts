@@ -4,8 +4,8 @@ import { PublicKey } from '@solana/web3.js';
 import { env } from '../config/env.js';
 
 /**
- * Owner wallets are the only addresses allowed to deposit, trade, and withdraw.
- * Configure OWNER_WALLET_SOLANA / OWNER_WALLET_EVM as App-Level secrets.
+ * Admin wallets (OWNER_WALLET_*) grant dashboard admin actions only — not a deposit gate
+ * when MULTI_USER_CUSTODY is enabled. Configure as App-Level secrets.
  */
 export function ownerWalletForChain(chain: Chain): string | null {
   if (chain === Chain.SOLANA) {
@@ -41,19 +41,26 @@ export function isOwnerWallet(address: string, chain: Chain): boolean {
   }
 }
 
-/** Throws if the session address is not the configured owner for this chain. */
+/** @deprecated Use assertAdminWallet for admin-only routes. Kept for tests. */
 export function assertOwnerWallet(address: string, chain: Chain): void {
+  assertAdminWallet(address, chain);
+}
+
+/** Throws when the session address is not a configured admin wallet for this chain. */
+export function assertAdminWallet(address: string, chain: Chain): void {
   const owner = ownerWalletForChain(chain);
   if (!owner) {
     throw new Error(
       chain === Chain.SOLANA
-        ? 'OWNER_WALLET_SOLANA is not configured. Set it as an App-Level secret, then redeploy.'
-        : 'OWNER_WALLET_EVM is not configured. Set it as an App-Level secret, then redeploy.',
+        ? 'OWNER_WALLET_SOLANA is not configured for admin actions.'
+        : 'OWNER_WALLET_EVM is not configured for admin actions.',
     );
   }
   if (!isOwnerWallet(address, chain)) {
-    throw new Error(
-      'Only the owner wallet may deposit, trade, or withdraw. Connect the configured OWNER_WALLET and sign in again.',
-    );
+    throw new Error('Admin action requires the configured owner wallet.');
   }
+}
+
+export function isAdminWallet(address: string, chain: Chain): boolean {
+  return isOwnerWallet(address, chain);
 }

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Chain, prisma } from '@copyra/db';
-import { consumeAuthNonce, env, storeAuthNonce } from '@copyra/core';
+import { consumeAuthNonce, env, isOwnerWallet, provisionUserCustody, storeAuthNonce } from '@copyra/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import nacl from 'tweetnacl';
 import { PublicKey } from '@solana/web3.js';
@@ -122,11 +122,13 @@ export async function createSession(
   reply: FastifyReply,
   meta: { userAgent?: string; ip?: string; secureCookie?: boolean },
 ): Promise<{ userId: string; expiresAt: Date }> {
+  const admin = isOwnerWallet(address, chain);
   const user = await prisma.user.upsert({
     where: { address },
-    create: { address, chain },
-    update: { lastSeenAt: new Date(), chain },
+    create: { address, chain, isAdmin: admin },
+    update: { lastSeenAt: new Date(), chain, ...(admin ? { isAdmin: true } : {}) },
   });
+  await provisionUserCustody(user.id);
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000);
   await prisma.session.create({

@@ -92,10 +92,28 @@ const schema = z.object({
   /** DigitalOcean `*.ondigitalocean.app` URL — same deploy as copyra.fun for testing. */
   PUBLIC_PLATFORM_URL: optionalUrl,
 
-  /** Only this Solana address may deposit / trade / withdraw on SOL. */
+  /** Legacy admin wallets — grant isAdmin on sign-in; not a deposit gate when multi-user custody is on. */
   OWNER_WALLET_SOLANA: z.string().trim().optional(),
-  /** Only this EVM address may deposit / trade / withdraw on EVM. */
   OWNER_WALLET_EVM: z.string().trim().optional(),
+
+  /** Per-user derived custody wallets (default on). */
+  MULTI_USER_CUSTODY: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v === undefined) return true;
+      const n = v.trim().toLowerCase();
+      return n === 'true' || n === '1' || n === 'yes' || n === 'on';
+    }),
+  /** Optional override; defaults to SESSION_SECRET when unset. */
+  CUSTODY_DERIVATION_SECRET: z.string().trim().optional(),
+  PER_USER_DEPOSIT_CAP_USD: z.coerce.number().nonnegative().default(0),
+  GLOBAL_DEPOSIT_CAP_USD: z.coerce.number().nonnegative().default(0),
+  WITHDRAW_DAILY_LIMIT_USD: z.coerce.number().nonnegative().default(0),
+  WITHDRAW_NEW_ADDRESS_COOLDOWN_HOURS: z.coerce.number().nonnegative().default(0),
+  GLOBAL_CUSTODY_EMERGENCY_STOP: bool,
+  SANCTIONS_BLOCKLIST_ENABLED: bool,
+  ADDRESS_DENY_LIST: csv,
 
   SOLANA_RPC_URL: optionalUrl,
   SOLANA_WS_URL: optionalUrl,

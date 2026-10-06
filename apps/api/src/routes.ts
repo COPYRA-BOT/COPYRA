@@ -36,6 +36,7 @@ import {
 } from './auth.js';
 import { jsonSafe } from './serialize.js';
 import { registerSwapRoutes } from './swap.js';
+import { buildBalancesResponse } from './balances.js';
 
 const chainSchema = z.nativeEnum(Chain);
 
@@ -346,62 +347,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.get('/api/balances', async () => {
-    const out = [];
-    for (const chain of [Chain.SOLANA, Chain.BASE] as const) {
-      const address = tradingWalletAddress(chain);
-      if (!address) {
-        out.push({
-          chain,
-          configured: false,
-          address: null,
-          detail: 'No bot signing key configured. Trading balance cannot be read because there is no trading wallet.',
-        });
-        continue;
-      }
-      try {
-        const { getTradingAvailableQuote } = await import('@copyra/core');
-        const funds = await getTradingAvailableQuote(chain);
-        if (chain === Chain.SOLANA) {
-          const balances = await getSolanaBalances(address);
-          out.push({
-            chain,
-            configured: true,
-            address,
-            nativeRaw: balances.lamports.toString(),
-            native: funds.availableQuote,
-            onChainNative: funds.onChainQuote,
-            savings: funds.savingsQuote,
-            tokens: balances.tokens,
-            slot: balances.slot.toString(),
-            source: 'rpc',
-          });
-        } else {
-          out.push({
-            chain,
-            configured: true,
-            address,
-            native: funds.availableQuote,
-            onChainNative: funds.onChainQuote,
-            savings: funds.savingsQuote,
-            source: 'rpc',
-          });
-        }
-      } catch (error) {
-        out.push({
-          chain,
-          configured: true,
-          address,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
+  app.get('/api/balances', async (request) => {
+    const session = await readSession(request);
+    const built = await buildBalancesResponse(session?.user.id);
     return jsonSafe({
+      multiUserCustody: built.multiUserCustody,
       buckets: {
         trading: 'Available trading balance after savings reservation and fee buffer (RPC).',
-        savings: 'Reserved ledger bucket on the bot wallet — move between buckets in the dashboard; withdraw sends on-chain to your connected wallet.',
+        savings: 'Reserved ledger bucket on your custody wallet — move between buckets in the dashboard; withdraw sends on-chain to your connected wallet.',
       },
-      wallets: out,
+      wallets: built.wallets,
     });
   });
 
@@ -656,8 +611,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(logs);
   });
 
-  app.get('/api/snapshot', async () => {
-    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesRes] =
+  app.get('/api/snapshot', async (request) => {
+    const session = await readSession(request);
+    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt] =
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
@@ -666,7 +622,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         app.inject({ method: 'GET', url: '/api/signals' }),
         app.inject({ method: 'GET', url: '/api/trades' }),
         app.inject({ method: 'GET', url: '/api/pnl' }),
-        app.inject({ method: 'GET', url: '/api/balances' }),
+        buildBalancesResponse(session?.user.id),
       ]);
 
     let solUsd = 0;
@@ -684,7 +640,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       signals: signals.json(),
       trades: trades.json(),
       pnl: pnlRes.json(),
-      balances: balancesRes.json(),
+      balances: {
+        multiUserCustody: balancesBuilt.multiUserCustody,
+        wallets: balancesBuilt.wallets,
+      },
       solUsd,
       readAt: new Date().toISOString(),
     });

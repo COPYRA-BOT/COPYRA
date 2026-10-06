@@ -153,6 +153,12 @@ enum SkipReason {
   RPC_UNAVAILABLE
 }
 
+/// Per-user custody key family (one Solana wallet + one EVM address for all EVM chains).
+enum CustodyFamily {
+  SOLANA
+  EVM
+}
+
 enum BalanceBucket {
   TRADING
   SAVINGS
@@ -193,12 +199,52 @@ model User {
   chain      Chain
   label      String?
   isAdmin    Boolean  @default(false)
+  /// When set, deposits and withdrawals are blocked for this user.
+  custodyPausedAt DateTime?
   createdAt  DateTime @default(now())
   lastSeenAt DateTime @default(now())
 
-  sessions Session[]
+  sessions       Session[]
+  custodyWallets UserCustodyWallet[]
+  transfers      Transfer[]
+  custodyDeposits CustodyDeposit[]
 
   @@map("users")
+}
+
+/// Server-derived deposit/trading wallet. Private key material is AES-GCM encrypted at rest.
+model UserCustodyWallet {
+  id                   String        @id @default(cuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family               CustodyFamily
+  address              String
+  encryptedKeyMaterial String
+  keyVersion           Int           @default(1)
+  createdAt            DateTime      @default(now())
+
+  @@unique([userId, family])
+  @@unique([family, address])
+  @@index([userId])
+  @@map("user_custody_wallets")
+}
+
+/// On-chain deposit attribution — one row per confirmed tx hash (replay-safe).
+model CustodyDeposit {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain        Chain
+  txHash       String
+  amountRaw    String
+  assetAddress String   @default("native")
+  status       TxStatus
+  creditedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@unique([chain, txHash])
+  @@index([userId, createdAt])
+  @@map("custody_deposits")
 }
 
 /// Single-use nonce for signature login. Consumed on verify to stop replay.
@@ -659,6 +705,8 @@ model WalletBalance {
 model Transfer {
   id       String   @id @default(cuid())
   chain    Chain
+  userId   String?
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   fromBucket BalanceBucket
   toBucket   BalanceBucket
   assetAddress String
@@ -672,6 +720,7 @@ model Transfer {
   confirmedAt DateTime?
 
   @@index([status])
+  @@index([userId])
   @@map("transfers")
 }
 

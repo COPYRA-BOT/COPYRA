@@ -1,10 +1,11 @@
 import {
-  assertOwnerWallet,
   buildEvmDepositIntent,
   buildSolanaDepositTransaction,
   broadcastSolanaDeposit,
   getTradingAvailableQuote,
   moveBucket,
+  multiUserCustodyEnabled,
+  recordEvmCustodyDeposit,
   withdrawToWallet,
 } from '@copyra/core';
 import { Chain } from '@copyra/db';
@@ -32,16 +33,6 @@ function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
   return Chain.BASE;
 }
 
-function requireOwner(reply: FastifyReply, address: string, chain: Chain): boolean {
-  try {
-    assertOwnerWallet(address, chain);
-    return true;
-  } catch (error) {
-    reply.code(403).send({ error: error instanceof Error ? error.message : String(error) });
-    return false;
-  }
-}
-
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/funds', async (request, reply) => {
     const query = z
@@ -51,8 +42,15 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       })
       .parse(request.query);
     const chain = query.chain ?? (query.mode === 'evm' ? Chain.BASE : Chain.SOLANA);
+    const session = await readSession(request);
+    const userId = session?.user.id;
+    if (multiUserCustodyEnabled() && !userId) {
+      return reply.code(401).send({
+        error: 'Sign in with your wallet to view your custody balances.',
+      });
+    }
     try {
-      const funds = await getTradingAvailableQuote(chain);
+      const funds = await getTradingAvailableQuote(chain, userId);
       return jsonSafe({
         chain,
         ...funds,
@@ -62,8 +60,12 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
           onChain: funds.onChainQuote,
         },
         note: funds.configured
-          ? 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
-          : 'No bot signing key — deposit destination and withdraw are unavailable until the host secret store has the Solana/EVM bot signing material.',
+          ? funds.multiUser
+            ? 'Your personal custody wallet on-chain. Trading available = on-chain minus savings reservation and fee buffer.'
+            : 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
+          : multiUserCustodyEnabled()
+            ? 'Could not read RPC balance for your custody wallet. Check SOLANA_RPC_URL / EVM RPC env vars on the API component.'
+            : 'No bot signing key — deposit destination and withdraw are unavailable until the host secret store has the Solana/EVM bot signing material.',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -71,7 +73,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         error: message,
         chain,
         hint:
-          'Set SOLANA_RPC_URL / EVM_*_RPC_URL (and WS) as encrypted App-Level env vars scoped to ALL components, then redeploy. Bot keys alone are not enough to read balances.',
+          'Set SOLANA_RPC_URL / EVM_*_RPC_URL (and WS) as encrypted App-Level env vars scoped to ALL components, then redeploy.',
       });
     }
   });
@@ -88,12 +90,12 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       })
       .parse(request.body);
     const chain = modeChain(body.mode, body.chain);
-    if (!requireOwner(reply, session.user.address, chain)) return;
     try {
       const result = await moveBucket({
         chain,
         direction: body.direction,
         amountQuote: body.amount,
+        userId: session.user.id,
       });
       return jsonSafe({ ok: true, ...result });
     } catch (error) {
@@ -117,26 +119,29 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         if (session.user.chain !== Chain.SOLANA) {
           return reply.code(400).send({ error: 'Sign in with a Solana wallet to deposit SOL.' });
         }
-        if (!requireOwner(reply, session.user.address, Chain.SOLANA)) return;
         const built = await buildSolanaDepositTransaction({
           fromAddress: session.user.address,
           amountSol: body.amount,
+          userId: session.user.id,
         });
         return jsonSafe({
           kind: 'solana',
           ...built,
           fromAddress: session.user.address,
-          note: 'Sign this transfer in your wallet. Funds move on-chain to the COPYRA trading wallet.',
+          note: 'Sign this transfer in your wallet. Funds move on-chain to your COPYRA custody wallet.',
         });
       }
       const chain = modeChain('evm', body.chain);
-      if (!requireOwner(reply, session.user.address, chain)) return;
-      const intent = buildEvmDepositIntent({ chain, amountNative: body.amount });
+      const intent = await buildEvmDepositIntent({
+        chain,
+        amountNative: body.amount,
+        userId: session.user.id,
+      });
       return jsonSafe({
         kind: 'evm',
         ...intent,
         fromAddress: session.user.address,
-        note: 'Send this transaction from your connected EVM wallet. Funds move on-chain to the COPYRA trading wallet.',
+        note: 'Send this transaction from your connected EVM wallet. Funds move on-chain to your COPYRA custody wallet.',
       });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
@@ -146,7 +151,6 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/funds/deposit/broadcast', async (request, reply) => {
     const session = await requireSession(request, reply);
     if (!session) return;
-    if (!requireOwner(reply, session.user.address, Chain.SOLANA)) return;
     const body = z
       .object({
         signedTransaction: z.string().min(32),
@@ -160,6 +164,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         lastValidBlockHeight: body.lastValidBlockHeight,
         fromAddress: session.user.address,
         lamports: body.lamports,
+        userId: session.user.id,
       });
       return jsonSafe(result);
     } catch (error) {
@@ -177,38 +182,16 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         amount: z.number().positive(),
       })
       .parse(request.body);
-    if (!requireOwner(reply, session.user.address, body.chain)) return;
     try {
-      const { confirmEvmTransaction, explorerTxUrl, chainConfig } = await import('@copyra/core');
-      const config = chainConfig(body.chain);
-      const confirmation = await confirmEvmTransaction(
-        body.chain,
-        body.txHash as `0x${string}`,
-        90_000,
-        config.requiredConfirmations,
-      );
-      const { prisma, BalanceBucket, TxStatus } = await import('@copyra/db');
-      await prisma.transfer.create({
-        data: {
-          chain: body.chain,
-          fromBucket: BalanceBucket.TRADING,
-          toBucket: BalanceBucket.TRADING,
-          assetAddress: 'native',
-          assetSymbol: config.nativeSymbol,
-          amountRaw: BigInt(Math.floor(body.amount * 10 ** config.nativeDecimals)).toString(),
-          status: confirmation.status,
-          txHash: body.txHash,
-          explorerUrl: explorerTxUrl(body.chain, body.txHash),
-          errorMessage: confirmation.error,
-          confirmedAt: confirmation.status === TxStatus.CONFIRMED ? new Date() : null,
-        },
+      const result = await recordEvmCustodyDeposit({
+        userId: session.user.id,
+        chain: body.chain,
+        txHash: body.txHash as `0x${string}`,
+        amountQuote: body.amount,
+        fromAddress: session.user.address,
       });
       return jsonSafe({
-        txHash: body.txHash,
-        explorerUrl: explorerTxUrl(body.chain, body.txHash),
-        status: confirmation.status,
-        executed: confirmation.status === 'CONFIRMED',
-        error: confirmation.error,
+        ...result,
         wallet: session.user.address,
       });
     } catch (error) {
@@ -235,7 +218,6 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     if (body.mode === 'evm' && session.user.chain === Chain.SOLANA) {
       return reply.code(400).send({ error: 'Sign in with an EVM wallet to withdraw on EVM.' });
     }
-    if (!requireOwner(reply, session.user.address, chain)) return;
 
     try {
       const result = await withdrawToWallet({
@@ -243,6 +225,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         toAddress: session.user.address,
         amountQuote: body.amount,
         fromBucket: body.fromBucket,
+        userId: session.user.id,
       });
       return jsonSafe({ ok: true, ...result });
     } catch (error) {
