@@ -24,9 +24,43 @@ import { SolanaAdapter } from '@reown/appkit-adapter-solana';
 import { solana, mainnet, base, arbitrum, bsc } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
 import { getAddress, http } from 'viem';
-import { getAccount } from '@wagmi/core';
+import { getAccount, sendTransaction, switchChain } from '@wagmi/core';
 import { mountWeb3Provider } from './web3/mount';
 import type { EvmAccountStatus } from './web3/AccountBridge';
+
+/** Public RPCs for wallet_addEthereumChain when the wallet has not seen the network yet. */
+const EVM_CHAIN_ADD: Record<
+  number,
+  {
+    chainId: `0x${string}`;
+    chainName: string;
+    nativeCurrency: { name: string; symbol: string; decimals: number };
+    rpcUrls: string[];
+    blockExplorerUrls: string[];
+  }
+> = {
+  8453: {
+    chainId: '0x2105',
+    chainName: 'Base',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://mainnet.base.org'],
+    blockExplorerUrls: ['https://basescan.org'],
+  },
+  42161: {
+    chainId: '0xa4b1',
+    chainName: 'Arbitrum One',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: ['https://arb1.arbitrum.io/rpc'],
+    blockExplorerUrls: ['https://arbiscan.io'],
+  },
+  56: {
+    chainId: '0x38',
+    chainName: 'BNB Smart Chain',
+    nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+    rpcUrls: ['https://bsc-dataseed.binance.org'],
+    blockExplorerUrls: ['https://bscscan.com'],
+  },
+};
 
 export type WalletMode = 'sol' | 'evm';
 
@@ -367,6 +401,63 @@ async function init(): Promise<WalletApi> {
     );
   }
 
+  async function ensureEvmChain(chainId: number): Promise<void> {
+    const hexId = `0x${chainId.toString(16)}`;
+    try {
+      await switchChain(wagmiAdapter.wagmiConfig, { chainId });
+      return;
+    } catch {
+      /* fall through to provider switch / add */
+    }
+    const provider = evmProvider();
+    if (!provider?.request) throw new Error('EVM wallet not connected.');
+    try {
+      await provider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: hexId }],
+      });
+      return;
+    } catch (error: unknown) {
+      const code =
+        typeof error === 'object' && error && 'code' in error
+          ? Number((error as { code: unknown }).code)
+          : 0;
+      const meta = EVM_CHAIN_ADD[chainId];
+      if ((code === 4902 || code === -32603) && meta) {
+        await provider.request({
+          method: 'wallet_addEthereumChain',
+          params: [meta],
+        });
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: hexId }],
+        });
+        return;
+      }
+      throw new Error(
+        `Switch your wallet to chain ${chainId} (${meta?.chainName ?? 'selected network'}) and try again.`,
+      );
+    }
+  }
+
+  function txErrorMessage(error: unknown): string {
+    if (!error) return 'Sending the transaction failed.';
+    if (typeof error === 'string') return error;
+    const e = error as {
+      shortMessage?: string;
+      message?: string;
+      details?: string;
+      cause?: { message?: string };
+    };
+    return (
+      e.shortMessage ||
+      e.details ||
+      e.cause?.message ||
+      e.message ||
+      'Sending the transaction failed. Confirm the wallet is on the selected chain, you hold USDC there, and you have a little native gas.'
+    );
+  }
+
   function readSolAddress(): string | null {
     const byNs = modal.getAddress?.('solana');
     if (byNs && !String(byNs).startsWith('0x')) return String(byNs);
@@ -606,65 +697,77 @@ async function init(): Promise<WalletApi> {
     },
 
     async sendEvmNative(input) {
-      const provider = evmProvider();
-      if (!provider?.request) throw new Error('EVM wallet not connected.');
       const from = readEvmAddress();
       if (!from) throw new Error('EVM wallet address missing.');
-      const checksumFrom = getAddress(from);
-      const hexValue = `0x${BigInt(input.valueWei).toString(16)}`;
+      await ensureEvmChain(input.chainId);
       try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: `0x${input.chainId.toString(16)}` }],
+        const hash = await sendTransaction(wagmiAdapter.wagmiConfig, {
+          to: getAddress(input.to),
+          value: BigInt(input.valueWei),
+          chainId: input.chainId,
         });
-      } catch {
-        /* wallet may already be on the chain, or add-chain is needed */
+        return String(hash);
+      } catch (error) {
+        const provider = evmProvider();
+        if (!provider?.request) throw new Error(txErrorMessage(error));
+        const checksumFrom = getAddress(from);
+        const hexValue = `0x${BigInt(input.valueWei).toString(16)}`;
+        try {
+          const hash = await provider.request({
+            method: 'eth_sendTransaction',
+            params: [
+              {
+                from: checksumFrom,
+                to: getAddress(input.to),
+                value: hexValue,
+                chainId: `0x${input.chainId.toString(16)}`,
+              },
+            ],
+          });
+          return String(hash);
+        } catch (fallbackError) {
+          throw new Error(txErrorMessage(fallbackError));
+        }
       }
-      const hash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from: checksumFrom,
-            to: input.to,
-            value: hexValue,
-            chainId: `0x${input.chainId.toString(16)}`,
-          },
-        ],
-      });
-      return String(hash);
     },
 
     async sendEvmErc20(input) {
-      const provider = evmProvider();
-      if (!provider?.request) throw new Error('EVM wallet not connected.');
       const from = readEvmAddress();
-      if (!from) throw new Error('EVM wallet address missing.');
-      const checksumFrom = getAddress(from);
+      if (!from) throw new Error('EVM wallet address missing. Connect an EVM wallet first.');
+      await ensureEvmChain(input.chainId);
       const token = getAddress(input.tokenAddress);
-      const data = input.data.startsWith('0x') ? input.data : `0x${input.data}`;
+      const data = (input.data.startsWith('0x') ? input.data : `0x${input.data}`) as `0x${string}`;
+      // Real USDC (ERC-20) transfer on the chain you picked — Base / Arbitrum / BNB.
+      // value must be 0; amount lives in transfer() calldata.
       try {
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: `0x${input.chainId.toString(16)}` }],
+        const hash = await sendTransaction(wagmiAdapter.wagmiConfig, {
+          to: token,
+          data,
+          value: 0n,
+          chainId: input.chainId,
         });
-      } catch {
-        /* already on chain */
+        return String(hash);
+      } catch (error) {
+        const provider = evmProvider();
+        if (!provider?.request) throw new Error(txErrorMessage(error));
+        try {
+          const hash = await provider.request({
+            method: 'eth_sendTransaction',
+            params: [
+              {
+                from: getAddress(from),
+                to: token,
+                data,
+                value: '0x0',
+                chainId: `0x${input.chainId.toString(16)}`,
+              },
+            ],
+          });
+          return String(hash);
+        } catch (fallbackError) {
+          throw new Error(txErrorMessage(fallbackError));
+        }
       }
-      // Real on-chain ERC-20 transfer — value 0, calldata = transfer(to, amount).
-      // Wallets may preview locally; we never invent a fill — confirmation is via RPC.
-      const hash = await provider.request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from: checksumFrom,
-            to: token,
-            data,
-            value: '0x0',
-            chainId: `0x${input.chainId.toString(16)}`,
-          },
-        ],
-      });
-      return String(hash);
     },
   };
 }

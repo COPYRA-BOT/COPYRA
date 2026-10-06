@@ -141,7 +141,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         ...intent,
         kind: 'evm',
         fromAddress: session.user.address,
-        note: 'Sign this ERC-20 USDC transfer in your wallet. Funds move on-chain to your COPYRA custody wallet. You need a small amount of native gas (BNB/ETH).',
+        note: 'Pick Base, Arbitrum, or BNB Chain in the deposit modal. This builds a real USDC token transfer on that network (not Ethereum mainnet). Your wallet must switch to the same network and hold USDC + a little native gas.',
       });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
