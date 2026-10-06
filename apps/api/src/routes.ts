@@ -290,7 +290,11 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/positions', async () => {
     const positions = await prisma.position.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { token: true, trades: { orderBy: { createdAt: 'desc' }, take: 8 } },
+      include: {
+        token: true,
+        trades: { orderBy: { createdAt: 'desc' }, take: 8 },
+        signals: { include: { trader: true }, orderBy: { createdAt: 'asc' }, take: 4 },
+      },
     });
     return jsonSafe(positions);
   });
@@ -308,6 +312,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const trades = await prisma.trade.findMany({
       orderBy: { createdAt: 'desc' },
       take: 80,
+      include: { signal: { include: { trader: true } } },
     });
     return jsonSafe(
       trades.map((t) => ({
@@ -613,7 +618,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/snapshot', async (request) => {
     const session = await readSession(request);
-    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt] =
+    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, balancesBuilt, notifications] =
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
@@ -623,6 +628,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         app.inject({ method: 'GET', url: '/api/trades' }),
         app.inject({ method: 'GET', url: '/api/pnl' }),
         buildBalancesResponse(session?.user.id),
+        app.inject({ method: 'GET', url: '/api/notifications' }),
       ]);
 
     let solUsd = 0;
@@ -640,6 +646,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       signals: signals.json(),
       trades: trades.json(),
       pnl: pnlRes.json(),
+      notifications: notifications.json(),
       balances: {
         multiUserCustody: balancesBuilt.multiUserCustody,
         wallets: balancesBuilt.wallets,

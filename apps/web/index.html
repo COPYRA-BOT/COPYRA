@@ -56,6 +56,11 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 #md{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px}#md.o{display:flex}#md>div{background:var(--sf);border-radius:20px;padding:22px;width:min(440px,100%);max-height:90vh;overflow:auto}
 #ts{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 18px;border-radius:99px;z-index:60;display:none}
 @media(min-width:1024px){main{padding-left:32px;padding-right:32px}.card{padding:24px}.n{font-size:44px}.h{padding:0 32px}}
+.amt-row{display:flex;gap:8px;align-items:center}.amt-row input[type=number]{flex:1;min-width:0}
+.amt-row .btn.max{flex:0 0 auto;padding:10px 14px;font-weight:700}
+input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);height:6px;cursor:pointer}
+.amt-meta{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--mu);margin-bottom:8px}
+.amt-meta b{color:var(--tx);font-weight:600}
 @media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}
 .eb{margin:28px 0 8px}.sub{font-size:17px;margin:12px 0 20px}.big{width:100%;padding:16px}.tabs{gap:20px}.tab{font-size:16px}.card{padding:16px;border-radius:18px}.n{font-size:32px}table{font-size:13px}td,th{padding:8px 6px}
 .seg button{padding:10px 6px;font-size:15px}#md{align-items:flex-end;padding:0}#md>div{width:100%;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0))}#dr{width:100%}.row>.btn{flex:1 1 auto}#ts{width:max-content;max-width:90vw;text-align:center}}
@@ -143,19 +148,32 @@ function hydrate(snap){
   const mine=traders.filter(t=>modeOf(t.chain)===e);
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
+  const sigByPos={};
+  for(const s of signals){
+   if(s.positionId)sigByPos[s.positionId]=s;
+  }
   next.pos=positions.filter(p=>modeOf(p.chain)===e&&['OPEN','PARTIALLY_CLOSED','PENDING_OPEN'].includes(p.status)).map(p=>{
    const entry=Number(p.entryPriceUsd||0)||1;
    const last=Number(p.lastPriceUsd||p.entryPriceUsd||entry)||entry;
    const multiple=entry?last/entry:1;
    const invUsd=Number(p.entryValueUsd||0);
    const inv=UI[e].usd?invUsd/UI[e].usd*UI[e].k:0;
-   const rem=p.status==='PARTIALLY_CLOSED'?0.5:1;
-   const tr=byId[p.signals?.[0]?.traderId]||next.tr[0]||{n:'Watched trader',id:'',pnl:0,c:0,on:1};
-   return{id:p.id,key:p.chain+':'+p.tokenAddress,sym:p.tokenSymbol||p.tokenAddress.slice(0,6),ch:chOf(p.chain),tr,inv,price:multiple,peak:multiple,half:p.partialTakeProfitDone?1:0,rem,mc:Number(p.entryMarketCapUsd||0),score:Number(p.correlatedTraders||1),entry:1,tp:next.set.tp,sl:next.set.sl,mode:p.exitStrategy||next.set.tpMode,addr:p.tokenAddress};
+   const tokRaw=Number(p.tokenAmountRaw||0);
+   const remRaw=Number(p.remainingTokenRaw||tokRaw);
+   const rem=tokRaw>0?Math.max(0,Math.min(1,remRaw/tokRaw)):(p.status==='PARTIALLY_CLOSED'?0.5:1);
+   const linked=sigByPos[p.id];
+   const tr=byId[linked?.traderId]||byId[p.signals?.[0]?.traderId]||next.tr.find(t=>t.id===linked?.traderId)||{n:linked?.trader?.label||'Watched trader',id:linked?.traderId||'',pnl:0,c:0,on:1};
+   return{id:p.id,key:p.chain+':'+p.tokenAddress,sym:p.tokenSymbol||p.token?.symbol||p.tokenAddress.slice(0,6),ch:chOf(p.chain),tr,inv,price:multiple,peak:multiple,half:p.partialTakeProfitDone?1:0,rem,mc:Number(p.entryMarketCapUsd||0),score:Number(p.correlatedTraders||1),entry:1,tp:next.set.tp,sl:next.set.sl,mode:p.exitStrategy||next.set.tpMode,addr:p.tokenAddress};
   });
+  const tradeSig={};
+  for(const s of signals){if(s.id)tradeSig[s.id]=s}
   next.hist=trades.filter(t=>modeOf(t.chain)===e&&t.side==='SELL').map(t=>{
-   const pnl=Number(t.valueUsd||0)*(String(t.reason).includes('STOP')?-1:1);
-   return{t:new Date(t.confirmedAt||t.createdAt).getTime(),e,sym:t.tokenSymbol||'TOKEN',ch:chOf(t.chain),tr:'COPYRA',trId:'',why:t.reason==='STOP_LOSS'?'STOP_LOSS':t.reason==='TRAILING_STOP'?'TRAILING_STOP':'TAKE_PROFIT',partial:t.reason==='TRAILING_STOP',size:Number(t.valueUsd||0),usd:Number(t.valueUsd||0),pct:0,hash:t.txHash,url:t.explorerUrl};
+   const sig=t.signal||tradeSig[t.signalId];
+   const trRow=byId[sig?.traderId];
+   const valueUsd=Number(t.valueUsd||0);
+   const isStop=String(t.reason).includes('STOP');
+   const usdPnl=isStop?-Math.abs(valueUsd):valueUsd;
+   return{t:new Date(t.confirmedAt||t.createdAt).getTime(),e,sym:t.tokenSymbol||'TOKEN',ch:chOf(t.chain),tr:trRow?.n||sig?.trader?.label||'COPYRA',trId:trRow?.id||sig?.traderId||'',why:t.reason==='STOP_LOSS'?'STOP_LOSS':t.reason==='TRAILING_STOP'?'TRAILING_STOP':'TAKE_PROFIT',partial:t.reason==='TRAILING_STOP',size:valueUsd,usd:usdPnl,pct:0,hash:t.txHash,url:t.explorerUrl};
   });
   const acts=[];
   for(const s of signals.filter(x=>modeOf(x.chain)===e)){
@@ -174,6 +192,12 @@ function hydrate(snap){
    const when=new Date(t.createdAt).toLocaleTimeString();
    const link=t.explorerUrl?` <a href="${t.explorerUrl}" target="_blank" rel="noopener">tx</a>`:' — no hash (not broadcast)';
    acts.push({t:when,h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
+  }
+  if(e==='sol'){
+   for(const n of (snap.notifications||[]).slice(0,20)){
+    const when=new Date(n.createdAt||Date.now()).toLocaleTimeString();
+    acts.push({t:when,h:`Notify · ${(n.kind||n.channel||'telegram')} · ${(n.body||n.error||'sent').toString().slice(0,120)}`,e});
+   }
   }
   next.act=acts.slice(0,40);
   next.skip=next.skip.slice(0,40);
@@ -309,15 +333,49 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
   }catch(err){$('#ae').textContent=err.message; ds.disabled=false}
  }
 }
+function feeReserveQuote(e){return e==='sol'?0.01:0.002}
+/** Amount UI: number input + Max + slider; maxQuote is display units after fee reserve. */
+function amtFieldHtml(e,X,maxQuote,inputId,presets){
+ const max=Math.max(0,Number(maxQuote)||0);
+ const fee=feeReserveQuote(e);
+ const step=e==='sol'?0.001:0.0001;
+ return `<label>Amount (${X.u})</label>
+<div class="amt-row"><input id="${inputId}" type="number" step="${step}" min="0" max="${max}" placeholder="0" value=""><button type="button" class="btn max" id="${inputId}_max">Max</button></div>
+<input type="range" class="amt-sl" id="${inputId}_sl" min="0" max="1000" value="0" ${max<=0?'disabled':''}>
+<div class="amt-meta"><span>Available <b id="${inputId}_avail">${max.toFixed(UI[e].d)}</b> ${X.u}</span><span>Fee reserve kept <b>${fee}</b> ${X.u}</span></div>
+${presets&&presets.length?`<div class="row" style="gap:6px;margin:4px 0 8px;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>`:''}
+<p class="mu" id="${inputId}_net">You can move/withdraw up to <b>${max.toFixed(UI[e].d)} ${X.u}</b> after the on-chain fee reserve.</p>`;
+}
+function bindAmtField(e,inputId,maxQuote){
+ const max=Math.max(0,Number(maxQuote)||0);
+ const inp=$(`#${inputId}`),sl=$(`#${inputId}_sl`),mx=$(`#${inputId}_max`),net=$(`#${inputId}_net`),X=UI[e];
+ const setV=v=>{
+  let n=Number(v); if(!Number.isFinite(n)||n<0)n=0; if(n>max)n=max;
+  const q=max>0?Math.round((n/max)*1000):0;
+  if(inp)inp.value=n?String(Number(n.toFixed(8))):'';
+  if(sl)sl.value=String(q);
+  if(net)net.innerHTML=`Net amount: <b>${(n||0).toFixed(UI[e].d)} ${X.u}</b> · available after fee reserve <b>${max.toFixed(UI[e].d)} ${X.u}</b>`;
+  return n;
+ };
+ if(mx)mx.onclick=()=>setV(max);
+ if(sl)sl.oninput=()=>setV(max*((Number(sl.value)||0)/1000));
+ if(inp)inp.oninput=()=>setV(inp.value);
+ $('#md').querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>setV(b.getAttribute('data-amt')));
+ setV(0);
+ return ()=>Number(inp?.value||0);
+}
 function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  const title=d==='t2s'?'Move to Savings':'Move to Trading';
- const max=d==='t2s'?cashOf(e):S[e].sav;
- md(`<h3>${title}</h3><p class="mu">Moves a reservation on the bot wallet. No separate chain transfer — trading size cannot spend savings until you move it back.</p>
-<label>Amount (${X.u})</label><input id="ma" type="number" step="any" min="0" placeholder="max ${f(e,max)}">
+ const maxRaw=d==='t2s'?cashOf(e):S[e].sav;
+ const maxQuote=Number(f(e,maxRaw));
+ md(`<h3>${title}</h3><p class="mu">Moves a reservation on your custody wallet. No separate chain transfer — trading size cannot spend savings until you move it back.</p>
+${amtFieldHtml(e,X,maxQuote,'ma',null)}
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
+ const readAmt=bindAmtField(e,'ma',maxQuote);
  $('#ok').onclick=async()=>{
-  const amount=Number($('#ma').value); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  if(amount>maxQuote+1e-12)return $('#ae').textContent=`Max available is ${maxQuote.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
   try{
    await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount});
    cl();toast(title+' done'); await refresh();
@@ -325,18 +383,26 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  }
 }
 function wd(){const e=M,X=UI[e],a=wallet[e];
- const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
- if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from the bot wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
+ const presets=e==='sol'?[0.01,0.02,0.05]:[0.001,0.002,0.005];
+ if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from your custody wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
+ const maxFrom=()=>$('#wb')?.value==='trading'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Requires the server bot signing key. Broadcast on-chain and confirmed on explorers — never a simulated fill. Start with a small test amount.</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Broadcast on-chain and confirmed on explorers — never a simulated fill. Start with a small test amount.</p>
 <label>From</label><select id="wb"><option value="savings">Savings</option><option value="trading">Trading (available)</option></select>
-<label>Amount (${X.u})</label><input id="wa" type="number" step="any" min="0" placeholder="${presets[0]}">
-<div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-wamt="${p}">${p} ${X.u}</button>`).join('')}</div>
+<div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets)}</div>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn pri" id="ok">Withdraw</button><button class="btn" onclick="cl()">Cancel</button></div>`);
- $('#md').querySelectorAll('[data-wamt]').forEach(b=>b.onclick=()=>{$('#wa').value=b.getAttribute('data-wamt')});
+ let readAmt=bindAmtField(e,'wa',maxFrom());
+ const rebind=()=>{
+  const max=maxFrom();
+  $('#wd-amt').innerHTML=amtFieldHtml(e,X,max,'wa',presets);
+  readAmt=bindAmtField(e,'wa',max);
+ };
+ $('#wb').onchange=rebind;
  $('#ok').onclick=async()=>{
-  const amount=Number($('#wa').value); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  const max=maxFrom();
+  if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u} after fee reserve.`;
   $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
   try{
    const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket:$('#wb').value,chain:e==='sol'?'SOLANA':'BASE'});
@@ -346,7 +412,7 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
  }
 }
 const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['tpMode','Take-profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity (USD)',1],['minMc','Min market cap (USD M)',1],['maxMc','Max market cap (USD M)',1],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma-separated)',3]];
-function settings(e){const s=S[e].set;$('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(([k,l,t])=>`<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label>`+(t==2?`<select id="s_${k}"><option ${s[k]=='MANUAL'?'selected':''}>MANUAL</option><option ${s[k]=='TRAILING'?'selected':''}>TRAILING</option></select>`:`<input id="s_${k}" ${t==3?'':'type=number step=any'} value="${s[k]}">`)).join('')+`<p class="mu">Settings write to the same row the worker reads. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button>`;dr.classList.add('o');
+function settings(e){const s=S[e].set;$('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(([k,l,t])=>`<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label>`+(t==2?`<select id="s_${k}"><option ${s[k]=='MANUAL'?'selected':''}>MANUAL</option><option ${s[k]=='TRAILING'?'selected':''}>TRAILING</option></select>`:`<input id="s_${k}" ${t==3?'':'type=number step=any'} value="${s[k]}">`)).join('')+`<p class="mu">TP/SL, reserve, MC window, slippage, max positions and deployment write to the same strategy row the worker reads for live copy + exits. Trade allocation % and per-token cap are shown for sizing preview; host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button>`;dr.classList.add('o');
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{const v=$('#s_'+k).value;n[k]=t>=2?v:+v});if(n.minMc>=n.maxMc)return $('#se').textContent='Min market cap must be below max market cap.';
   if(!(n.alloc>=1&&n.alloc<=100))n.alloc=50;n.maxDep=Math.min(n.maxDep,100);n.maxTok=Math.min(n.maxTok,100);n.sl=Math.min(Math.max(n.sl,1),99);
   try{
