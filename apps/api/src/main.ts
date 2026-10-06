@@ -104,6 +104,16 @@ if (webDist) {
     // Never let the built static config.js steal this path — runtime env injection.
     allowedPath: (pathName) => pathName !== '/config.js' && !pathName.endsWith('/config.js'),
   });
+  // Explicit icon route — some static setups fall through .svg to the SPA HTML shell.
+  app.get('/icons/:file', async (request, reply) => {
+    const file = String((request.params as { file?: string }).file ?? '');
+    if (!/^[a-zA-Z0-9._-]+\.(svg|png|webp|ico|jpg|jpeg)$/.test(file)) {
+      return reply.code(404).send({ error: 'Not found' });
+    }
+    const abs = join(webDist, 'icons', file);
+    if (!existsSync(abs)) return reply.code(404).send({ error: 'Not found' });
+    return reply.sendFile(join('icons', file));
+  });
   // Register AFTER static so we own /config.js exclusively (no FST_ERR_DUPLICATED_ROUTE).
   app.get('/config.js', async (_request, reply) =>
     reply
@@ -113,6 +123,14 @@ if (webDist) {
   );
   app.setNotFoundHandler((request, reply) => {
     const path = request.url.split('?')[0] ?? request.url;
+    // Never SPA-fallback asset-like paths (icons, built JS/CSS) — return real 404.
+    if (
+      /\.(svg|png|webp|ico|js|css|map|woff2?|ttf|json)$/i.test(path) ||
+      path.startsWith('/assets/') ||
+      path.startsWith('/icons/')
+    ) {
+      return reply.code(404).type('application/json').send({ error: 'Not found' });
+    }
     if (request.method === 'GET' && !path.startsWith('/api') && path !== '/health') {
       return reply.sendFile('index.html');
     }

@@ -57,14 +57,17 @@ type WalletApi = {
   projectIdConfigured: boolean;
   error: string | null;
   /** Opens official AppKit multi-wallet modal (All Wallets + QR). */
-  connect: (mode: WalletMode) => Promise<ConnectedWallet>;
+  connect: (mode: WalletMode, opts?: { skipOpen?: boolean }) => Promise<ConnectedWallet>;
+  /** Open modal only — call from a click handler (required for desktop browsers). */
+  openModal: (mode?: WalletMode) => void;
+  /** Wait until a wallet address appears after openModal. */
+  waitForConnection: (mode: WalletMode) => Promise<ConnectedWallet>;
   disconnect: (mode?: WalletMode) => Promise<void>;
   getAddress: (mode: WalletMode) => string | null;
   getChainId: () => number | null;
   getAccountStatus: () => AccountSnapshot;
   /** Ensure <appkit-button> is visible in a host element (Connect modal). */
   mountConnectButton: (host: HTMLElement, mode: WalletMode) => void;
-  openModal: (mode?: WalletMode) => Promise<void>;
   signMessage: (message: string, address: string, mode: WalletMode) => Promise<string>;
   signSolanaTransaction: (swapTransactionBase64: string) => Promise<string>;
   sendEvmNative: (input: {
@@ -107,6 +110,12 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
     async connect() {
       throw new Error(error ?? 'Wallet connect is not ready.');
     },
+    openModal() {
+      return;
+    },
+    async waitForConnection() {
+      throw new Error(error ?? 'Wallet connect is not ready.');
+    },
     async disconnect() {
       return;
     },
@@ -121,9 +130,6 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
     },
     mountConnectButton() {
       return;
-    },
-    async openModal() {
-      throw new Error(error ?? 'Wallet connect is not ready.');
     },
     async signMessage() {
       throw new Error(error ?? 'Wallet is not ready.');
@@ -299,7 +305,17 @@ async function init(): Promise<WalletApi> {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
       url: siteOrigin,
-      icons: [`${siteOrigin}/icons/copyra.png`],
+      icons: [`${siteOrigin}/icons/copyra.svg`],
+    },
+    // Match platform UI fonts; high z-index so desktop AppKit sits above our modals.
+    themeMode: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
+    themeVariables: {
+      '--w3m-font-family': 'Figtree, system-ui, sans-serif',
+      '--apkt-font-family': 'Figtree, system-ui, sans-serif',
+      '--w3m-z-index': 100000,
+      '--apkt-z-index': 100000,
+      '--w3m-accent': '#D87558',
+      '--apkt-accent': '#D87558',
     },
     // Force the full explorer ("All Wallets") — not just the one injected extension.
     allWallets: 'SHOW',
@@ -384,28 +400,73 @@ async function init(): Promise<WalletApi> {
     return Number.isFinite(n) ? n : null;
   }
 
-  async function openAppKit(mode: WalletMode): Promise<void> {
+  function openAppKit(mode: WalletMode): void {
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    // Desktop browsers often hang forever on AllWallets (explorer API). Connect
-    // paints immediately with featured wallets + All Wallets — same list users want.
-    const openOnce = () => modal.open({ view: 'Connect', namespace });
+    // CRITICAL for desktop: do NOT await a hanging promise before the modal paints,
+    // and call open() synchronously from a user-gesture click stack.
     try {
-      await Promise.race([
-        openOnce(),
-        sleep(1500), // copyra-audit-allow: do not block forever if AppKit open hangs on desktop
-      ]);
+      void modal.open({ view: 'Connect', namespace });
     } catch {
-      /* retry below */
-    }
-    // Desktop Chrome/Edge sometimes drop the first open() — nudge once if still closed.
-    try {
-      const state = modal.getState?.() as { open?: boolean } | undefined;
-      if (state && state.open === false) {
-        await Promise.race([openOnce(), sleep(1500)]); // copyra-audit-allow: second open nudge
+      try {
+        void modal.open({ view: 'Connect' });
+      } catch {
+        /* ignore */
       }
-    } catch {
-      void openOnce();
     }
+    // Desktop Chrome sometimes needs a second nudge after layout.
+    requestAnimationFrame(() => {
+      try {
+        const state = modal.getState?.() as { open?: boolean } | undefined;
+        if (state && state.open === false) {
+          void modal.open({ view: 'Connect', namespace });
+        }
+      } catch {
+        void modal.open({ view: 'Connect', namespace });
+      }
+    });
+  }
+
+  async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      if (mode === 'sol') {
+        const address = readSolAddress();
+        if (address) {
+          try {
+            await modal.close();
+          } catch {
+            /* ignore */
+          }
+          await sleep(200);
+          return { address, chain: 'SOLANA', mode };
+        }
+      } else {
+        if (evmAccount.isConnecting) {
+          await sleep(150);
+          continue;
+        }
+        const address = readEvmAddress();
+        if (address) {
+          const chainId = readEvmChainId() ?? 1;
+          try {
+            await modal.close();
+          } catch {
+            /* ignore */
+          }
+          await sleep(200);
+          return {
+            address,
+            chain: evmChainFromId(chainId),
+            chainId,
+            mode,
+          };
+        }
+      }
+      await sleep(250);
+    }
+    throw new Error(
+      'Wallet connect timed out. Use All Wallets / WalletConnect QR in the AppKit list, then try again.',
+    );
   }
 
   return {
@@ -417,78 +478,18 @@ async function init(): Promise<WalletApi> {
       renderAppKitButton(host, mode, true);
     },
 
-    async openModal(mode = 'evm') {
-      await openAppKit(mode);
+    // Sync void — must stay sync so desktop browsers keep the user-gesture.
+    openModal(mode = 'evm') {
+      openAppKit(mode);
     },
 
-    async connect(mode) {
-      // Open the wallet list FIRST so PC matches mobile speed. Do not await a
-      // slow disconnect/explorer call before the modal is visible.
-      const opening = openAppKit(mode);
+    waitForConnection,
 
-      // Soft-clear a stale injected session in the background (non-blocking).
-      try {
-        const existing = mode === 'sol' ? readSolAddress() : readEvmAddress();
-        if (existing) {
-          void Promise.race([
-            modal.disconnect(mode === 'sol' ? 'solana' : 'eip155'),
-            sleep(500), // copyra-audit-allow: cap disconnect wait so popup is not delayed
-          ]).then(() => {
-            // Re-open list after soft disconnect in case AppKit closed itself.
-            void openAppKit(mode);
-          });
-        }
-      } catch {
-        /* ignore */
+    async connect(mode, opts) {
+      if (!opts?.skipOpen) {
+        openAppKit(mode);
       }
-
-      await opening;
-
-      const deadline = Date.now() + 180_000;
-      while (Date.now() < deadline) {
-        if (mode === 'sol') {
-          const address = readSolAddress();
-          if (address) {
-            try {
-              await modal.close();
-            } catch {
-              /* ignore */
-            }
-            await sleep(300);
-            return { address, chain: 'SOLANA', mode };
-          }
-        } else {
-          if (evmAccount.isConnecting) {
-            await sleep(200);
-            continue;
-          }
-          const address = readEvmAddress();
-          if (address) {
-            const chainId = readEvmChainId() ?? 1;
-            try {
-              await modal.close();
-            } catch {
-              /* ignore */
-            }
-            await sleep(300);
-            return {
-              address,
-              chain: evmChainFromId(chainId),
-              chainId,
-              mode,
-            };
-          }
-        }
-        await sleep(350);
-      }
-      try {
-        await modal.close();
-      } catch {
-        /* ignore */
-      }
-      throw new Error(
-        'Wallet connect timed out. Use All Wallets / WalletConnect QR in the AppKit list, then try again.',
-      );
+      return waitForConnection(mode);
     },
 
     async disconnect(mode) {
