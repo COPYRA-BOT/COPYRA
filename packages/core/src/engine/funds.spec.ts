@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnits } from 'viem';
+import { Chain } from '@copyra/db';
+import { recommendedEvmWithdrawTopUpWei } from './funds.js';
 
 /**
  * Pure math checks for the funds reservation model.
@@ -41,5 +43,15 @@ describe('funds reservation math', () => {
     const tradingSpendable =
       bscRaw > feeBufferEvm + savings ? bscRaw - feeBufferEvm - savings : 0n;
     expect(Number(tradingSpendable) / 1e18).toBe(10.5);
+  });
+
+  it('EVM withdraw gas top-up is never zero when custody is empty', () => {
+    const bscTop = recommendedEvmWithdrawTopUpWei(Chain.BSC, 0n);
+    expect(bscTop).toBeGreaterThan(0n);
+    // Empty custody → floor + 20% buffer.
+    expect(bscTop).toBe(parseUnits('0.00036', 18));
+    // Already funded but broadcast failed → still ask for a full floor chunk (never "0").
+    const retry = recommendedEvmWithdrawTopUpWei(Chain.BSC, parseUnits('0.001', 18));
+    expect(retry).toBe(parseUnits('0.0003', 18));
   });
 });

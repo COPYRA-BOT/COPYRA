@@ -14,6 +14,7 @@ import { createWalletClient, encodeFunctionData, erc20Abi, getAddress, http, par
 import { chainConfig, explorerTxUrl } from '../config/chains.js';
 import { confirmEvmTransaction } from '../evm/executor.js';
 import { viemChain } from '../evm/clients.js';
+import { getNativeBalance } from '../evm/tokens.js';
 import { componentLogger } from '../obs/logger.js';
 import {
   assertAddressNotSanctioned,
@@ -36,6 +37,24 @@ import {
   snapshotBalance,
   tradingWalletAddress,
 } from './portfolio.js';
+
+/** Tiny native top-up so custody can broadcast an ERC-20 withdraw (USDC itself never pays gas). */
+const EVM_WITHDRAW_GAS_FLOOR_WEI: Record<string, bigint> = {
+  ETHEREUM: parseUnits('0.0004', 18),
+  BASE: parseUnits('0.00005', 18),
+  ARBITRUM: parseUnits('0.00005', 18),
+  BSC: parseUnits('0.0003', 18),
+};
+
+/** How much native the connected wallet should send so custody can pay one USDC transfer. */
+export function recommendedEvmWithdrawTopUpWei(chain: Chain, custodyNativeWei: bigint): bigint {
+  const floor = EVM_WITHDRAW_GAS_FLOOR_WEI[chain] ?? parseUnits('0.0003', 18);
+  if (custodyNativeWei >= floor) {
+    // Already above floor but broadcast still failed — send another floor chunk.
+    return floor;
+  }
+  return floor - custodyNativeWei + floor / 5n;
+}
 
 const log = componentLogger('funds');
 
@@ -231,12 +250,14 @@ export async function moveBucket(input: {
   const address = await resolveFundsWallet(input.chain, input.userId);
   const asset = quoteAsset(input.chain);
   const scale = 10 ** asset.decimals;
-  const amountRaw = BigInt(Math.floor(input.amountQuote * scale));
+  // parseUnits avoids JS float drift on 18-decimal BSC USDC.
+  const amountRaw = parseUnits(String(input.amountQuote), asset.decimals);
   if (amountRaw <= 0n) throw new Error('Amount is too small.');
 
   const balance = await readOnChainBalanceForAddress(input.chain, address);
   const currentSavings = await getSavingsRawForAddress(input.chain, address);
-  const onChainRaw = BigInt(Math.floor(balance.totalQuote * scale));
+  // Prefer exact RPC raw — re-parsing float totalQuote loses dust on 18-decimal BSC USDC.
+  const onChainRaw = balance.amountRaw;
   const feeBuffer = feeBufferRaw(input.chain);
   const tradingSpendable = onChainRaw > feeBuffer + currentSavings ? onChainRaw - feeBuffer - currentSavings : 0n;
 
@@ -520,6 +541,42 @@ export async function broadcastSolanaDeposit(input: {
 }
 
 /**
+ * EVM withdraw prep: custody must hold a little native gas (BNB/ETH) to broadcast
+ * the USDC transfer. USDC never pays gas — the connected wallet tops up if needed.
+ */
+export async function prepareEvmWithdrawGas(input: {
+  chain: Chain;
+  userId: string;
+}): Promise<{
+  chain: Chain;
+  chainId: number;
+  custodyAddress: string;
+  nativeSymbol: string;
+  custodyNativeWei: string;
+  recommendedTopUpWei: string;
+  needsTopUp: boolean;
+}> {
+  const config = chainConfig(input.chain);
+  if (config.kind !== 'evm' || config.chainId == null) {
+    throw new Error('Gas prep is only for EVM chains.');
+  }
+  const custodyAddress = await resolveFundsWallet(input.chain, input.userId);
+  const native = await getNativeBalance(input.chain, custodyAddress);
+  const floor = EVM_WITHDRAW_GAS_FLOOR_WEI[input.chain] ?? parseUnits('0.0003', 18);
+  const needsTopUp = native.amountRaw < floor;
+  const topUp = needsTopUp ? recommendedEvmWithdrawTopUpWei(input.chain, native.amountRaw) : 0n;
+  return {
+    chain: input.chain,
+    chainId: config.chainId,
+    custodyAddress,
+    nativeSymbol: config.nativeSymbol,
+    custodyNativeWei: native.amountRaw.toString(),
+    recommendedTopUpWei: topUp.toString(),
+    needsTopUp,
+  };
+}
+
+/**
  * Withdraw from savings (preferred) or trading to the connected user wallet.
  * Requires the bot signing key — COPYRA never invents a transfer.
  */
@@ -540,8 +597,7 @@ export async function withdrawToWallet(input: {
   if (!(input.amountQuote > 0)) throw new Error('Withdraw amount must be positive.');
   const config = chainConfig(input.chain);
   const asset = quoteAsset(input.chain);
-  const scale = 10 ** asset.decimals;
-  const amountRaw = BigInt(Math.floor(input.amountQuote * scale));
+  const amountRaw = parseUnits(String(input.amountQuote), asset.decimals);
   if (amountRaw <= 0n) throw new Error('Withdraw amount is too small.');
 
   await assertWithdrawWithinLimits({
@@ -602,6 +658,13 @@ export async function withdrawToWallet(input: {
     if (!config.stableAsset) {
       throw new Error(`No USDC contract configured for ${input.chain} — cannot withdraw.`);
     }
+    // Custody must hold native gas — USDC cannot pay the network fee.
+    const gasPrep = await prepareEvmWithdrawGas({ chain: input.chain, userId: input.userId });
+    if (gasPrep.needsTopUp) {
+      throw new Error(
+        `CUSTODY_NEEDS_GAS:${gasPrep.recommendedTopUpWei}:${gasPrep.nativeSymbol}:${gasPrep.custodyAddress}:${gasPrep.chainId}`,
+      );
+    }
     const account = multiUserCustodyEnabled()
       ? await userEvmAccount(input.userId)
       : evmSigner.requireAccount();
@@ -618,17 +681,32 @@ export async function withdrawToWallet(input: {
       functionName: 'transfer',
       args: [getAddress(input.toAddress), amountRaw],
     });
-    const hash = await wallet.sendTransaction({
-      to: getAddress(config.stableAsset),
-      data,
-      value: 0n,
-      account,
-      chain: viemChain(input.chain),
-    });
-    txHash = hash;
+    let evmHash: `0x${string}`;
+    try {
+      evmHash = await wallet.sendTransaction({
+        to: getAddress(config.stableAsset),
+        data,
+        value: 0n,
+        account,
+        chain: viemChain(input.chain),
+      });
+      txHash = evmHash;
+    } catch (sendErr) {
+      const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      if (/gas|exceeds the balance|insufficient funds/i.test(msg)) {
+        const topUpWei = recommendedEvmWithdrawTopUpWei(
+          input.chain,
+          BigInt(gasPrep.custodyNativeWei || '0'),
+        );
+        throw new Error(
+          `CUSTODY_NEEDS_GAS:${topUpWei.toString()}:${config.nativeSymbol}:${walletAddress}:${config.chainId}`,
+        );
+      }
+      throw sendErr;
+    }
     const confirmation = await confirmEvmTransaction(
       input.chain,
-      hash,
+      evmHash,
       120_000,
       config.requiredConfirmations,
     );

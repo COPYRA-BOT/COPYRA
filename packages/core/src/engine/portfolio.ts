@@ -41,6 +41,8 @@ export interface OnChainBalance {
   availableQuote: number;
   /** Raw balance before the fee reserve, for display. */
   totalQuote: number;
+  /** Exact on-chain raw units (lamports / token base units). Prefer over re-parsing totalQuote. */
+  amountRaw: bigint;
   quotePriceUsd: number;
   totalUsd: number;
   blockOrSlot: bigint;
@@ -68,6 +70,7 @@ export async function readOnChainBalanceForAddress(
     return {
       availableQuote: spendableSol,
       totalQuote,
+      amountRaw: rawLamports,
       quotePriceUsd,
       totalUsd: totalQuote * quotePriceUsd,
       blockOrSlot: slot,
@@ -87,6 +90,7 @@ export async function readOnChainBalanceForAddress(
     return {
       availableQuote: Math.max(0, totalQuote),
       totalQuote,
+      amountRaw: token.amountRaw,
       quotePriceUsd: 1,
       totalUsd: totalQuote,
       blockOrSlot: token.blockNumber,
@@ -105,6 +109,7 @@ export async function readOnChainBalanceForAddress(
   return {
     availableQuote: Math.max(0, totalQuote - gasReserve),
     totalQuote,
+    amountRaw: native.amountRaw,
     quotePriceUsd,
     totalUsd: totalQuote * quotePriceUsd,
     blockOrSlot: native.blockNumber,
@@ -129,7 +134,7 @@ export async function snapshotBalance(
   bucket: BalanceBucket = BalanceBucket.TRADING,
 ): Promise<void> {
   const assetAddress = balance.assetAddress || 'native';
-  const raw = BigInt(Math.round(balance.totalQuote * 10 ** balance.assetDecimals)).toString();
+  const raw = balance.amountRaw.toString();
   await prisma.walletBalance.upsert({
     where: {
       chain_address_bucket_assetAddress: {

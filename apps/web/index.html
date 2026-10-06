@@ -126,7 +126,12 @@ async function api(method,path,body,opts){
   if(body)headers['content-type']='application/json';
   const r=await fetch(path,{method,credentials:'include',headers,body:body?JSON.stringify(body):undefined});
   const j=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(j.error||('Request failed '+r.status));
+  if(!r.ok){
+    const err=new Error(j.error||('Request failed '+r.status));
+    // Preserve structured API fields (e.g. CUSTODY_NEEDS_GAS top-up payload).
+    Object.assign(err,j);
+    throw err;
+  }
   return j;
 }
 const modeOf=c=>c==='SOLANA'?'sol':'evm';
@@ -486,41 +491,47 @@ function bindAmtField(e,inputId,maxQuote){
  if(sl)sl.oninput=()=>setV(max*((Number(sl.value)||0)/1000));
  if(inp)inp.oninput=()=>setV(inp.value);
  $('#md').querySelectorAll('[data-amt]').forEach(b=>b.onclick=()=>setV(b.getAttribute('data-amt')));
- setV(0);
+ // Prefill Max when there is a balance so Move/Withdraw are one tap away.
+ setV(max>0?max:0);
  return ()=>Number(inp?.value||0);
 }
 function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
  const title=d==='t2s'?'Move to Savings':'Move to Trading';
  const chainFor=(chKey)=>e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
  const maxForChain=(chKey)=>{
-  // t2s = from trading cash; s2t = from savings ledger only (deposits land in trading).
-  if(d==='s2t')return Number(f(e,S[e].sav));
-  if(e==='sol')return Number(f(e,cashOf(e)));
+  if(e==='sol')return d==='t2s'?Number(f(e,cashOf(e))):Number(f(e,S[e].sav));
+  // EVM: amounts are per-network (BSC savings ≠ Ethereum savings).
+  if(d==='s2t')return Number(f(e,S.evm.savByCh?.[chKey]||0));
   return Number(f(e,S.evm.cash[chKey]||0));
  };
- const defaultCh=e==='sol'?'solana':(Object.entries(S.evm.cash).sort((a,b)=>b[1]-a[1])[0]?.[0]||'ethereum');
+ // EVM: open on the network that actually holds Trading+Savings balance.
+ const defaultCh=e==='sol'?'solana':bestEvmChKey();
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh):'';
+ const startMax=maxForChain(defaultCh);
  const note=d==='s2t'
-  ?'Moves reserved savings back into trading. <b>Deposits already sit in Trading</b> — you only need this if you previously moved funds to Savings.'
-  :'Reserves part of your trading balance so the copy engine cannot spend it. No on-chain transfer.';
+  ?'Ledger move only (no gas). Returns reserved savings to trading on the <b>same network</b>.'
+  :'Ledger move only (no gas). Reserves trading balance so the copy engine cannot spend it.';
  md(`<h3>${title}</h3><p class="mu">${note}</p>
 ${e==='evm'?`<label>Network</label><select id="mvch">${chainOpts}</select>`:''}
-<div id="mv-amt">${amtFieldHtml(e,X,maxForChain(defaultCh),'ma',null)}</div>
-<p class="mu" id="mvhint">${d==='s2t'&&Number(f(e,S[e].sav))<=0?'Savings is empty. Your deposited balance is in <b>Trading</b> — use Withdraw from Trading to send it out.':''}</p>
+<div id="mv-amt">${amtFieldHtml(e,X,startMax,'ma',null)}</div>
+<p class="mu" id="mvhint">${startMax<=0?(d==='s2t'?'No savings on this network. Pick the network that shows S &gt; 0.':'No trading balance on this network. Pick the network that shows T &gt; 0.'):'Tap <b>Max</b> to fill the available amount.'}</p>
 <p class="rd" id="ae"></p>
-<div class="row"><button class="btn pri" id="ok"${d==='s2t'&&Number(f(e,S[e].sav))<=0?' disabled':''}>${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
- let readAmt=bindAmtField(e,'ma',maxForChain(defaultCh));
+<div class="row"><button class="btn pri" id="ok"${startMax<=0?' disabled':''}>${title}</button><button class="btn" onclick="cl()">Cancel</button></div>`);
+ let readAmt=bindAmtField(e,'ma',startMax);
  const rebind=()=>{
   const ch=$('#mvch')?.value||defaultCh;
   const max=maxForChain(ch);
   $('#mv-amt').innerHTML=amtFieldHtml(e,X,max,'ma',null);
   readAmt=bindAmtField(e,'ma',max);
+  $('#mvhint').innerHTML=max<=0?'No balance in this bucket on the selected network.':'Tap <b>Max</b> to fill the available amount.';
+  $('#ok').disabled=max<=0;
+  $('#ae').textContent='';
  };
  if(e==='evm')$('#mvch').onchange=rebind;
  $('#ok').onclick=async()=>{
   const chKey=$('#mvch')?.value||defaultCh;
   const max=maxForChain(chKey);
-  const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount (or tap Max).';
   if(amount>max+1e-12)return $('#ae').textContent=`Max available is ${max.toFixed(UI[e].d)} ${X.u}.`;
   try{
    await api('POST','/api/funds/move',{mode:e,direction:d,amount:amount,chain:chainFor(chKey)},{mode:e});
@@ -579,6 +590,51 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   $('#ae').textContent=max<=0?`No ${$('#wb').value} balance on this network.`:'';
  };
  if(e==='evm')$('#wc').onchange=rebind;
+ /** EVM only: custody needs a tiny native top-up from the connected wallet before USDC can leave. */
+ const topUpCustodyGas=async(chain)=>{
+  const prep=await api('POST','/api/funds/withdraw/prepare',{mode:'evm',chain},{mode:'evm'});
+  if(!prep.needsTopUp)return prep;
+  if(!window.CopyraWallet?.sendEvmNative)throw new Error('Connect an EVM wallet to send a tiny gas top-up to custody.');
+  const wei=String(prep.recommendedTopUpWei||'0');
+  if(!wei||wei==='0')throw new Error('Custody gas top-up amount missing. Hard-refresh and try again.');
+  const human=(Number(wei)/1e18).toFixed(6);
+  $('#ae').textContent=`Custody has no ${prep.nativeSymbol} for gas. Confirm ~${human} ${prep.nativeSymbol} top-up from your connected wallet…`;
+  await window.CopyraWallet.sendEvmNative({to:prep.custodyAddress,valueWei:wei,chainId:prep.chainId});
+  // Wait briefly for the native top-up to land before broadcasting the USDC transfer.
+  for(let i=0;i<12;i++){
+   await new Promise(r=>setTimeout(r,1500));
+   const again=await api('POST','/api/funds/withdraw/prepare',{mode:'evm',chain},{mode:'evm'});
+   if(!again.needsTopUp)return again;
+   $('#ae').textContent=`Waiting for ${prep.nativeSymbol} top-up to confirm… (${i+1}/12)`;
+  }
+  throw new Error(`${prep.nativeSymbol} top-up not visible yet. Wait a few seconds, then tap Withdraw again.`);
+ };
+ const withdrawOnce=async(chain,amount,fromBucket)=>{
+  try{
+   return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain},{mode:e});
+  }catch(err){
+   if(e==='evm'&&(err.code==='CUSTODY_NEEDS_GAS'||/CUSTODY_NEEDS_GAS|needs a tiny/i.test(err.message||''))){
+    const wei=String(err.recommendedTopUpWei||'0');
+    const symbol=err.nativeSymbol||'native';
+    const custody=err.custodyAddress;
+    const chainId=Number(err.chainId);
+    if(!custody||!chainId||!wei||wei==='0')throw err;
+    if(!window.CopyraWallet?.sendEvmNative)throw new Error(`Custody needs ${symbol} for gas. Connect an EVM wallet to top up.`);
+    const human=(Number(wei)/1e18).toFixed(6);
+    $('#ae').textContent=`Custody needs ~${human} ${symbol} for gas. Confirm top-up in your wallet…`;
+    await window.CopyraWallet.sendEvmNative({to:custody,valueWei:wei,chainId});
+    for(let i=0;i<12;i++){
+     await new Promise(r=>setTimeout(r,1500));
+     const prep=await api('POST','/api/funds/withdraw/prepare',{mode:'evm',chain},{mode:'evm'});
+     if(!prep.needsTopUp)break;
+     $('#ae').textContent=`Waiting for ${symbol} top-up… (${i+1}/12)`;
+    }
+    $('#ae').textContent='Broadcasting USDC withdraw…';
+    return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain},{mode:e});
+   }
+   throw err;
+  }
+ };
  $('#ok').onclick=async()=>{
   const amount=readAmt(); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
   const max=maxFrom();
@@ -586,9 +642,15 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   const chKey=$('#wc')?.value||defaultCh;
   const chain=e==='sol'?'SOLANA':(EVM_CH_TO_CHAIN[chKey]||bestEvmChain());
   const fromBucket=$('#wb').value||defaultBucket;
-  $('#ok').disabled=true; $('#ae').textContent='Broadcasting…';
+  $('#ok').disabled=true; $('#ae').textContent='Preparing withdraw…';
   try{
-   const res=await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain},{mode:e});
+   if(e==='evm'){
+    await topUpCustodyGas(chain);
+    $('#ae').textContent='Broadcasting USDC withdraw…';
+   }else{
+    $('#ae').textContent='Broadcasting…';
+   }
+   const res=await withdrawOnce(chain,amount,fromBucket);
    if(!res.executed)throw new Error(res.error||('Not confirmed. '+ (res.explorerUrl||'')));
    cl();toast('Withdraw confirmed'); await refresh();
   }catch(err){$('#ae').textContent=err.message; $('#ok').disabled=false}

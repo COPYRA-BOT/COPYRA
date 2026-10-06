@@ -5,6 +5,7 @@ import {
   getTradingAvailableQuote,
   moveBucket,
   multiUserCustodyEnabled,
+  prepareEvmWithdrawGas,
   recordEvmCustodyDeposit,
   withdrawToWallet,
 } from '@copyra/core';
@@ -205,6 +206,29 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.post('/api/funds/withdraw/prepare', async (request, reply) => {
+    const body = z
+      .object({
+        mode: z.literal('evm'),
+        chain: chainSchema,
+      })
+      .parse(request.body);
+    const session = await requireSession(request, reply, 'evm');
+    if (!session) return;
+    if (body.chain === Chain.SOLANA) {
+      return reply.code(400).send({ error: 'Use an EVM chain for withdraw prepare.' });
+    }
+    try {
+      const prep = await prepareEvmWithdrawGas({
+        chain: body.chain,
+        userId: session.user.id,
+      });
+      return jsonSafe(prep);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.post('/api/funds/withdraw', async (request, reply) => {
     const body = z
       .object({
@@ -256,7 +280,20 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       });
       return jsonSafe({ ok: true, ...result, chain });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith('CUSTODY_NEEDS_GAS:')) {
+        const [, wei, symbol, custody, chainId] = message.split(':');
+        return reply.code(400).send({
+          error: `Custody needs a tiny ${symbol} for network gas (USDC never pays gas).`,
+          code: 'CUSTODY_NEEDS_GAS',
+          recommendedTopUpWei: wei,
+          nativeSymbol: symbol,
+          custodyAddress: custody,
+          chainId: Number(chainId),
+          chain,
+        });
+      }
+      return reply.code(400).send({ error: message });
     }
   });
 }
