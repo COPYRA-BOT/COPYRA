@@ -1,4 +1,5 @@
 import {
+  assertOwnerWallet,
   buildJupiterSwap,
   chainConfig,
   confirmSolanaTransaction,
@@ -28,6 +29,11 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/swap/quote', async (request, reply) => {
     const session = await requireSession(request, reply);
     if (!session) return;
+    try {
+      assertOwnerWallet(session.user.address, Chain.SOLANA);
+    } catch (error) {
+      return reply.code(403).send({ error: error instanceof Error ? error.message : String(error) });
+    }
     const body = z
       .object({
         inputMint: z.string().min(32),
@@ -61,6 +67,11 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
     if (session.user.chain !== Chain.SOLANA) {
       return reply.code(400).send({ error: 'User-signed Jupiter builds are Solana-only. Sign in with a Solana wallet.' });
     }
+    try {
+      assertOwnerWallet(session.user.address, Chain.SOLANA);
+    } catch (error) {
+      return reply.code(403).send({ error: error instanceof Error ? error.message : String(error) });
+    }
     const body = z
       .object({
         quote: z.record(z.unknown()),
@@ -88,6 +99,11 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/swap/broadcast', async (request, reply) => {
     const session = await requireSession(request, reply);
     if (!session) return;
+    try {
+      assertOwnerWallet(session.user.address, Chain.SOLANA);
+    } catch (error) {
+      return reply.code(403).send({ error: error instanceof Error ? error.message : String(error) });
+    }
     const body = z
       .object({
         signedTransaction: z.string().min(32),

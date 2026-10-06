@@ -385,9 +385,19 @@ async function sessionSign(e, connected){
     clientHost:location.host
   });
   if(!window.CopyraWallet?.signMessage)throw new Error('Wallet signer is not ready.');
-  // Sign with the checksum/base58 address the SIWE/SIWS message was built for.
-  const signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e);
-  await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
+  let signature;
+  try{
+    signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e);
+  }catch(err){
+    const msg=(err&&err.message)?String(err.message):'Signature rejected';
+    if(/reject|denied|cancel|user/i.test(msg))throw new Error('Sign-in cancelled in the wallet. Tap Connect Wallet to try again.');
+    throw err;
+  }
+  try{
+    await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature});
+  }catch(err){
+    throw new Error((err&&err.message)||'Sign-in failed. If you switched accounts or chains, reconnect and sign again.');
+  }
   return issued.address;
 }
 async function finishConnect(e,N,connected){
@@ -457,7 +467,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
  (async()=>{
   try{
     const w=await waitWallet();
-    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, redeploy, then hard-refresh.');
+    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID, redeploy, then hard-refresh.');
     try{w.setMode?.(e)}catch{}
     const host=$('#akhost');
     // Formula: mount official <appkit-button> / <w3m-button> (modern w3m-core-button).

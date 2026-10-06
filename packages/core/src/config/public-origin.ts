@@ -139,14 +139,7 @@ export function resolveWebOrigin(hints: OriginRequestHints | string | undefined)
 
 /** Public Reown / WalletConnect project id (safe to expose to the browser). */
 export function publicReownProjectId(): string {
-  return (
-    process.env.VITE_REOWN_PROJECT_ID?.trim() ||
-    process.env.NEXT_PUBLIC_REOWN_PROJECT_ID?.trim() ||
-    process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ||
-    process.env.REOWN_PROJECT_ID?.trim() ||
-    process.env.WALLETCONNECT_PROJECT_ID?.trim() ||
-    ''
-  );
+  return process.env.VITE_REOWN_PROJECT_ID?.trim() || '';
 }
 
 /** Public Venly widget client id (safe to expose — not a bot signing key). */

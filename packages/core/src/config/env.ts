@@ -92,6 +92,11 @@ const schema = z.object({
   /** DigitalOcean `*.ondigitalocean.app` URL — same deploy as copyra.fun for testing. */
   PUBLIC_PLATFORM_URL: optionalUrl,
 
+  /** Only this Solana address may deposit / trade / withdraw on SOL. */
+  OWNER_WALLET_SOLANA: z.string().trim().optional(),
+  /** Only this EVM address may deposit / trade / withdraw on EVM. */
+  OWNER_WALLET_EVM: z.string().trim().optional(),
+
   SOLANA_RPC_URL: optionalUrl,
   SOLANA_WS_URL: optionalUrl,
   SOLANA_RPC_FALLBACK_URLS: csv,

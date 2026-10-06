@@ -85,6 +85,44 @@ export async function markSeenOnce(key: string, ttlSeconds: number): Promise<boo
   return result === 'OK';
 }
 
+const AUTH_NONCE_TTL_SEC = 600;
+
+/** One-time SIWE/SIWS nonce in Redis (GETDEL on consume). */
+export async function storeAuthNonce(
+  address: string,
+  chain: string,
+  nonce: string,
+  ttlSec = AUTH_NONCE_TTL_SEC,
+): Promise<{ expiresAt: Date }> {
+  const key = `auth:nonce:${chain}:${address}`;
+  const expiresAt = new Date(Date.now() + ttlSec * 1000);
+  await redis().set(key, nonce, 'EX', ttlSec);
+  return { expiresAt };
+}
+
+/**
+ * Atomically read + delete the nonce for address/chain.
+ * Returns the nonce string if present and unexpired, else null.
+ */
+export async function consumeAuthNonce(address: string, chain: string): Promise<string | null> {
+  const key = `auth:nonce:${chain}:${address}`;
+  const client = redis();
+  // GETDEL is Redis 6.2+; fallback to GET + DEL pipeline when unavailable.
+  try {
+    const value = (await client.call('GETDEL', key)) as string | null;
+    return value || null;
+  } catch {
+    const value = await client.get(key);
+    if (!value) return null;
+    await client.del(key);
+    return value;
+  }
+}
+
+export async function peekAuthNonce(address: string, chain: string): Promise<string | null> {
+  return redis().get(`auth:nonce:${chain}:${address}`);
+}
+
 export async function closeRedis(): Promise<void> {
   if (client) {
     await client.quit();

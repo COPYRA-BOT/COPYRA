@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Chain, prisma } from '@copyra/db';
-import { env } from '@copyra/core';
+import { consumeAuthNonce, env, storeAuthNonce } from '@copyra/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import nacl from 'tweetnacl';
 import { PublicKey } from '@solana/web3.js';
@@ -19,10 +19,13 @@ function cookieSecure(override?: boolean): boolean {
   return env.PUBLIC_WEB_URL.startsWith('https://');
 }
 
-export async function issueNonce(address: string, chain: Chain): Promise<{ nonce: string; expiresAt: Date }> {
+/** Issue a one-time nonce in Redis (10 minute TTL). */
+export async function issueNonce(
+  address: string,
+  chain: Chain,
+): Promise<{ nonce: string; expiresAt: Date }> {
   const nonce = randomBytes(16).toString('hex');
-  const expiresAt = new Date(Date.now() + 10 * 60_000);
-  await prisma.authNonce.create({ data: { nonce, address, chain, expiresAt } });
+  const { expiresAt } = await storeAuthNonce(address, chain, nonce);
   return { nonce, expiresAt };
 }
 
@@ -84,12 +87,9 @@ export async function verifyWalletSignature(input: {
   signature: string;
 }): Promise<boolean> {
   const lookupAddress = input.storageAddress ?? input.address;
-  const record = await prisma.authNonce.findFirst({
-    where: { address: lookupAddress, usedAt: null, expiresAt: { gt: new Date() } },
-    orderBy: { issuedAt: 'desc' },
-  });
-  if (!record) return false;
-  if (!input.message.includes(record.nonce)) return false;
+  const nonce = await consumeAuthNonce(lookupAddress, input.chain);
+  if (!nonce) return false;
+  if (!input.message.includes(nonce)) return false;
 
   let ok = false;
   if (input.chain === Chain.SOLANA) {
@@ -113,9 +113,7 @@ export async function verifyWalletSignature(input: {
     }
   }
 
-  if (!ok) return false;
-  await prisma.authNonce.update({ where: { id: record.id }, data: { usedAt: new Date() } });
-  return true;
+  return ok;
 }
 
 export async function createSession(

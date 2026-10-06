@@ -1,30 +1,30 @@
 /**
- * COPYRA wallet — Reown AppKit formula (same as <w3m-core-button> / <appkit-button>).
+ * COPYRA wallet — Reown AppKit (Vite).
  *
- * Vanilla HTML pattern from Reown docs:
- *   <appkit-button></appkit-button>
+ * Formula (Reown HTML):
  *   <script type="module" src="wallet.js"></script>
+ *   <appkit-button></appkit-button>   // modern <w3m-core-button>
  *
- * We createAppKit once, mount the official button, and expose window.CopyraWallet
- * for platform connect / SIWE / deposit / withdraw.
+ * Why Phantom-only used to appear:
+ *   1) SolanaAdapter was constructed with only PhantomWalletAdapter (+ Solflare),
+ *      so the injected list was capped to those adapters.
+ *   2) Connect opened with namespace:'solana' while default mode was SOL, so EVM
+ *      wallets never showed in that modal.
+ *   3) Wallet Standard surfaces the browser-injected extension first (usually Phantom).
+ * Fix: SolanaAdapter with registerWalletStandard only (AppKit ships WalletConnect
+ * for Solana), WagmiAdapter for all EVM injected + WC, allWallets:'SHOW', and
+ * open Connect / AllWallets for the active namespace every click.
+ *
+ * Project id: VITE_REOWN_PROJECT_ID only (plus same-origin /config.js from the API).
+ * No Alchemy / paid RPC keys in the browser — public default transports only.
  */
 import { createAppKit } from '@reown/appkit';
 import { WagmiAdapter } from '@reown/appkit-adapter-wagmi';
 import { SolanaAdapter } from '@reown/appkit-adapter-solana';
-import {
-  solana,
-  mainnet,
-  base,
-  arbitrum,
-  bsc,
-  polygon,
-  optimism,
-} from '@reown/appkit/networks';
+import { solana, mainnet, base, arbitrum, bsc } from '@reown/appkit/networks';
 import { QueryClient } from '@tanstack/react-query';
 import { getAddress, http } from 'viem';
 import { getAccount } from '@wagmi/core';
-import { PhantomWalletAdapter } from '@solana/wallet-adapter-phantom';
-import { SolflareWalletAdapter } from '@solana/wallet-adapter-solflare';
 import { mountWeb3Provider } from './web3/mount';
 import type { EvmAccountStatus } from './web3/AccountBridge';
 
@@ -32,7 +32,7 @@ export type WalletMode = 'sol' | 'evm';
 
 export interface ConnectedWallet {
   address: string;
-  chain: 'SOLANA' | 'BASE' | 'ETHEREUM' | 'ARBITRUM' | 'BSC' | 'POLYGON' | 'OPTIMISM';
+  chain: 'SOLANA' | 'BASE' | 'ETHEREUM' | 'ARBITRUM' | 'BSC';
   chainId?: number;
   mode: WalletMode;
 }
@@ -56,21 +56,15 @@ type WalletApi = {
   ready: boolean;
   projectIdConfigured: boolean;
   error: string | null;
-  /** Opens official AppKit multi-wallet modal (All Wallets + QR). */
   connect: (mode: WalletMode, opts?: { skipOpen?: boolean }) => Promise<ConnectedWallet>;
-  /** Open modal only — call from a click handler (required for desktop browsers). */
   openModal: (mode?: WalletMode) => void;
-  /** Prefer clicking the official <appkit-button> / <w3m-button> (formula). */
   clickConnectButton: () => boolean;
-  /** Keep header overlay button in sync with SOL / EVM mode. */
   setMode: (mode: WalletMode) => void;
-  /** Wait until a wallet address appears after openModal. */
   waitForConnection: (mode: WalletMode) => Promise<ConnectedWallet>;
   disconnect: (mode?: WalletMode) => Promise<void>;
   getAddress: (mode: WalletMode) => string | null;
   getChainId: () => number | null;
   getAccountStatus: () => AccountSnapshot;
-  /** Ensure <appkit-button> is visible in a host element (Connect modal). */
   mountConnectButton: (host: HTMLElement, mode: WalletMode) => void;
   signMessage: (message: string, address: string, mode: WalletMode) => Promise<string>;
   signSolanaTransaction: (swapTransactionBase64: string) => Promise<string>;
@@ -114,21 +108,15 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
     async connect() {
       throw new Error(error ?? 'Wallet connect is not ready.');
     },
-    openModal() {
-      return;
-    },
+    openModal() {},
     clickConnectButton() {
       return false;
     },
-    setMode() {
-      return;
-    },
+    setMode() {},
     async waitForConnection() {
       throw new Error(error ?? 'Wallet connect is not ready.');
     },
-    async disconnect() {
-      return;
-    },
+    async disconnect() {},
     getAddress() {
       return null;
     },
@@ -138,9 +126,7 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
     getAccountStatus() {
       return { evm: { ...DISCONNECTED_EVM }, solAddress: null };
     },
-    mountConnectButton() {
-      return;
-    },
+    mountConnectButton() {},
     async signMessage() {
       throw new Error(error ?? 'Wallet is not ready.');
     },
@@ -157,46 +143,18 @@ function evmChainFromId(chainId: number | undefined): ConnectedWallet['chain'] {
   if (chainId === 8453) return 'BASE';
   if (chainId === 42161) return 'ARBITRUM';
   if (chainId === 56) return 'BSC';
-  if (chainId === 137) return 'POLYGON';
-  if (chainId === 10) return 'OPTIMISM';
   return 'ETHEREUM';
 }
 
-function networkForChainId(chainId: number) {
-  if (chainId === 8453) return base;
-  if (chainId === 42161) return arbitrum;
-  if (chainId === 56) return bsc;
-  if (chainId === 137) return polygon;
-  if (chainId === 10) return optimism;
-  return mainnet;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms); // copyra-audit-allow: brief pause between wallet connect and SIWE sign
+  });
 }
 
-function alchemyRpcForChain(chainId: number, alchemyId: string): string | undefined {
-  const path =
-    chainId === 1
-      ? 'eth-mainnet'
-      : chainId === 8453
-        ? 'base-mainnet'
-        : chainId === 42161
-          ? 'arb-mainnet'
-          : chainId === 56
-            ? 'bnb-mainnet'
-            : chainId === 137
-              ? 'polygon-mainnet'
-              : chainId === 10
-                ? 'opt-mainnet'
-                : null;
-  if (!path) return undefined;
-  return `https://${path}.g.alchemy.com/v2/${alchemyId}`;
-}
-
+/** VITE_REOWN_PROJECT_ID only (+ runtime /config.js / public-config). */
 async function resolveProjectId(): Promise<string> {
-  const baked =
-    (import.meta.env.VITE_REOWN_PROJECT_ID as string | undefined)?.trim() ||
-    (import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID as string | undefined)?.trim() ||
-    (import.meta.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID as string | undefined)?.trim() ||
-    (import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined)?.trim() ||
-    '';
+  const baked = (import.meta.env.VITE_REOWN_PROJECT_ID as string | undefined)?.trim() || '';
   if (baked) return baked;
 
   const fromWindow = window.__COPYRA_CONFIG__?.reownProjectId?.trim();
@@ -220,16 +178,6 @@ async function resolveProjectId(): Promise<string> {
   return '';
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms); // copyra-audit-allow: brief pause between wallet connect and SIWE sign
-  });
-}
-
-/** Keep a persistent official Connect button in the document (Reown HTML formula).
- *  Image formula: <w3m-core-button></w3m-core-button> + <script type="module" src="wallet.js">
- *  Modern aliases: <appkit-button> / <w3m-button>
- */
 function ensureAppKitButtonHost(): HTMLElement {
   let host = document.getElementById('copyra-appkit-host');
   if (!host) {
@@ -245,7 +193,6 @@ function ensureAppKitButtonHost(): HTMLElement {
 function renderAppKitButton(host: HTMLElement, mode: WalletMode, visible: boolean): HTMLElement {
   const namespace = mode === 'sol' ? 'solana' : 'eip155';
   host.innerHTML = '';
-  // Official formula button (appkit-button = modern w3m-core-button).
   const btn = document.createElement('appkit-button') as HTMLElement;
   btn.setAttribute('namespace', namespace);
   btn.setAttribute('label', 'Connect Wallet');
@@ -255,16 +202,14 @@ function renderAppKitButton(host: HTMLElement, mode: WalletMode, visible: boolea
     btn.style.cssText = 'width:100%;display:block;';
   }
   host.appendChild(btn);
-  // Legacy alias from the uploaded formula screenshot.
   const legacy = document.createElement('w3m-button') as HTMLElement;
   legacy.setAttribute('label', 'Connect Wallet');
   legacy.setAttribute('data-copyra-connect', '1');
-  legacy.style.display = visible ? 'none' : 'none';
+  legacy.style.display = 'none';
   host.appendChild(legacy);
   return btn;
 }
 
-/** Overlay the official AppKit button on our Connect Wallet control (desktop gesture-safe). */
 function mountHeaderConnectOverlay(mode: WalletMode): void {
   const wrap = document.getElementById('cn-wrap');
   if (!wrap) return;
@@ -272,16 +217,13 @@ function mountHeaderConnectOverlay(mode: WalletMode): void {
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.setAttribute('data-copyra-overlay', '1');
-    overlay.style.cssText = 'position:absolute;inset:0;z-index:2;';
     wrap.appendChild(overlay);
   }
   renderAppKitButton(overlay, mode, true);
   overlay.style.cssText =
     'position:absolute;inset:0;z-index:2;opacity:0.011;overflow:hidden;border-radius:16px;';
   const btn = overlay.querySelector('appkit-button') as HTMLElement | null;
-  if (btn) {
-    btn.style.cssText = 'width:100%;height:100%;display:block;min-height:100%;';
-  }
+  if (btn) btn.style.cssText = 'width:100%;height:100%;display:block;min-height:100%;';
 }
 
 function clickOfficialConnectButton(): boolean {
@@ -305,45 +247,33 @@ async function init(): Promise<WalletApi> {
   const PROJECT_ID = await resolveProjectId();
   if (!PROJECT_ID) {
     return emptyApi(
-      'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID on DigitalOcean, then redeploy.',
+      'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID on the API host, then redeploy.',
       false,
     );
   }
 
-  const networks = [solana, mainnet, base, arbitrum, bsc, polygon, optimism] as [
+  const networks = [solana, mainnet, base, arbitrum, bsc] as [
     typeof solana,
     typeof mainnet,
     typeof base,
     typeof arbitrum,
     typeof bsc,
-    typeof polygon,
-    typeof optimism,
   ];
+  const evmNetworks = [mainnet, base, arbitrum, bsc] as const;
 
-  const alchemyId =
-    (import.meta.env.VITE_ALCHEMY_ID as string | undefined)?.trim() ||
-    (import.meta.env.NEXT_PUBLIC_ALCHEMY_ID as string | undefined)?.trim() ||
-    '';
-  const evmNetworks = [mainnet, base, arbitrum, bsc, polygon, optimism] as const;
-  const transports = Object.fromEntries(
-    evmNetworks.map((network) => {
-      const rpc = alchemyId ? alchemyRpcForChain(network.id, alchemyId) : undefined;
-      return [network.id, http(rpc)];
-    }),
-  );
+  // Public default transports only — no Alchemy / paid RPC keys in the browser.
+  const transports = Object.fromEntries(evmNetworks.map((network) => [network.id, http()]));
 
-  // EVM: WagmiAdapter brings MetaMask, WalletConnect QR, Coinbase, injected EIP-6963, …
   const wagmiAdapter = new WagmiAdapter({
     projectId: PROJECT_ID,
     networks: [...evmNetworks],
     transports,
   });
 
-  // Solana: without explicit wallets AppKit only detects injected Wallet Standard
-  // (often just Phantom). Register Phantom + Solflare + WalletConnect explicitly.
+  // Do NOT pass a wallets: [...] list — that was the Phantom-only root cause.
+  // registerWalletStandard discovers every injected Solana wallet; AppKit adds WalletConnect QR.
   const solanaAdapter = new SolanaAdapter({
     registerWalletStandard: true,
-    wallets: [new PhantomWalletAdapter(), new SolflareWalletAdapter()],
   });
 
   const queryClient = new QueryClient();
@@ -357,9 +287,8 @@ async function init(): Promise<WalletApi> {
       name: 'COPYRA',
       description: 'Copy the smartest wallets on Solana and EVM.',
       url: siteOrigin,
-      icons: [`${siteOrigin}/icons/copyra.png`],
+      icons: [`${siteOrigin}/icons/copyra.webp`],
     },
-    // Match platform UI fonts; high z-index so desktop AppKit sits above our modals.
     themeMode: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
     themeVariables: {
       '--w3m-font-family': 'Figtree, system-ui, sans-serif',
@@ -369,7 +298,6 @@ async function init(): Promise<WalletApi> {
       '--w3m-accent': '#D87558',
       '--apkt-accent': '#D87558',
     },
-    // Force the full explorer ("All Wallets") — not just the one injected extension.
     allWallets: 'SHOW',
     enableWalletGuide: true,
     enableNetworkSwitch: true,
@@ -383,8 +311,6 @@ async function init(): Promise<WalletApi> {
       '1ae92b26df02f0abca6304df07debccd18262fdf5fe82daa81593582dac9a369',
       'a67cfe14b0026da23205eefdd4ad2d442b033e3b91ea9bdb7858caa6ca24eb28',
     ],
-    includeWalletIds: undefined,
-    excludeWalletIds: undefined,
     features: {
       analytics: false,
       email: false,
@@ -394,10 +320,8 @@ async function init(): Promise<WalletApi> {
     },
   });
 
-  // Official Reown HTML formula: keep <appkit-button> / <w3m-button> in the document.
   const hiddenHost = ensureAppKitButtonHost();
   renderAppKitButton(hiddenHost, 'sol', false);
-  // Overlay formula button on header Connect Wallet — click = native AppKit open (no delay).
   mountHeaderConnectOverlay('sol');
 
   let activeMode: WalletMode = 'sol';
@@ -407,6 +331,11 @@ async function init(): Promise<WalletApi> {
     queryClient,
     onAccountChange: (status) => {
       evmAccount = status;
+      window.dispatchEvent(
+        new CustomEvent('copyra-wallet-account', {
+          detail: { evm: status, solAddress: readSolAddress() },
+        }),
+      );
     },
   });
 
@@ -461,7 +390,6 @@ async function init(): Promise<WalletApi> {
     } catch {
       /* ignore */
     }
-    // w3m-modal always exists in the DOM; only `.open` means the list is visible.
     return Boolean(
       document.querySelector('w3m-modal.open') || document.querySelector('appkit-modal.open'),
     );
@@ -471,13 +399,13 @@ async function init(): Promise<WalletApi> {
     activeMode = mode;
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
     mountHeaderConnectOverlay(mode);
-    // Sync open from the click stack — required for PC browsers. No await.
-    // Always force the Connect / All Wallets list — even if this address is already linked.
+    // Sync — desktop browsers require the user-gesture. Always force the list,
+    // including when the same address is already linked.
     try {
-      void modal.open({ view: 'Connect', namespace });
+      void modal.open({ view: 'AllWallets', namespace });
     } catch {
       try {
-        void modal.open({ view: 'AllWallets', namespace });
+        void modal.open({ view: 'Connect', namespace });
       } catch {
         try {
           void modal.open({ view: 'Connect' });
@@ -489,10 +417,10 @@ async function init(): Promise<WalletApi> {
     window.setTimeout(() => {
       if (!isAppKitOpen()) {
         try {
-          void modal.open({ view: 'AllWallets', namespace });
+          void modal.open({ view: 'Connect', namespace });
         } catch {
           try {
-            void modal.open({ view: 'Connect', namespace });
+            void modal.open({ view: 'AllWallets', namespace });
           } catch {
             /* ignore */
           }
@@ -502,8 +430,6 @@ async function init(): Promise<WalletApi> {
   }
 
   async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {
-    // Snapshot any already-connected address so we don't instant-resolve and skip the popup
-    // when the user opens the list again for the same wallet.
     const prior = mode === 'sol' ? readSolAddress() : readEvmAddress();
     const priorNorm = prior ? prior.toLowerCase() : null;
     const started = Date.now();
@@ -512,8 +438,6 @@ async function init(): Promise<WalletApi> {
     while (Date.now() - started < 180_000) {
       const isOpen = isAppKitOpen();
       if (isOpen) sawModalOpen = true;
-
-      // Wait until the list actually opens — never fake "open".
       if (!sawModalOpen) {
         await sleep(180);
         continue;
@@ -521,12 +445,10 @@ async function init(): Promise<WalletApi> {
 
       if (mode === 'sol') {
         const address = readSolAddress();
-        // Modal opened then closed with a Solana address (same or new) — accept.
         if (address && !isOpen) {
           await sleep(120);
           return { address, chain: 'SOLANA', mode };
         }
-        // Address changed while modal still open — accept the new pick.
         if (address && priorNorm && address.toLowerCase() !== priorNorm) {
           try {
             await modal.close();
@@ -545,12 +467,7 @@ async function init(): Promise<WalletApi> {
         if (address && !isOpen) {
           const chainId = readEvmChainId() ?? 1;
           await sleep(120);
-          return {
-            address,
-            chain: evmChainFromId(chainId),
-            chainId,
-            mode,
-          };
+          return { address, chain: evmChainFromId(chainId), chainId, mode };
         }
         if (address && priorNorm && address.toLowerCase() !== priorNorm) {
           const chainId = readEvmChainId() ?? 1;
@@ -560,12 +477,7 @@ async function init(): Promise<WalletApi> {
             /* ignore */
           }
           await sleep(120);
-          return {
-            address,
-            chain: evmChainFromId(chainId),
-            chainId,
-            mode,
-          };
+          return { address, chain: evmChainFromId(chainId), chainId, mode };
         }
       }
       await sleep(180);
@@ -583,7 +495,6 @@ async function init(): Promise<WalletApi> {
       renderAppKitButton(host, mode, true);
     },
 
-    // Sync void — must stay sync so desktop browsers keep the user-gesture.
     openModal(mode = 'evm') {
       openAppKit(mode);
     },
@@ -602,9 +513,7 @@ async function init(): Promise<WalletApi> {
     waitForConnection,
 
     async connect(mode, opts) {
-      if (!opts?.skipOpen) {
-        openAppKit(mode);
-      }
+      if (!opts?.skipOpen) openAppKit(mode);
       return waitForConnection(mode);
     },
 
@@ -629,10 +538,7 @@ async function init(): Promise<WalletApi> {
     },
 
     getAccountStatus() {
-      return {
-        evm: { ...evmAccount },
-        solAddress: readSolAddress(),
-      };
+      return { evm: { ...evmAccount }, solAddress: readSolAddress() };
     },
 
     async signMessage(message, address, mode) {
@@ -640,7 +546,7 @@ async function init(): Promise<WalletApi> {
         const provider = solanaProvider();
         if (!provider?.signMessage) {
           throw new Error(
-            'Connected Solana wallet cannot sign messages. Pick Phantom, Solflare, or WalletConnect from All Wallets.',
+            'Connected Solana wallet cannot sign messages. Open All Wallets and pick Phantom, Solflare, or WalletConnect.',
           );
         }
         const result = await provider.signMessage(new TextEncoder().encode(message), 'utf8');
@@ -654,26 +560,21 @@ async function init(): Promise<WalletApi> {
       const provider = evmProvider();
       if (!provider?.request) {
         throw new Error(
-          'Connected EVM wallet cannot sign messages. Pick MetaMask, Trust, Coinbase, or WalletConnect QR.',
+          'Connected EVM wallet cannot sign messages. Open All Wallets and pick MetaMask, Coinbase, Rainbow, or WalletConnect.',
         );
       }
-      let signingAddress = address;
-      try {
-        signingAddress = getAddress(address);
-      } catch {
-        /* keep */
-      }
-      const sig = await provider.request({
+      const checksum = getAddress(address);
+      const signature = await provider.request({
         method: 'personal_sign',
-        params: [message, signingAddress],
+        params: [message, checksum],
       });
-      return String(sig);
+      return String(signature);
     },
 
     async signSolanaTransaction(swapTransactionBase64) {
       const provider = solanaProvider();
       if (!provider?.signTransaction) {
-        throw new Error('Connect a Solana wallet that can sign transactions.');
+        throw new Error('Solana wallet cannot sign transactions. Reconnect from All Wallets.');
       }
       const raw = Uint8Array.from(atob(swapTransactionBase64), (c) => c.charCodeAt(0));
       const { VersionedTransaction } = await import('@solana/web3.js');
@@ -690,23 +591,20 @@ async function init(): Promise<WalletApi> {
     },
 
     async sendEvmNative(input) {
-      try {
-        await modal.switchNetwork(networkForChainId(input.chainId));
-        await sleep(250);
-      } catch {
-        /* continue on current chain */
-      }
       const provider = evmProvider();
-      if (!provider?.request) throw new Error('No EVM wallet available to send.');
+      if (!provider?.request) throw new Error('EVM wallet not connected.');
       const from = readEvmAddress();
-      if (!from) throw new Error('Connect an EVM wallet first.');
-      let checksumFrom = from;
-      try {
-        checksumFrom = getAddress(from);
-      } catch {
-        /* keep */
-      }
+      if (!from) throw new Error('EVM wallet address missing.');
+      const checksumFrom = getAddress(from);
       const hexValue = `0x${BigInt(input.valueWei).toString(16)}`;
+      try {
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: `0x${input.chainId.toString(16)}` }],
+        });
+      } catch {
+        /* wallet may already be on the chain, or add-chain is needed */
+      }
       const hash = await provider.request({
         method: 'eth_sendTransaction',
         params: [

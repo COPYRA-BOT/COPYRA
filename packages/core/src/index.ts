@@ -38,6 +38,7 @@ export * from './engine/copy-execute.js';
 export * from './engine/exit-execute.js';
 export * from './engine/reconcile.js';
 export * from './engine/funds.js';
+export * from './engine/owner-wallet.js';
 
 // Market data
 export * from './market/index.js';

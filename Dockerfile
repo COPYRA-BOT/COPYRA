@@ -25,7 +25,6 @@ ENV DATABASE_URL=${DATABASE_URL}
 # and /api/public-config also inject it if this ARG is empty.
 ARG VITE_REOWN_PROJECT_ID=
 ENV VITE_REOWN_PROJECT_ID=${VITE_REOWN_PROJECT_ID}
-ENV NEXT_PUBLIC_REOWN_PROJECT_ID=${VITE_REOWN_PROJECT_ID}
 
 RUN npm ci --no-audit --no-fund
 

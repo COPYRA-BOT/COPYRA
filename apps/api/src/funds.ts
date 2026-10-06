@@ -1,4 +1,5 @@
 import {
+  assertOwnerWallet,
   buildEvmDepositIntent,
   buildSolanaDepositTransaction,
   broadcastSolanaDeposit,
@@ -29,6 +30,16 @@ function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
   if (mode === 'sol') return Chain.SOLANA;
   if (preferred && preferred !== Chain.SOLANA) return preferred;
   return Chain.BASE;
+}
+
+function requireOwner(reply: FastifyReply, address: string, chain: Chain): boolean {
+  try {
+    assertOwnerWallet(address, chain);
+    return true;
+  } catch (error) {
+    reply.code(403).send({ error: error instanceof Error ? error.message : String(error) });
+    return false;
+  }
 }
 
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
@@ -76,9 +87,11 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         chain: chainSchema.optional(),
       })
       .parse(request.body);
+    const chain = modeChain(body.mode, body.chain);
+    if (!requireOwner(reply, session.user.address, chain)) return;
     try {
       const result = await moveBucket({
-        chain: modeChain(body.mode, body.chain),
+        chain,
         direction: body.direction,
         amountQuote: body.amount,
       });
@@ -104,6 +117,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         if (session.user.chain !== Chain.SOLANA) {
           return reply.code(400).send({ error: 'Sign in with a Solana wallet to deposit SOL.' });
         }
+        if (!requireOwner(reply, session.user.address, Chain.SOLANA)) return;
         const built = await buildSolanaDepositTransaction({
           fromAddress: session.user.address,
           amountSol: body.amount,
@@ -116,6 +130,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       const chain = modeChain('evm', body.chain);
+      if (!requireOwner(reply, session.user.address, chain)) return;
       const intent = buildEvmDepositIntent({ chain, amountNative: body.amount });
       return jsonSafe({
         kind: 'evm',
@@ -131,6 +146,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/funds/deposit/broadcast', async (request, reply) => {
     const session = await requireSession(request, reply);
     if (!session) return;
+    if (!requireOwner(reply, session.user.address, Chain.SOLANA)) return;
     const body = z
       .object({
         signedTransaction: z.string().min(32),
@@ -161,7 +177,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         amount: z.number().positive(),
       })
       .parse(request.body);
-    // User already broadcast via their wallet; we only confirm via RPC and ledger the Transfer row.
+    if (!requireOwner(reply, session.user.address, body.chain)) return;
     try {
       const { confirmEvmTransaction, explorerTxUrl, chainConfig } = await import('@copyra/core');
       const config = chainConfig(body.chain);
@@ -219,6 +235,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     if (body.mode === 'evm' && session.user.chain === Chain.SOLANA) {
       return reply.code(400).send({ error: 'Sign in with an EVM wallet to withdraw on EVM.' });
     }
+    if (!requireOwner(reply, session.user.address, chain)) return;
 
     try {
       const result = await withdrawToWallet({

@@ -2,14 +2,9 @@ import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { resolve } from 'node:path';
 
+/** Only VITE_REOWN_PROJECT_ID — no NEXT_PUBLIC_ / Alchemy aliases in the browser. */
 function resolveReownProjectId(env: Record<string, string>): string {
-  return (
-    env.VITE_REOWN_PROJECT_ID ||
-    env.NEXT_PUBLIC_REOWN_PROJECT_ID ||
-    env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ||
-    env.VITE_WALLETCONNECT_PROJECT_ID ||
-    ''
-  );
+  return env.VITE_REOWN_PROJECT_ID?.trim() || '';
 }
 
 /** Local stand-in for the API's runtime /config.js (not shipped in dist). */
@@ -50,13 +45,11 @@ function copyraConfigPlugin(env: Record<string, string>): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, resolve(process.cwd(), '../..'), '');
   const projectId = resolveReownProjectId(env);
-  const alchemyId = env.VITE_ALCHEMY_ID || env.NEXT_PUBLIC_ALCHEMY_ID || '';
 
   return {
     envDir: resolve(process.cwd(), '../..'),
-    envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
+    envPrefix: ['VITE_'],
     plugins: [react(), copyraConfigPlugin(env)],
-    // Equivalent to Next.js webpack.resolve.fallback = { fs, net, tls: false }
     resolve: {
       alias: {
         fs: resolve(__dirname, 'src/empty-module.ts'),
@@ -73,11 +66,6 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       'import.meta.env.VITE_REOWN_PROJECT_ID': JSON.stringify(projectId),
-      'import.meta.env.NEXT_PUBLIC_REOWN_PROJECT_ID': JSON.stringify(projectId),
-      'import.meta.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID': JSON.stringify(projectId),
-      'import.meta.env.VITE_WALLETCONNECT_PROJECT_ID': JSON.stringify(projectId),
-      'import.meta.env.VITE_ALCHEMY_ID': JSON.stringify(alchemyId),
-      'import.meta.env.NEXT_PUBLIC_ALCHEMY_ID': JSON.stringify(alchemyId),
       global: 'globalThis',
     },
     server: {

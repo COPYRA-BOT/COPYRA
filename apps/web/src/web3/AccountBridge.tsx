@@ -1,5 +1,3 @@
-'use client';
-
 import { useEffect, useRef } from 'react';
 import { useAccount, useChainId } from 'wagmi';
 
@@ -12,10 +10,7 @@ export type EvmAccountStatus = {
   chainId: number | undefined;
 };
 
-/**
- * Mirrors ConnectKit’s `useAccount()` example and pushes status to the
- * vanilla dashboard via a callback (and a browser event).
- */
+/** Pushes wagmi useAccount() status to the vanilla dashboard. */
 export function AccountBridge({
   onChange,
 }: {
