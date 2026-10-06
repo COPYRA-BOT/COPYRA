@@ -60,6 +60,10 @@ type WalletApi = {
   connect: (mode: WalletMode, opts?: { skipOpen?: boolean }) => Promise<ConnectedWallet>;
   /** Open modal only — call from a click handler (required for desktop browsers). */
   openModal: (mode?: WalletMode) => void;
+  /** Prefer clicking the official <appkit-button> / <w3m-button> (formula). */
+  clickConnectButton: () => boolean;
+  /** Keep header overlay button in sync with SOL / EVM mode. */
+  setMode: (mode: WalletMode) => void;
   /** Wait until a wallet address appears after openModal. */
   waitForConnection: (mode: WalletMode) => Promise<ConnectedWallet>;
   disconnect: (mode?: WalletMode) => Promise<void>;
@@ -111,6 +115,12 @@ function emptyApi(error: string | null, projectIdConfigured = false): WalletApi 
       throw new Error(error ?? 'Wallet connect is not ready.');
     },
     openModal() {
+      return;
+    },
+    clickConnectButton() {
+      return false;
+    },
+    setMode() {
       return;
     },
     async waitForConnection() {
@@ -216,13 +226,15 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-/** Keep a persistent <appkit-button> on the page (Reown HTML formula). */
+/** Keep a persistent official Connect button in the document (Reown HTML formula).
+ *  Image formula: <w3m-core-button></w3m-core-button> + <script type="module" src="wallet.js">
+ *  Modern aliases: <appkit-button> / <w3m-button>
+ */
 function ensureAppKitButtonHost(): HTMLElement {
   let host = document.getElementById('copyra-appkit-host');
   if (!host) {
     host = document.createElement('div');
     host.id = 'copyra-appkit-host';
-    // Off-screen but in DOM so the custom element stays registered/clickable.
     host.style.cssText =
       'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none;';
     document.body.appendChild(host);
@@ -233,20 +245,60 @@ function ensureAppKitButtonHost(): HTMLElement {
 function renderAppKitButton(host: HTMLElement, mode: WalletMode, visible: boolean): HTMLElement {
   const namespace = mode === 'sol' ? 'solana' : 'eip155';
   host.innerHTML = '';
+  // Official formula button (appkit-button = modern w3m-core-button).
   const btn = document.createElement('appkit-button') as HTMLElement;
   btn.setAttribute('namespace', namespace);
   btn.setAttribute('label', 'Connect Wallet');
+  btn.setAttribute('data-copyra-connect', '1');
   if (visible) {
-    host.style.cssText = 'display:block;width:100%;margin:12px 0;';
+    host.style.cssText = 'display:block;width:100%;margin:12px 0;min-height:48px;';
     btn.style.cssText = 'width:100%;display:block;';
   }
   host.appendChild(btn);
-  // Also keep w3m-button alias for older formula screenshots.
+  // Legacy alias from the uploaded formula screenshot.
   const legacy = document.createElement('w3m-button') as HTMLElement;
   legacy.setAttribute('label', 'Connect Wallet');
-  legacy.style.display = 'none';
+  legacy.setAttribute('data-copyra-connect', '1');
+  legacy.style.display = visible ? 'none' : 'none';
   host.appendChild(legacy);
   return btn;
+}
+
+/** Overlay the official AppKit button on our Connect Wallet control (desktop gesture-safe). */
+function mountHeaderConnectOverlay(mode: WalletMode): void {
+  const wrap = document.getElementById('cn-wrap');
+  if (!wrap) return;
+  let overlay = wrap.querySelector('[data-copyra-overlay="1"]') as HTMLElement | null;
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.setAttribute('data-copyra-overlay', '1');
+    overlay.style.cssText = 'position:absolute;inset:0;z-index:2;';
+    wrap.appendChild(overlay);
+  }
+  renderAppKitButton(overlay, mode, true);
+  overlay.style.cssText =
+    'position:absolute;inset:0;z-index:2;opacity:0.011;overflow:hidden;border-radius:16px;';
+  const btn = overlay.querySelector('appkit-button') as HTMLElement | null;
+  if (btn) {
+    btn.style.cssText = 'width:100%;height:100%;display:block;min-height:100%;';
+  }
+}
+
+function clickOfficialConnectButton(): boolean {
+  const candidates = [
+    ...Array.from(document.querySelectorAll('#cn-wrap [data-copyra-connect="1"]')),
+    ...Array.from(document.querySelectorAll('#akhost [data-copyra-connect="1"]')),
+    ...Array.from(document.querySelectorAll('#copyra-appkit-host [data-copyra-connect="1"]')),
+  ] as HTMLElement[];
+  for (const el of candidates) {
+    try {
+      el.click();
+      return true;
+    } catch {
+      /* try next */
+    }
+  }
+  return false;
 }
 
 async function init(): Promise<WalletApi> {
@@ -342,10 +394,13 @@ async function init(): Promise<WalletApi> {
     },
   });
 
-  // Official Reown HTML formula: keep <appkit-button> in the document.
+  // Official Reown HTML formula: keep <appkit-button> / <w3m-button> in the document.
   const hiddenHost = ensureAppKitButtonHost();
-  renderAppKitButton(hiddenHost, 'evm', false);
+  renderAppKitButton(hiddenHost, 'sol', false);
+  // Overlay formula button on header Connect Wallet — click = native AppKit open (no delay).
+  mountHeaderConnectOverlay('sol');
 
+  let activeMode: WalletMode = 'sol';
   let evmAccount: EvmAccountStatus = { ...DISCONNECTED_EVM };
   mountWeb3Provider({
     config: wagmiAdapter.wagmiConfig,
@@ -413,27 +468,37 @@ async function init(): Promise<WalletApi> {
   }
 
   function openAppKit(mode: WalletMode): void {
+    activeMode = mode;
     const namespace = mode === 'sol' ? 'solana' : 'eip155';
-    // Must stay sync (no await) so desktop browsers keep the user-gesture.
-    // Always force the Connect wallet list — even if this address is already linked.
+    mountHeaderConnectOverlay(mode);
+    // Sync open from the click stack — required for PC browsers. No await.
+    // Always force the Connect / All Wallets list — even if this address is already linked.
     try {
       void modal.open({ view: 'Connect', namespace });
     } catch {
       try {
-        void modal.open({ view: 'Connect' });
+        void modal.open({ view: 'AllWallets', namespace });
       } catch {
-        /* ignore */
+        try {
+          void modal.open({ view: 'Connect' });
+        } catch {
+          /* ignore */
+        }
       }
     }
     window.setTimeout(() => {
       if (!isAppKitOpen()) {
         try {
-          void modal.open({ view: 'Connect', namespace });
+          void modal.open({ view: 'AllWallets', namespace });
         } catch {
-          /* ignore */
+          try {
+            void modal.open({ view: 'Connect', namespace });
+          } catch {
+            /* ignore */
+          }
         }
       }
-    }, 120);
+    }, 100);
   }
 
   async function waitForConnection(mode: WalletMode): Promise<ConnectedWallet> {
@@ -514,12 +579,24 @@ async function init(): Promise<WalletApi> {
     error: null,
 
     mountConnectButton(host, mode) {
+      activeMode = mode;
       renderAppKitButton(host, mode, true);
     },
 
     // Sync void — must stay sync so desktop browsers keep the user-gesture.
     openModal(mode = 'evm') {
       openAppKit(mode);
+    },
+
+    clickConnectButton() {
+      mountHeaderConnectOverlay(activeMode);
+      return clickOfficialConnectButton();
+    },
+
+    setMode(mode) {
+      activeMode = mode;
+      mountHeaderConnectOverlay(mode);
+      renderAppKitButton(hiddenHost, mode, false);
     },
 
     waitForConnection,

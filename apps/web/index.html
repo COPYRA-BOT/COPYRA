@@ -3,6 +3,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>copyra.</title>
 <link rel="icon" type="image/png" href="/icons/favicon.png">
+<link rel="preload" as="image" href="/icons/copyra.webp" type="image/webp">
+<link rel="preload" as="image" href="/icons/solana.webp" type="image/webp">
+<link rel="preload" as="image" href="/icons/evm.webp" type="image/webp">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Inter+Tight:wght@800&display=swap">
 <style>
 :root{--bg:#F6F5F3;--sf:#fff;--sf2:#E6E3DC;--ln:#E3E0DA;--tx:#1C1D21;--mu:#7B7D84;--ac:#D57658;--gl:0 8px 24px rgba(213,118,88,.3);--g:#1F9D6B;--r:#D64550;--w:#C98A12;--sol:#6E56E0;--evm:#3F6FD8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0)}
@@ -13,12 +16,18 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .ib{background:none;border:0;width:44px;height:44px;border-radius:14px;display:grid;place-items:center;color:var(--mu)}.ib svg{width:26px;height:26px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}
 .logo{display:flex;align-items:center;gap:8px;font:800 30px/1 'Inter Tight',system-ui;letter-spacing:-.035em}.logo i{color:var(--ac);font-style:normal}
 .logo img.brand{width:36px;height:36px;object-fit:contain;display:block;flex-shrink:0}
-.chip{display:flex;align-items:center;gap:8px;padding:6px 14px 6px 8px;border-radius:999px;border:2px solid rgba(110,200,140,.5);background:rgba(110,200,140,.08);color:var(--mu)}
+.chip{display:flex;align-items:center;gap:8px;padding:6px 14px 6px 8px;border-radius:999px;border:2px solid rgba(110,200,140,.5);background:rgba(110,200,140,.08);color:var(--mu);transition:border-color .18s ease,background .18s ease}
 .chip.evm{border-color:rgba(91,141,239,.45);background:rgba(91,141,239,.10)}
-.tile{width:34px;height:34px;border-radius:10px;overflow:hidden;background:#0b0b0d;display:grid;place-items:center;flex-shrink:0}
-.tile img{width:100%;height:100%;object-fit:cover;display:block}
+.tile{position:relative;width:34px;height:34px;border-radius:10px;overflow:hidden;background:#0b0b0d;flex-shrink:0;transition:background .18s ease}
+.tile .ico{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transform:scale(.88);transition:opacity .16s ease,transform .16s ease;pointer-events:none;will-change:opacity,transform}
+.tile .ico.sol.on{opacity:1;transform:scale(1)}
+.tile .ico.evm{object-fit:contain;padding:5px;box-sizing:border-box}
 .chip.evm .tile{background:#f3f4f6}
-.chip.evm .tile img{object-fit:contain;padding:5px;box-sizing:border-box}
+.chip.evm .tile .ico.sol{opacity:0;transform:scale(.88)}
+.chip.evm .tile .ico.evm.on{opacity:1;transform:scale(1)}
+#cn-wrap{position:relative;display:inline-flex;align-items:center}
+#cn-wrap appkit-button,#cn-wrap w3m-button,#cn-wrap w3m-core-button{position:absolute;inset:0;opacity:0.02;width:100%!important;height:100%!important;z-index:2;cursor:pointer}
+#akhost appkit-button,#akhost w3m-button,#akhost w3m-core-button{display:block;width:100%}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
 .red{background:var(--r);color:#fff}.sm{padding:7px 12px;border-radius:12px;font-size:13px}
@@ -54,10 +63,10 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
 <header class="h"><button class="ib" onclick="nav.classList.toggle('o')" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
-<div class="logo"><img class="brand" src="/icons/copyra.png" width="36" height="36" alt="COPYRA">copyra<i>.</i></div>
+<div class="logo"><img class="brand" src="/icons/copyra.webp" width="36" height="36" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
-<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img id="mi" src="/icons/solana.png" width="34" height="34" alt="Solana"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
-<button class="ib" id="th" aria-label="Theme"></button><button class="btn pri" id="cn">Connect Wallet</button></header>
+<button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img class="ico sol on" src="/icons/solana.webp" width="34" height="34" alt="Solana" onerror="this.onerror=null;this.src='/icons/solana.png'"><img class="ico evm" src="/icons/evm.webp" width="34" height="34" alt="EVM" onerror="this.onerror=null;this.src='/icons/evm.png'"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
+<button class="ib" id="th" aria-label="Theme"></button><span id="cn-wrap"><button class="btn pri" id="cn" type="button">Connect Wallet</button></span></header>
 <div id="nav"></div><div id="dr"></div><div id="sc" onclick="nav.classList.remove('o');dr.classList.remove('o')"></div><div id="md"><div></div></div><div id="ts"></div>
 <main><div class="eb">The Copyra ecosystem</div><h1>Follow the smart money<i>.</i></h1><p class="sub">Every wallet. Every chain. Your rules.</p>
 <button class="btn pri big" onclick="addT()">+&nbsp; Add trader</button>
@@ -232,7 +241,7 @@ function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pt
  return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'—'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'—'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'—'}</b></div></div>
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
 <div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${H.slice(0,60).map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div></div>`}
-function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const mi=$('#mi');if(mi){mi.src=w?'/icons/solana.png':'/icons/evm.png';mi.alt=w?'Solana':'EVM'}$('#mc')?.classList.toggle('evm',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
+function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
  {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
   else if(a){$('#cn').textContent='● '+a.slice(0,4)+'…'+a.slice(-4);$('#cn').title=M.toUpperCase()+' wallet connected'}
@@ -349,7 +358,7 @@ function settings(e){const s=S[e].set;$('#dr').innerHTML=`<div class="row sp"><h
    dr.classList.remove('o');toast('Settings saved');await refresh();
   }catch(err){$('#se').textContent=err.message}}}
 function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd',...allHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,h.size.toFixed(2),h.usd.toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
-$('#mc').onclick=()=>{M=M=='sol'?'evm':'sol';T='trading';draw()};
+$('#mc').onclick=()=>{M=M=='sol'?'evm':'sol';T='trading';draw();try{window.CopyraWallet?.setMode?.(M)}catch{}};
 $('#th').onclick=()=>{const h=document.documentElement;h.dataset.theme=h.dataset.theme=='dark'?'light':'dark';draw()};
 $('#sb').onclick=()=>{const i=$('#q');i.style.display=i.style.display=='none'?'block':'none';i.focus()};$('#q').oninput=e=>{q=e.target.value.toLowerCase();draw()};
 const b58='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -417,45 +426,52 @@ function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  // Always show Open wallet list — including when already connected (same address ok).
  md(`<h3>${a0?'Reconnect ':'Connect '}${N} wallet</h3>
 ${a0?`<p class="mu">Connected Wallet: <b style="color:var(--tx)">${a0}</b>. You can open the list again anytime — same address is fine.</p>`:''}
-<p class="mu">Tap <b>Open full wallet list</b> to pop the Reown wallet picker (MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, All Wallets…).</p>
+<p class="mu">Tap the WalletConnect button (or <b>Open full wallet list</b>) to show every wallet — MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, All Wallets…</p>
 <div id="akhost" style="width:100%;margin:14px 0;min-height:48px"></div>
 <button class="btn pri" id="bw" style="width:100%">Open full wallet list</button>
 ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconnect</button>`:''}
-<p class="mu" id="ws">Ready — tap Open full wallet list.</p>
+<p class="mu" id="ws">Ready — tap Connect to open the list instantly.</p>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
  // Transparent backdrop so AppKit is clickable on desktop.
  const shell=$('#md'); if(shell){shell.style.background='transparent';shell.style.pointerEvents='none'; const box=shell.firstElementChild; if(box){box.style.pointerEvents='auto';box.style.boxShadow='0 16px 48px rgba(0,0,0,.45)'}}
  if(a0)$('#dx').onclick=()=>disconnectMode(e);
+ let waiting=false;
+ const runAfterPick=async(connected)=>{
+  waiting=false;
+  $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
+  await finishConnect(e,N,connected);
+ };
+ const onFail=(err)=>{
+  waiting=false;
+  const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
+  $('#ae').textContent=msg;
+  $('#ws').textContent='Tap Open full wallet list again anytime.';
+ };
+ const awaitPick=()=>{
+  if(waiting)return;
+  waiting=true;
+  const w=window.CopyraWallet;
+  (w.waitForConnection?w.waitForConnection(e):w.connect(e,{skipOpen:true})).then(runAfterPick).catch(onFail);
+ };
  (async()=>{
   try{
     const w=await waitWallet();
     if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID, redeploy, then hard-refresh.');
+    try{w.setMode?.(e)}catch{}
     const host=$('#akhost');
+    // Formula: mount official <appkit-button> / <w3m-button> (modern w3m-core-button).
     if(host&&w.mountConnectButton)w.mountConnectButton(host,e);
-    const awaitPick=()=>w.waitForConnection
-      ? w.waitForConnection(e)
-      : w.connect(e,{skipOpen:true});
-    const afterPick=async(connected)=>{
-      $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
-      await finishConnect(e,N,connected);
-    };
-    const onFail=(err)=>{
-      const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
-      $('#ae').textContent=msg;
-      $('#ws').textContent='Tap Open full wallet list again anytime.';
-    };
     const openNow=()=>{
       $('#ae').textContent='';
       $('#ws').textContent='Opening wallet list…';
       // Desktop: open MUST run inside this click (user gesture) — before any await.
       try{w.openModal(e)}catch{}
-      awaitPick().then(afterPick).catch(onFail);
+      awaitPick();
     };
     $('#bw').onclick=openNow;
-    // Also wire the official <appkit-button> click → same wait loop.
-    const ak=host&&host.querySelector('appkit-button');
-    if(ak)ak.addEventListener('click',()=>{ $('#ae').textContent=''; $('#ws').textContent='Opening wallet list…'; awaitPick().then(afterPick).catch(onFail); },{passive:true});
+    const ak=host&&(host.querySelector('appkit-button')||host.querySelector('w3m-button')||host.querySelector('w3m-core-button'));
+    if(ak)ak.addEventListener('click',()=>{ $('#ae').textContent=''; $('#ws').textContent='Opening wallet list…'; awaitPick(); },{passive:true});
   }catch(err){
     const msg=err&&err.message?err.message:'Wallet connect cancelled or failed.';
     $('#ae').textContent=msg;
@@ -465,23 +481,33 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
  })();
 }
 window.addEventListener('copyra-wallet-account',()=>{try{draw()}catch{}});
-// Always open AppKit in the SAME click tick (desktop user-gesture). Works every time, even if already connected.
-$('#cn').onclick=()=>{
+window.addEventListener('copyra-wallet-ready',()=>{
+  try{window.CopyraWallet?.setMode?.(M)}catch{}
+});
+let cnWait=false;
+function beginConnectFromClick(){
   const e=M,N=e==='sol'?'Solana':'EVM';
   const w=window.CopyraWallet;
-  if(w?.ready&&w.projectIdConfigured){
-    try{w.openModal(e)}catch{}
-    w.waitForConnection(e).then(async(connected)=>{
-      toast('Approve the sign-in in your wallet…');
-      await finishConnect(e,N,connected);
-    }).catch((err)=>{
-      toast((err&&err.message)||'Tap Connect Wallet again to reopen the list.');
-      conn();
-    });
-    return;
-  }
-  conn();
-};
+  if(!w?.ready||!w.projectIdConfigured){conn();return}
+  try{w.setMode?.(e)}catch{}
+  // Instant open in the same click tick (desktop user-gesture). Formula button also receives the click via overlay.
+  try{w.openModal(e)}catch{}
+  if(cnWait)return;
+  cnWait=true;
+  w.waitForConnection(e).then(async(connected)=>{
+    cnWait=false;
+    toast('Approve the sign-in in your wallet…');
+    await finishConnect(e,N,connected);
+  }).catch((err)=>{
+    cnWait=false;
+    toast((err&&err.message)||'Tap Connect Wallet again to reopen the list.');
+    conn();
+  });
+}
+// Capture on the wrap so the overlaid <appkit-button> click still starts our wait loop.
+$('#cn-wrap')?.addEventListener('click',()=>{beginConnectFromClick()},{capture:true});
+$('#cn').onclick=()=>{beginConnectFromClick()};
+
 $('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="nav.classList.remove(\'o\');refresh();toast(LIVE&&LIVE.status?(\'API live · \'+(LIVE.status.telegram.botUsername||\'telegram\')+\' · workers \'+(LIVE.status.workers.map(w=>w.status).join(\',\')||\'none\')):\'Refreshing…\')">System health</button>';
 const wd2=()=>{nav.classList.remove('o');md('<h3>Security</h3><p class="mu">2FA protects withdrawals in both modes. Sessions last 7 days. Wallet sign-in proves you control the key. COPYRA never asks for a seed phrase.</p><button class="btn" onclick="cl()">Close</button>')};
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
@@ -505,7 +531,7 @@ restoreWallets();
 @media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}}
 @media(max-width:760px){#ft .fw{grid-template-columns:1fr 1fr}#ft .fw>div:first-child{grid-column:1/-1}}
 </style>
-<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.png" width="28" height="28" alt="COPYRA">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
+<footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.webp" width="28" height="28" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
 <div class="so"><a href="https://x.com/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on X"><svg viewBox="0 0 24 24"><path d="M18.2 2H21l-6.5 7.4L22 22h-6l-4.7-6.2L5.8 22H3l7-8L2 2h6.1l4.3 5.7L18.2 2zm-1 18h1.6L7 3.9H5.3L17.2 20z"/></svg></a><a href="https://t.me/copyrafun" target="_blank" rel="noopener" aria-label="COPYRA on Telegram"><svg viewBox="0 0 24 24"><path d="M21.5 3.3L2.7 10.6c-.9.4-.9 1.2 0 1.5l4.8 1.5 1.8 5.5c.2.6.5.6.9.2l2.6-2.4 4.9 3.6c.9.5 1.5.2 1.7-.8L22.9 4.5c.3-1.2-.4-1.7-1.4-1.2zM8.5 13l9.6-6c.5-.3.9-.1.5.2l-8 7.2-.3 3.4L8.5 13z"/></svg></a></div></div>
 <div><b>Platform</b><a onclick="T='trading';draw();scrollTo(0,0)">Trading</a><a onclick="T='board';draw();scrollTo(0,0)">Leaderboard</a><a onclick="CPY.go('ref')">Referrals</a></div>
 <div><b>Security</b><a onclick="CPY.go('dev')">Devices &amp; passkeys</a><a onclick="CPY.go('acct')">Account &amp; 2FA</a><a onclick="CPY.info('sec')">How we protect you</a></div>
