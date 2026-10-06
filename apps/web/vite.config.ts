@@ -68,6 +68,14 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_REOWN_PROJECT_ID': JSON.stringify(projectId),
       global: 'globalThis',
     },
+    build: {
+      target: 'es2022',
+      sourcemap: false,
+      reportCompressedSize: false,
+      chunkSizeWarningLimit: 2500,
+      minify: 'esbuild',
+      cssMinify: true,
+    },
     server: {
       host: '0.0.0.0',
       port: 43127,

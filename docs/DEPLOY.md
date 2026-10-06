@@ -4,6 +4,8 @@ Live site: **https://copyra.fun**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
+The Dockerfile is split into **independent BuildKit stages** so a backend-only change does not rebundle the Reown/Vite wallet app. First cold build is still longer; later pushes should reuse the cached `deps` + `build-web` (or `build-backend`) layers.
+
 **Before you push:** run `npm run deploy:verify` (lint, types, tests, production build). GitHub Actions runs the same check on `main`.
 
 **After deploy:** open the URLs in `docs/live-urls.json` — production **https://copyra.fun** and your `*.ondigitalocean.app` platform URL (same build).
@@ -15,9 +17,12 @@ Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOc
 | API + dashboard | `scripts/start-production.sh` → Fastify on `:8080`, serves `apps/web/dist` |
 | Worker | Same container, background (`RUN_WORKER=true`) |
 
-Docker caches the `npm ci` layer when lockfiles are unchanged (~2× faster redeploys). Only **one** component builds the image (no separate worker build).
+Docker caches:
+1. `deps` — `npm ci` until lockfile / package.json change  
+2. `build-backend` — until `packages/`, `apps/api`, `apps/worker`, or `scripts/` change  
+3. `build-web` — until `apps/web/` or lockfile change  
 
-Build order inside Docker: cached `npm ci` → `db:generate` → `build`.
+Runtime image is pruned (`npm prune --omit=dev`) so registry push is smaller/faster.
 
 ## DigitalOcean App Platform (exact settings)
 
@@ -46,7 +51,7 @@ The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so *
 |---|---|
 | HTTP Port | **`8080`** |
 | Health Check path | **`/health`** |
-| Initial Delay | **`35` seconds** |
+| Initial Delay | **`12` seconds** |
 
 ### Public (non-secret) env vars — set on the app / api component
 
