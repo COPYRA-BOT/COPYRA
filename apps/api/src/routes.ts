@@ -1,25 +1,19 @@
 import {
-  buildLatencyReport,
   chainConfig,
   CHAIN_CONFIGS,
   evmSigner,
-  executableChains,
   explorerTxUrl,
   getDexscreenerMarket,
-  getEvmBlockNumber,
   getQuoteAssetPriceUsd,
   getSettings,
-  getSlot,
   getSolanaBalances,
   getStrategyConfig,
-  monitorableChains,
   multiUserCustodyEnabled,
   publicReownProjectId,
   resolveWebOrigin,
   solanaSigner,
   telegram,
   tradingBlockedReason,
-  tradingWalletAddress,
 } from '@copyra/core';
 import { Chain, prisma, type Prisma } from '@copyra/db';
 import { PublicKey } from '@solana/web3.js';
@@ -38,9 +32,10 @@ import {
   revokeSession,
   verifyWalletSignature,
 } from './auth.js';
+import { buildModeBalances, buildWorkerWalletBalances } from './balances.js';
+import { buildLiveStatus } from './live-status.js';
 import { jsonSafe } from './serialize.js';
 import { registerSwapRoutes } from './swap.js';
-import { buildModeBalances } from './balances.js';
 
 const chainSchema = z.nativeEnum(Chain);
 
@@ -78,124 +73,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   // /health is registered in main.ts before plugins so App Platform liveness
   // does not depend on route registration order.
 
-  app.get('/api/status', async (request) => {
-    const settings = await getSettings();
-    // Per-account custody wallets can sign without the shared bot key.
-    const signerAvailable =
-      multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available;
-    const telegramStatus = await telegram.verify().catch((error: unknown) => ({
-      tokenValid: false,
-      botUsername: null,
-      canPostToChat: false,
-      chatTitle: null,
-      error: error instanceof Error ? error.message : String(error),
-    }));
-
-    const chains = await Promise.all(
-      monitorableChains().map(async (config) => {
-        let head: string | null = null;
-        let latencyMs: number | null = null;
-        let error: string | null = null;
-        try {
-          if (config.kind === 'solana') {
-            const slot = await getSlot();
-            head = String(slot.slot);
-            latencyMs = slot.latencyMs;
-          } else {
-            const block = await getEvmBlockNumber(config.chain);
-            head = block.blockNumber.toString();
-            latencyMs = block.latencyMs;
-          }
-        } catch (err) {
-          error = err instanceof Error ? err.message : String(err);
-        }
-        return {
-          chain: config.chain,
-          label: config.label,
-          code: config.code,
-          kind: config.kind,
-          canExecute: config.canExecute,
-          executionBlockedReason: config.executionBlockedReason ?? null,
-          explorerName: config.explorerName,
-          nativeSymbol: config.nativeSymbol,
-          head,
-          latencyMs,
-          error,
-        };
-      }),
-    );
-
-    const sessions = await readBothSessions(request);
-    const mode = authModeFromRequest(request);
-    const activeUserId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
-    // Counts are account-private when signed in; unsigned clients see zeros (never other users).
-
-    const heartbeats = await prisma.workerHeartbeat.findMany();
-    const [openPositions, signals24h, confirmedTrades] = activeUserId
-      ? await Promise.all([
-          prisma.position.count({
-            where: {
-              userId: activeUserId,
-              status: { in: ['OPEN', 'PARTIALLY_CLOSED', 'PENDING_OPEN'] },
-            },
-          }),
-          prisma.signal.count({
-            where: { userId: activeUserId, createdAt: { gte: new Date(Date.now() - 86_400_000) } },
-          }),
-          prisma.trade.findMany({
-            where: { userId: activeUserId, status: 'CONFIRMED', totalLatencyMs: { not: null } },
-            select: { totalLatencyMs: true, broadcastAt: true, sourceDetectedAt: true },
-            take: 200,
-          }),
-        ])
-      : [0, 0, [] as { totalLatencyMs: number | null; broadcastAt: Date | null; sourceDetectedAt: Date | null }[]];
-
-    const confirmSamples = confirmedTrades
-      .map((t) => t.totalLatencyMs)
-      .filter((n): n is number => typeof n === 'number');
-    const broadcastSamples = confirmedTrades
-      .map((t) =>
-        t.broadcastAt && t.sourceDetectedAt
-          ? t.broadcastAt.getTime() - t.sourceDetectedAt.getTime()
-          : null,
-      )
-      .filter((n): n is number => typeof n === 'number');
-
-    return jsonSafe({
-      trading: {
-        envGuard: process.env.TRADING_ENABLED === 'true',
-        settingsEnabled: settings.tradingEnabled,
-        emergencyStop: settings.emergencyStop,
-        blockedReason: tradingBlockedReason(settings, signerAvailable),
-        observeOnly: !signerAvailable,
-      },
-      signers: {
-        solana: { available: solanaSigner.available, address: solanaSigner.address },
-        evm: { available: evmSigner.available, address: evmSigner.address },
-      },
-      /** Present/absent only — never includes URL values. */
-      rpcConfigured: {
-        solana: Boolean(process.env.SOLANA_RPC_URL?.trim()),
-        ethereum: Boolean(process.env.EVM_ETHEREUM_RPC_URL?.trim()),
-        base: Boolean(process.env.EVM_BASE_RPC_URL?.trim()),
-        arbitrum: Boolean(process.env.EVM_ARBITRUM_RPC_URL?.trim()),
-        bsc: Boolean(process.env.EVM_BSC_RPC_URL?.trim()),
-        polygon: Boolean(process.env.EVM_POLYGON_RPC_URL?.trim()),
-        optimism: Boolean(process.env.EVM_OPTIMISM_RPC_URL?.trim()),
-      },
-      telegram: telegramStatus,
-      chains,
-      executableChains: executableChains().map((c) => c.chain),
-      workers: heartbeats,
-      counts: { openPositions, signals24h, confirmedTrades: confirmedTrades.length },
-      latency: buildLatencyReport(broadcastSamples, confirmSamples),
-      socials: {
-        x: 'https://x.com/copyrafun',
-        telegram: 'https://t.me/copyrafun',
-        domain: 'https://copyra.fun',
-      },
-    });
-  });
+  app.get('/api/status', async (request) => buildLiveStatus(request));
 
   app.get('/api/settings', async () => {
     const row = await getSettings();
@@ -499,9 +377,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/balances', async (request) => {
     const sessions = await readBothSessions(request);
-    const [sol, evm] = await Promise.all([
+    const [sol, evm, worker] = await Promise.all([
       buildModeBalances('sol', sessions.sol?.user.id),
       buildModeBalances('evm', sessions.evm?.user.id),
+      buildWorkerWalletBalances(),
     ]);
     return jsonSafe({
       multiUserCustody: sol.multiUserCustody,
@@ -511,6 +390,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       },
       sol,
       evm,
+      worker,
       wallets: [...sol.wallets, ...evm.wallets],
     });
   });
@@ -841,10 +721,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       closedCount: 0,
     };
 
-    const [statusRes, settingsRes, traders, positions, signals, trades, solBal, evmBal, notifications, transfers, deposits, pnl] =
+    const [status, settingsRes, traders, positions, signals, trades, solBal, evmBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
       await Promise.all([
-        app.inject({ method: 'GET', url: '/api/status' }),
-        app.inject({ method: 'GET', url: '/api/settings' }),
+        buildLiveStatus(request),
+        getSettings().then(async (row) => {
+          const config = await getStrategyConfig();
+          return {
+            row,
+            effective: config,
+            blockedReason: tradingBlockedReason(
+              row,
+              multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available,
+            ),
+          };
+        }),
         userIds.length
           ? prisma.trader.findMany({ where: { userId: { in: userIds } }, orderBy: { createdAt: 'desc' } })
           : Promise.resolve([]),
@@ -878,6 +768,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         // Independent custody reads — never the shared bot signer when a mode session exists.
         buildModeBalances('sol', solUserId),
         buildModeBalances('evm', evmUserId),
+        // Transparent worker/bot signer balances (informational — not your trading custody).
+        buildWorkerWalletBalances(),
         userIds.length
           ? prisma.notificationLog.findMany({
               where: {
@@ -923,18 +815,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               };
             })()
           : Promise.resolve(emptyPnl),
+        getQuoteAssetPriceUsd(Chain.SOLANA).catch(() => 0),
       ]);
 
-    let solUsd = 0;
-    try {
-      solUsd = await getQuoteAssetPriceUsd(Chain.SOLANA);
-    } catch {
-      solUsd = 0;
-    }
-
     return jsonSafe({
-      status: statusRes.json(),
-      settings: settingsRes.json(),
+      status,
+      settings: settingsRes,
       traders,
       positions,
       signals,
@@ -958,6 +844,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         multiUserCustody: solBal.multiUserCustody,
         sol: solBal,
         evm: evmBal,
+        worker: workerWallets,
         // Flat list is custody-only when multi-user is on (never mix in the bot signer).
         wallets: [...solBal.wallets, ...evmBal.wallets],
       },

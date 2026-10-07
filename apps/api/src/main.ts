@@ -66,16 +66,16 @@ function browserConfigJs(): string {
 }
 
 app.get('/api/ws', { websocket: true }, (socket) => {
-  const tick = async () => {
+  // Lightweight tick only — never fan-out chain RPCs (that wedged basic-xxs → Degraded).
+  const tick = () => {
     try {
-      const response = await app.inject({ method: 'GET', url: '/api/status' });
-      socket.send(response.body);
+      socket.send(JSON.stringify({ type: 'tick', at: new Date().toISOString() }));
     } catch {
       /* client may have gone */
     }
   };
-  void tick();
-  const timer = setInterval(() => void tick(), 8_000);
+  tick();
+  const timer = setInterval(tick, 15_000);
   socket.on('close', () => clearInterval(timer));
 });
 

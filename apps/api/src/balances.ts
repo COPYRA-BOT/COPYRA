@@ -14,6 +14,36 @@ const EVM_CHAINS = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as co
 
 type WalletEntry = Record<string, unknown>;
 
+const BALANCE_RPC_TIMEOUT_MS = 4_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(onTimeout());
+      }
+    }, ms);
+    promise
+      .then((value) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        }
+      })
+      .catch((error) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(onTimeout());
+          void error;
+        }
+      });
+  });
+}
+
 /**
  * Mode-scoped wallet balance entry.
  *
@@ -57,61 +87,78 @@ async function walletEntry(chain: Chain, userId: string | undefined): Promise<Wa
       };
     }
 
-    try {
-      const funds = await getTradingAvailableQuote(chain, userId);
-      if (chain === Chain.SOLANA) {
-        const balances = await getSolanaBalances(address);
-        return {
-          chain,
-          configured: true,
-          address,
-          userScoped: true,
-          role: 'custody',
-          nativeRaw: balances.lamports.toString(),
-          native: funds.onChainQuote,
-          available: funds.availableQuote,
-          withdrawable: funds.withdrawableQuote,
-          gasReserve: funds.gasReserveQuote,
-          onChainNative: funds.onChainQuote,
-          savings: funds.savingsQuote,
-          assetSymbol: funds.assetSymbol,
-          assetDecimals: funds.assetDecimals,
-          tokens: balances.tokens,
-          slot: balances.slot.toString(),
-          source: 'rpc',
-        };
-      }
-      return {
+    return withTimeout(
+      (async () => {
+        try {
+          const funds = await getTradingAvailableQuote(chain, userId);
+          if (chain === Chain.SOLANA) {
+            const balances = await getSolanaBalances(address);
+            return {
+              chain,
+              configured: true,
+              address,
+              userScoped: true,
+              role: 'custody',
+              nativeRaw: balances.lamports.toString(),
+              native: funds.onChainQuote,
+              available: funds.availableQuote,
+              withdrawable: funds.withdrawableQuote,
+              gasReserve: funds.gasReserveQuote,
+              onChainNative: funds.onChainQuote,
+              savings: funds.savingsQuote,
+              assetSymbol: funds.assetSymbol,
+              assetDecimals: funds.assetDecimals,
+              tokens: balances.tokens,
+              slot: balances.slot.toString(),
+              source: 'rpc',
+            };
+          }
+          return {
+            chain,
+            configured: true,
+            address,
+            userScoped: true,
+            role: 'custody',
+            native: funds.onChainQuote,
+            available: funds.availableQuote,
+            withdrawable: funds.withdrawableQuote,
+            gasReserve: funds.gasReserveQuote,
+            onChainNative: funds.onChainQuote,
+            savings: funds.savingsQuote,
+            assetSymbol: funds.assetSymbol,
+            assetDecimals: funds.assetDecimals,
+            source: 'rpc',
+          };
+        } catch (error) {
+          // Keep custody address so the UI never falls back to the bot signer.
+          return {
+            chain,
+            configured: true,
+            address,
+            userScoped: true,
+            role: 'custody',
+            error: error instanceof Error ? error.message : String(error),
+            native: null,
+            available: null,
+            onChainNative: null,
+            savings: null,
+          };
+        }
+      })(),
+      BALANCE_RPC_TIMEOUT_MS,
+      () => ({
         chain,
         configured: true,
         address,
         userScoped: true,
         role: 'custody',
-        native: funds.onChainQuote,
-        available: funds.availableQuote,
-        withdrawable: funds.withdrawableQuote,
-        gasReserve: funds.gasReserveQuote,
-        onChainNative: funds.onChainQuote,
-        savings: funds.savingsQuote,
-        assetSymbol: funds.assetSymbol,
-        assetDecimals: funds.assetDecimals,
-        source: 'rpc',
-      };
-    } catch (error) {
-      // Keep custody address so the UI never falls back to the bot signer.
-      return {
-        chain,
-        configured: true,
-        address,
-        userScoped: true,
-        role: 'custody',
-        error: error instanceof Error ? error.message : String(error),
+        error: `rpc-timeout>${BALANCE_RPC_TIMEOUT_MS}ms`,
         native: null,
         available: null,
         onChainNative: null,
         savings: null,
-      };
-    }
+      }),
+    );
   }
 
   // Legacy single-bot mode (MULTI_USER_CUSTODY=false only).
@@ -216,4 +263,70 @@ export async function buildBalancesResponse(userId?: string): Promise<{
     wallets: [...sol.wallets, ...evm.wallets],
     multiUserCustody: multiUserCustodyEnabled(),
   };
+}
+
+/**
+ * Shared worker/bot signer balances (informational).
+ * Copy trades size from per-user custody — these funds are NOT the Trading Balance
+ * unless MULTI_USER_CUSTODY is off. Surfaced so deposits to the worker key are visible.
+ */
+export async function buildWorkerWalletBalances(): Promise<{
+  role: 'worker';
+  solana: WalletEntry | null;
+  evm: WalletEntry[];
+}> {
+  const readBot = async (chain: Chain): Promise<WalletEntry> => {
+    const address = tradingWalletAddress(chain);
+    if (!address) {
+      return { chain, configured: false, address: null, role: 'worker' };
+    }
+    return withTimeout(
+      (async () => {
+        try {
+          const funds = await getTradingAvailableQuote(chain);
+          return {
+            chain,
+            configured: true,
+            address,
+            role: 'worker',
+            native: funds.onChainQuote,
+            available: funds.availableQuote,
+            onChainNative: funds.onChainQuote,
+            savings: funds.savingsQuote,
+            assetSymbol: funds.assetSymbol,
+            assetDecimals: funds.assetDecimals,
+            source: 'rpc',
+          };
+        } catch (error) {
+          return {
+            chain,
+            configured: true,
+            address,
+            role: 'worker',
+            error: error instanceof Error ? error.message : String(error),
+            native: null,
+            available: null,
+            onChainNative: null,
+          };
+        }
+      })(),
+      BALANCE_RPC_TIMEOUT_MS,
+      () => ({
+        chain,
+        configured: true,
+        address,
+        role: 'worker',
+        error: `rpc-timeout>${BALANCE_RPC_TIMEOUT_MS}ms`,
+        native: null,
+        available: null,
+        onChainNative: null,
+      }),
+    );
+  };
+
+  const [solana, ...evm] = await Promise.all([
+    readBot(Chain.SOLANA),
+    ...EVM_CHAINS.map((c) => readBot(c)),
+  ]);
+  return { role: 'worker', solana, evm };
 }

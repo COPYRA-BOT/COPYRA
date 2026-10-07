@@ -120,7 +120,7 @@ const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN
 /** Display units: K = thousands USD, M = millions USD. Saved to strategy row as absolute USD. */
 const unitMul=u=>u==='M'?1e6:1e3;
 const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'FIRST_ONLY',maxDep:80,maxTok:50,bl:''});
-const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
+const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
 /** Pagination for activity / trade-history lists (10 rows per page). */
@@ -256,7 +256,18 @@ function hydrate(snap){
    }
   }
   next.sav=Math.round(savSum*UI[e].k);
+  next.balReady=sawRpc&&!hadRpcError;
+  next.needsAuth=multiCust&&!signedIn;
   // Sticky last-good balances: never flash 0 / never adopt the empty bot wallet on RPC blips.
+  const restoreSticky=()=>{
+   try{
+    const raw=localStorage.getItem('cpy_bal_'+e);
+    if(!raw)return null;
+    const saved=JSON.parse(raw);
+    if(!saved||!saved.at||Date.now()-saved.at>6*3600_000)return null;
+    return saved;
+   }catch{return null}
+  };
   if(prev&&(signedIn||prev.wa)){
    const keepAll=!sawRpc||(hadRpcError&&!sawRpc);
    if(keepAll){
@@ -267,6 +278,7 @@ function hydrate(snap){
     next.gasResByCh={...(prev.gasResByCh||{})};
     next.sav=prev.sav;
     if(!next.wa)next.wa=prev.wa;
+    next.balReady=prev.balReady||Object.values(prev.cash||{}).some(v=>v>0);
    }else if(hadRpcError){
     // Per-chain sticky: a dead Base RPC must not wipe ETH/ARB/BSC USDC.
     for(const ch of Object.keys(prev.cash||{})){
@@ -281,8 +293,43 @@ function hydrate(snap){
     }
     next.sav=Object.values(next.savByCh).reduce((a,b)=>a+b,0);
     if(!next.wa)next.wa=prev.wa;
+    next.balReady=true;
+   }
+  }else if(!sawRpc){
+   const saved=restoreSticky();
+   if(saved?.cash){
+    next.cash=saved.cash;
+    next.availByCh=saved.availByCh||saved.cash;
+    next.savByCh=saved.savByCh||{};
+    next.wdByCh=saved.wdByCh||{};
+    next.gasResByCh=saved.gasResByCh||{};
+    next.sav=saved.sav||0;
+    if(saved.wa)next.wa=saved.wa;
+    next.balReady=true;
    }
   }
+  if(sawRpc&&signedIn){
+   try{
+    localStorage.setItem('cpy_bal_'+e,JSON.stringify({
+     at:Date.now(),wa:next.wa,cash:next.cash,availByCh:next.availByCh,
+     savByCh:next.savByCh,wdByCh:next.wdByCh,gasResByCh:next.gasResByCh,sav:next.sav
+    }));
+   }catch{}
+  }
+  // Worker/bot signer balances (informational — not trading custody).
+  const worker=snap.balances?.worker;
+  if(e==='sol'&&worker?.solana){
+   const w=worker.solana;
+   next.worker={address:w.address||null,onChain:typeof w.onChainNative==='number'?w.onChainNative:null,symbol:w.assetSymbol||'SOL',error:w.error||null};
+  }else if(e==='evm'&&Array.isArray(worker?.evm)){
+   let sum=0;let addr=null;let err=null;
+   for(const w of worker.evm){
+    if(typeof w.onChainNative==='number')sum+=w.onChainNative;
+    if(w.address)addr=w.address;
+    if(w.error)err=w.error;
+   }
+   next.worker={address:addr,onChain:sum,symbol:'USDC',error:err};
+  }else next.worker=prev?.worker||null;
   const mine=traders.filter(t=>modeOf(t.chain)===e);
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
@@ -393,16 +440,21 @@ function hydrate(snap){
   S[e]=next;
  }
 }
+let refreshInFlight=null;
 async function refresh(){
- try{
-  const snap=await api('GET','/api/snapshot');
-  ERR=null;
-  hydrate(snap);
- }catch(err){
-  // Keep last LIVE hydrate — never blank balances because one request failed.
-  ERR=err instanceof Error?err.message:String(err);
- }
- if(!document.querySelector('#md.o,#dr.o'))draw();
+ if(refreshInFlight)return refreshInFlight;
+ refreshInFlight=(async()=>{
+  try{
+   const snap=await api('GET','/api/snapshot');
+   ERR=null;
+   hydrate(snap);
+  }catch(err){
+   // Keep last LIVE hydrate — never blank balances because one request failed.
+   ERR=err instanceof Error?err.message:String(err);
+  }
+  if(!document.querySelector('#md.o,#dr.o'))draw();
+ })().finally(()=>{refreshInFlight=null});
+ return refreshInFlight;
 }
 function liveBanner(e){
  const t=LIVE?.status?.trading;
@@ -425,12 +477,18 @@ function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><
 </div></details>`}
 function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=invOf(e),nx=Math.max(0,avail*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
- return `${liveBanner(e)}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${f(e,cash+inv)} ${X.u}</div><div class="mu">≈ ${X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')}</div>
-<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${f(e,cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${f(e,avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${f(e,inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${f(e,nx)} ${X.u}</b>${X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> on live RPC`:(wallet[e]?'Loading your custody wallet…':'Connect + sign in to load custody')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+ const showAmt=wallet[e]||s.balReady;
+ const amt=(u)=>showAmt?f(e,u):'—';
+ const wrk=s.worker;
+ const wrkNote=wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0
+  ?`<div class="ban live" style="margin-bottom:12px">Worker wallet holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b> at <code>${(wrk.address||'').slice(0,6)}…${(wrk.address||'').slice(-4)}</code>. Copy trades use <b>your custody</b> below — use Deposit to fund custody (worker funds are not auto-spent).</div>`
+  :(!wallet[e]?`<div class="ban live" style="margin-bottom:12px">Connect + sign in to load your custody on-chain balance. Trading buckets stay empty until then.</div>`:'');
+ return `${liveBanner(e)}${wrkNote}
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):'sign in to read RPC'}</div>
+<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'—'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> on live RPC`:(wallet[e]?'Loading your custody wallet…':'Connect + sign in to load custody')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
-<div class="card"><h3>Savings Balance</h3><div class="n">${f(e,s.sav)} ${X.u}</div><div class="mu">Reserved on the bot wallet. Not used for copy trades until you move it back to Trading.</div>
+<div class="card"><h3>Savings Balance</h3><div class="n">${amt(s.sav)} ${X.u}</div><div class="mu">Reserved on your custody wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
 <div class="row"><button class="btn" onclick="mv('s2t')">Move to Trading</button><button class="btn" onclick="wd()">Withdraw</button></div></div></div>
 <div class="card"><div class="row sp"><h3>Copy Trading ${st}</h3><button class="sw ${s.bot=='ON'?'on':''}" aria-label="Bot on/off" onclick="bot('${e}',S['${e}'].bot=='ON'?'PAUSED':'ON')"></button></div>
@@ -1060,8 +1118,8 @@ const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){ref
 <div class="row"><button class="btn pri" onclick="cl();refresh();toast('Refreshed')">Refresh</button><button class="btn" onclick="cl()">Close</button></div>`)};
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
-setInterval(()=>{refresh()},8000);
-try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{refresh()}}catch{}
+setInterval(()=>{refresh()},15000);
+try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{/* tick only — poll handles data */}}catch{}
 refresh();draw();
 restoreWallets();
 </script>

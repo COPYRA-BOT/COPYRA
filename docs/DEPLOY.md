@@ -7,6 +7,15 @@ Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOc
 
 ## Fix HTTPS 526 / App “Degraded” (Cloudflare + App Platform)
 
+**Degraded while the platform URL is healthy** almost always means the custom domain TLS path
+(`copyra.fun` via Cloudflare) is failing origin cert validation (HTTP 526), not that the
+container is down. Confirm with:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" https://copyra-nl7kz.ondigitalocean.app/health
+curl -sS -o /dev/null -w "%{http_code}\n" https://copyra.fun/health
+```
+
 If DigitalOcean shows **Degraded** and `https://copyra.fun` returns **Cloudflare 526**, while
 `https://copyra-nl7kz.ondigitalocean.app/health` returns `{"ok":true,...}`, the **app is up** —
 the custom domain TLS path is wrong.
