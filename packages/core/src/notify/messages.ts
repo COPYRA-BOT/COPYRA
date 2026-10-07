@@ -20,8 +20,8 @@ import {
  *
  * The BUY and SELL layouts reproduce the spec's message structure line for
  * line. Values that have not been measured render as "not measured" rather than
- * as a plausible-looking number — a notification is a record of what actually
- * happened on-chain, so an invented figure here would be the worst place of all
+ * as a plausible-looking number. A notification is a record of what actually
+ * happened on chain, so fabricating a figure here would be the worst place of all
  * to put one.
  */
 
