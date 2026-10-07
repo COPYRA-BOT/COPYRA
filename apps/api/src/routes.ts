@@ -319,7 +319,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
     if (existing) {
       return reply.code(409).send({
-        error: 'This wallet is already on your trader list. Duplicate addresses are not allowed.',
+        error: 'You are already copying this account.',
         traderId: existing.id,
       });
     }
@@ -343,7 +343,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         (error as { code?: string }).code === 'P2002'
       ) {
         return reply.code(409).send({
-          error: 'This wallet is already on your trader list. Duplicate addresses are not allowed.',
+          error: 'You are already copying this account.',
         });
       }
       throw error;
