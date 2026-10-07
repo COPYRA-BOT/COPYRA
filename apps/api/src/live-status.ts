@@ -73,9 +73,13 @@ function timeoutMs<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Prom
   });
 }
 
+/** Status heads for dashboard chains only — skip unused RPCs that used to wedge /api/status. */
+const STATUS_CHAINS = new Set(['SOLANA', 'ETHEREUM', 'BASE', 'ARBITRUM', 'BSC']);
+
 async function fetchChainHeads(): Promise<ChainHead[]> {
+  const configs = monitorableChains().filter((c) => STATUS_CHAINS.has(c.chain));
   return Promise.all(
-    monitorableChains().map(async (config): Promise<ChainHead> => {
+    configs.map(async (config): Promise<ChainHead> => {
       const base: Omit<ChainHead, 'head' | 'latencyMs' | 'error'> = {
         chain: config.chain,
         label: config.label,

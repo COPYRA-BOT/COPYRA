@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Live deploy verification against copyra.fun (HTTP — HTTPS may be CF 526).
+ * Live deploy verification against copyra.fun (DigitalOcean App Platform).
  * Never prints secrets. Exits non-zero when trading/funds are not ready.
  */
-const BASE = process.env.COPYRA_LIVE_URL || 'http://copyra.fun';
+const BASE = process.env.COPYRA_LIVE_URL || 'https://copyra.fun';
 
 async function get(path) {
   const r = await fetch(`${BASE}${path}`, { redirect: 'follow' });

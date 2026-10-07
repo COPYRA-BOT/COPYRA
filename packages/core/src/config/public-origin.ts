@@ -17,7 +17,7 @@ function originFromReferer(referer: string | undefined): string | undefined {
   }
 }
 
-/** Expand https allowlist entries with http twins (Cloudflare often serves both). */
+/** Expand https allowlist entries with http twins (local / misconfigured TLS). */
 function withHttpTwin(origin: string): string[] {
   try {
     const url = new URL(origin);

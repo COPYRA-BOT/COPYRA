@@ -1,43 +1,17 @@
 # COPYRA deployment
 
-Live site: **https://copyra.fun**  
-Always-on platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
+Live site: **https://copyra.fun** (DigitalOcean App Platform custom domain)  
+Platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
-## Fix HTTPS 526 / App “Degraded” (Cloudflare + App Platform)
+## Domain (DigitalOcean only)
 
-**Degraded while the platform URL is healthy** almost always means the custom domain TLS path
-(`copyra.fun` via Cloudflare) is failing origin cert validation (HTTP 526), not that the
-container is down. Confirm with:
+TLS and the custom domain are managed **only** by App Platform. Do not put an external CDN/proxy in front of `copyra.fun`.
 
-```bash
-curl -sS -o /dev/null -w "%{http_code}\n" https://copyra-nl7kz.ondigitalocean.app/health
-curl -sS -o /dev/null -w "%{http_code}\n" https://copyra.fun/health
-```
-
-If DigitalOcean shows **Degraded** and `https://copyra.fun` returns **Cloudflare 526**, while
-`https://copyra-nl7kz.ondigitalocean.app/health` returns `{"ok":true,...}`, the **app is up** —
-the custom domain TLS path is wrong.
-
-**Cause:** `copyra.fun` is on Cloudflare nameservers (external CDN) **and** was also registered as
-an App Platform custom domain. DO docs forbid that combo: App Platform tries to mint a cert for
-`copyra.fun`, validation fails behind Cloudflare, origin TLS breaks → **526**, app status **Degraded**.
-
-**Do this once in Cloudflare (required — cannot be done from git):**
-
-1. **DNS** → `@` (and `www` if used) **CNAME** → `copyra-nl7kz.ondigitalocean.app` → **Proxied** (orange cloud).
-2. **SSL/TLS** → Overview → encryption mode **Full** (or **Full (strict)**).
-3. **Rules → Origin Rules → Create rule**
-   - Name: `DO App Platform Host`
-   - When: Hostname equals `copyra.fun` (add `www.copyra.fun` if needed)
-   - Then: **Host header → Rewrite to** `copyra-nl7kz.ondigitalocean.app`
-   - Deploy
-4. In **DigitalOcean → copyra → Networking → Domains**: delete `copyra.fun` if it is still listed
-   (the app spec no longer declares it). Status should return to **Healthy**.
-5. Purge Cloudflare cache; open `https://copyra.fun/health`.
-
-Until step 3 is done, use **https://copyra-nl7kz.ondigitalocean.app** — it is the live app.
+1. In **DigitalOcean → copyra → Networking → Domains**, keep `copyra.fun` (and `www`) attached (declared in `.do/app.yaml`).
+2. At your DNS host, use the **A / CNAME records DigitalOcean shows** for that domain (not a proxy to `*.ondigitalocean.app` through a third-party CDN).
+3. Wait for App Platform to issue the certificate. Status should be **Healthy**; `https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`.
 
 ---
 
@@ -45,7 +19,7 @@ The Dockerfile is split into **independent BuildKit stages** so a backend-only c
 
 **Before you push:** run `npm run deploy:verify` (lint, types, tests, production build). GitHub Actions runs the same check on `main`.
 
-**After deploy:** open the URLs in `docs/live-urls.json` — production **https://copyra.fun** and the platform URL above (same build).
+**After deploy:** open the URLs in `docs/live-urls.json`.
 
 ## Processes (one Docker build)
 
@@ -72,7 +46,7 @@ The production Dockerfile expects the **repository root** as the build context.
 | Autodeploy | **On** |
 | Source Directory | **leave blank** (repo root) |
 | Dockerfile path | `Dockerfile` |
-| Custom domain | Managed in **Cloudflare only** (not in App Platform Domains) |
+| Custom domain | **`copyra.fun`** (+ `www`) on App Platform |
 | Platform ingress | **`copyra-nl7kz.ondigitalocean.app`** |
 
 ### Components
@@ -88,108 +62,35 @@ The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so *
 | Setting | Value |
 |---|---|
 | HTTP Port | **`8080`** |
-| Health Check path | **`/health`** |
-| Initial Delay | **`12` seconds** |
+| Health Check Path | **`/health`** |
+| Initial Delay | **60s** (xxs boot) |
+| Period | **5s** |
+| Timeout | **5s** |
+| Success / Failure | **1 / 12** |
 
-### Public (non-secret) env vars — set on the app / api component
+### Environment
+
+Set in the DO UI (App-Level, encrypted for secrets). Spec also ships non-secret defaults in `.do/app.yaml`.
 
 ```
 PUBLIC_WEB_URL=https://copyra.fun
 PUBLIC_API_URL=https://copyra.fun
-CORS_ORIGINS=https://copyra.fun
-PORT=8080
-API_HOST=0.0.0.0
+CORS_ORIGINS=https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app
+MULTI_USER_CUSTODY=true
 TRADING_ENABLED=true
-SOL_TRADING_ENABLED=true
-EVM_TRADING_ENABLED=true
 ```
 
-Use lowercase `true` / `false` (or `1` / `0`). Values like `True` / `TRUE` are now accepted by the API, but prefer lowercase.
+Required secrets: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, bot keys, RPC URLs, Telegram, Reown project id. See `.do/app.yaml` comments.
 
-### Required for live balances / deposit / withdraw (encrypted, App-Level, ALL components)
+### Balances
 
-Bot keys alone are not enough. The **api** and **worker** must both see RPC URLs:
+Trading / Savings buckets are **live RPC reads of the signed-in account’s custody wallet**. They are not sticky, cached, or invented in the browser. Deposit via the dashboard Deposit button so funds land on that custody address (not the shared bot signer).
 
-```
-DATABASE_URL=
-REDIS_URL=
-SESSION_SECRET=
-SOLANA_BOT_PRIVATE_KEY=
-EVM_BOT_PRIVATE_KEY=
-SOLANA_RPC_URL=
-SOLANA_WS_URL=
-SOLANA_RPC_FALLBACK_URLS=
-JUPITER_API_KEY=
-EVM_ETHEREUM_RPC_URL=
-EVM_ETHEREUM_WS_URL=
-EVM_BASE_RPC_URL=
-EVM_BASE_WS_URL=
-EVM_ARBITRUM_RPC_URL=
-EVM_ARBITRUM_WS_URL=
-EVM_BSC_RPC_URL=
-EVM_BSC_WS_URL=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-VITE_REOWN_PROJECT_ID=
-NEXT_PUBLIC_REOWN_PROJECT_ID=
-# Aliases accepted by the API / Vite (same WalletConnect Cloud project id):
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=
-# Optional browser Alchemy id for Wagmi EVM RPC (same key as server EVM_* RPCs):
-VITE_ALCHEMY_ID=
-NEXT_PUBLIC_ALCHEMY_ID=
-```
-
-`VITE_REOWN_PROJECT_ID` (or `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`) is the public Reown / WalletConnect project id (safe to expose). Set it **App-Level → RUN_AND_BUILD_TIME** (or at least RUN_TIME). The API serves it via `/config.js` and `/api/public-config` so Connect Wallet can open the full multi-wallet Reown modal even when the Docker build did not bake the id.
-
-The dashboard mounts a **WagmiProvider + useAccount** React island (ConnectKit-equivalent). ConnectKit itself cannot install on React 19 / wagmi 3 — Reown AppKit’s WagmiAdapter uses the same WalletConnect Cloud project id.
-
-In [WalletConnect Cloud](https://cloud.walletconnect.com/) allowlist **`https://copyra.fun`** (and `www` / App Platform hosts if you use them) for that project.
-
-Scope every encrypted var to **App-Level → All components** (or both `api` and `worker`). If RPCs are only on the worker, `/api/funds` and `/api/balances` fail with `SOLANA_RPC_URL is not configured`.
-
-After editing env: **Force Rebuild and Deploy**. Then confirm:
-
-- `GET /api/status` → `trading.envGuard: true`, `signers.*.available: true`, chain heads present
-- `GET /api/funds?mode=sol` → `configured: true` with `onChainQuote`
-- Dashboard: enable the trading switch (settings DB row)
-
-### Cloudflare HTTPS `526`
-
-See the top section **Fix HTTPS 526 / App “Degraded”**. Short version: do **not** add `copyra.fun` in App Platform Domains; proxy it in Cloudflare to `copyra-nl7kz.ondigitalocean.app` with an Origin Rule that rewrites the **Host** header to that ingress. SSL mode **Full**.
-
-After that you should see:
+### Smoke after deploy
 
 - `GET https://copyra.fun/` → dashboard HTML
 - `GET https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`
-- `GET https://copyra.fun/api/status` → live status JSON
-- `GET https://copyra-nl7kz.ondigitalocean.app/health` → same JSON (always)
+- `GET https://copyra.fun/api/status` → live status JSON (should respond in a few seconds)
+- `GET https://copyra-nl7kz.ondigitalocean.app/health` → same JSON
 
-### Prove the image locally
-
-```bash
-git clone https://github.com/COPYRA-BOT/COPYRA.git /tmp/copyra-docker-proof
-cd /tmp/copyra-docker-proof
-git checkout main
-test ! -f .env
-docker build -t copyra:proof .
-```
-
-## Auto-deploy loop
-
-1. Change code in this repo on `main`.
-2. `git push` to GitHub `COPYRA-BOT/COPYRA` (`main`).
-3. App Platform builds from the Dockerfile and rolls the live app.
-4. Test on **https://copyra.fun**.
-
-## Environment
-
-Copy `.env.example` for local work only. Never put bot keys in `VITE_*` / `NEXT_PUBLIC_*`. Leave those keys empty for observe-only.
-
-Rotate every credential that was pasted into chat before treating the deploy as long-term production.
-
-## Day 3–6 live checklist (operator)
-
-3. Solana: watch one real trader, tiny Jupiter copy, confirm on Solscan.
-4. Base: same with KyberSwap, confirm on Basescan. Then Arb/BNB.
-5. Wait for a real TP or SL and confirm the sell.
-6. Run 24/7 on small size; compare every trade, fee, and balance to explorers.
+In [WalletConnect Cloud](https://cloud.walletconnect.com/) allowlist **`https://copyra.fun`** (and `www` / App Platform hosts if you use them).

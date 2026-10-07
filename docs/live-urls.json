@@ -3,5 +3,5 @@
   "platform": "https://copyra-nl7kz.ondigitalocean.app",
   "healthPath": "/health",
   "statusPath": "/api/status",
-  "notes": "App Platform ingress is always https://copyra-nl7kz.ondigitalocean.app. Use that URL if https://copyra.fun returns Cloudflare 526. copyra.fun must be Cloudflare-proxied to the platform host with an Origin Rule that rewrites Host → copyra-nl7kz.ondigitalocean.app; do not also register copyra.fun as a domain inside App Platform."
+  "notes": "TLS and custom domain are DigitalOcean App Platform only. Point DNS at the records DO shows under Networking → Domains. Do not put an external CDN in front of copyra.fun."
 }

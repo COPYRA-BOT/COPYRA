@@ -49,8 +49,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Pr
  *
  * When multi-user custody is on and a userId is present, this NEVER returns the
  * shared bot signer — only that account's custody address. RPC failures still
- * return the custody address so the UI can stay sticky instead of flipping to
- * the empty bot wallet (which caused “balance disappeared” + ExQW… confusion).
+ * return the custody address (with null balances) so the UI can show an error
+ * instead of inventing amounts or flipping to the bot signer.
  */
 async function walletEntry(chain: Chain, userId: string | undefined): Promise<WalletEntry> {
   const multi = multiUserCustodyEnabled();
