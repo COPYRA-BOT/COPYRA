@@ -224,6 +224,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         trailingPartialSellPct: z.number().positive().max(100).optional(),
         trailingDropPct: z.number().positive().lt(100).optional(),
         followTraderSells: z.boolean().optional(),
+        firstBuyOnly: z.boolean().optional(),
         enabledChains: z.array(chainSchema).optional(),
         ui: z.record(z.unknown()).optional(),
       })

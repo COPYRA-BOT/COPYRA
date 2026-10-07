@@ -119,7 +119,7 @@ function stats(r){const n=r.length,w=r.filter(x=>x.usd>0).length,l=r.filter(x=>x
 const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN_BLACKLISTED:'Token is blacklisted',NOT_FIRST_BUY:'Only the first buy per token is copied',LIQUIDITY_TOO_LOW:'Pool liquidity below your minimum',MAX_OPEN_POSITIONS:'Max open positions reached',INSUFFICIENT_CHAIN_LIQUIDITY:'Not enough USDC pre-positioned on this chain (no bridging during trades)',MARKET_CAP_TOO_HIGH:'Market cap above your saved maximum',MARKET_CAP_TOO_LOW:'Market cap below your saved minimum',MAX_DEPLOYED:'Max capital already deployed',INSUFFICIENT_BALANCE:'Available balance below minimum trade',TRADE_BELOW_MINIMUM:'Calculated trade below minimum',MINIMUM_RESERVE:'Trade would break your minimum reserve',NO_ROUTE:'No swap route found',PRICE_IMPACT_TOO_HIGH:'Price impact above your limit',NOT_A_BUY:'Not a buy',BLOCKED_NO_SIGNER:'Qualified, but no server signing key is configured so nothing was broadcast',BLOCKED_DISABLED:'Qualified, but trading is disabled by the host or settings guard',IS_SELL:'Trader sold — not an entry'};
 /** Display units: K = thousands USD, M = millions USD. Saved to strategy row as absolute USD. */
 const unitMul=u=>u==='M'?1e6:1e3;
-const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,maxMc:20000,mcUnit:'K',maxDep:80,maxTok:50,bl:''});
+const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'FIRST_ONLY',maxDep:80,maxTok:50,bl:''});
 const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
@@ -127,13 +127,26 @@ let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=nu
 let actPage={sol:1,evm:1,unified:1},histPage=1;
 const PAGE_N=10;
 function pageSlice(arr,page){const p=Math.max(1,page|0),start=(p-1)*PAGE_N;return{rows:arr.slice(start,start+PAGE_N),page:p,total:arr.length,pages:Math.max(1,Math.ceil(arr.length/PAGE_N))}}
-/** onClickTpl uses __P__ for the page number, e.g. "setActPage('sol',__P__)" */
+/** Show at most 5 page numbers; ">" advances to the next window of 5. onClickTpl uses __P__. */
 function pagerHtml(key,page,pages,onClickTpl){
   if(pages<=1)return'';
+  const win=5;
+  const windowStart=Math.floor((Math.max(1,page)-1)/win)*win+1;
+  const windowEnd=Math.min(pages,windowStart+win-1);
   const buttons=[];
-  for(let i=1;i<=pages;i++){
+  for(let i=windowStart;i<=windowEnd;i++){
     const fn=onClickTpl.replace(/__P__/g,String(i));
     buttons.push(`<button type="button" class="btn sm ${i===page?'pri':''}" onclick="${fn}">${i}</button>`);
+  }
+  if(windowEnd<pages){
+    const nextStart=windowEnd+1;
+    const fn=onClickTpl.replace(/__P__/g,String(nextStart));
+    buttons.push(`<button type="button" class="btn sm" onclick="${fn}" title="Next pages" aria-label="Next pages">&gt;</button>`);
+  }
+  if(windowStart>1){
+    const prevStart=Math.max(1,windowStart-win);
+    const fn=onClickTpl.replace(/__P__/g,String(prevStart));
+    buttons.unshift(`<button type="button" class="btn sm" onclick="${fn}" title="Previous pages" aria-label="Previous pages">&lt;</button>`);
   }
   return `<div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap" data-pager="${key}"><span class="mu" style="margin-right:4px">Page</span>${buttons.join('')}</div>`;
 }
@@ -175,12 +188,13 @@ function hydrate(snap){
   const next=empty(e);
   next.bot=botFrom(status,st);
   next.set={...dflt(e),...(ui[e]||{})};
-  // Absolute USD from the strategy row is source of truth; display uses saved K/M unit.
-  if(next.set.mcUnit!=='M')next.set.mcUnit='K';
+  // Absolute USD from the strategy row is source of truth; each field has its own K/M unit.
   if(next.set.liqUnit!=='M')next.set.liqUnit='K';
-  const mcDiv=unitMul(next.set.mcUnit),liqDiv=unitMul(next.set.liqUnit);
-  if(row.minMarketCapUsd!=null)next.set.minMc=Number(row.minMarketCapUsd)/mcDiv;
-  if(row.maxMarketCapUsd!=null)next.set.maxMc=Number(row.maxMarketCapUsd)/mcDiv;
+  if(next.set.minMcUnit!=='M'&&next.set.minMcUnit!=='K')next.set.minMcUnit=next.set.mcUnit==='M'?'M':'K';
+  if(next.set.maxMcUnit!=='M'&&next.set.maxMcUnit!=='K')next.set.maxMcUnit=next.set.minMcUnit;
+  const liqDiv=unitMul(next.set.liqUnit),minMcDiv=unitMul(next.set.minMcUnit),maxMcDiv=unitMul(next.set.maxMcUnit);
+  if(row.minMarketCapUsd!=null)next.set.minMc=Number(row.minMarketCapUsd)/minMcDiv;
+  if(row.maxMarketCapUsd!=null)next.set.maxMc=Number(row.maxMarketCapUsd)/maxMcDiv;
   if(row.maxDeploymentPct!=null)next.set.maxDep=Number(row.maxDeploymentPct);
   if(row.maxOpenPositions!=null)next.set.maxPos=Number(row.maxOpenPositions);
   if(row.reservePct!=null)next.set.res=Number(row.reservePct);
@@ -194,6 +208,7 @@ function hydrate(snap){
   if(row.trailingPartialSellPct!=null)next.set.trFrac=Number(row.trailingPartialSellPct);
   if(row.trailingDropPct!=null)next.set.trTrail=Number(row.trailingDropPct);
   if(row.exitStrategy)next.set.tpMode=row.exitStrategy;
+  if(typeof row.firstBuyOnly==='boolean')next.set.buyMode=row.firstBuyOnly?'FIRST_ONLY':'EVERY_BUY';
   const signer=e==='sol'?status.signers?.solana:status.signers?.evm;
   // Prefer mode-scoped balance payload so SOL/EVM accounts never cross-contaminate.
   const modeBal=snap.balances?.[e];
@@ -376,7 +391,14 @@ function liveBanner(e){
 // ---- UI (same markup as the uploaded COPYRA frontend) ----
 const bd=e=>`<span class="bd ${e}">${e.toUpperCase()}</span>`,pnlC=x=>x>=0?'g':'rd';
 function fmtUsdU(v,u){const n=Number(v);if(!Number.isFinite(n))return'—';return u==='M'?`$${n}M`:`$${n}K`}
-function strat(e){const s=S[e].set,mu=s.mcUnit||'K',lu=s.liqUnit||'K';return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL −${s.sl}% · First real buy only · Market cap ${fmtUsdU(s.minMc,mu)}–${fmtUsdU(s.maxMc,mu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
+function strat(e){const s=S[e].set,mu=s.minMcUnit||s.mcUnit||'K',xu=s.maxMcUnit||mu,lu=s.liqUnit||'K',buy=s.buyMode==='EVERY_BUY'?'Every qualifying buy':'First buy only';return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL −${s.sl}% · ${buy} · Market cap ${fmtUsdU(s.minMc,mu)}–${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
+function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><summary><b>How it works</b></summary>
+<div class="mu" style="padding-top:10px;line-height:1.55;max-width:72ch">
+<p><b>1. Watch real wallets.</b> You add trader addresses. The worker subscribes to live Solana / EVM RPC feeds and decodes each confirmed transaction — buys, sells, airdrops, transfers.</p>
+<p><b>2. Qualify against your settings.</b> Only genuine quote-asset buys that pass your saved market-cap window, min liquidity, slippage, position limits, and buy mode (first buy only or every buy) are eligible. Unqualified activity is listed under Skipped Trades with the exact reason.</p>
+<p><b>3. Size and execute on-chain.</b> Position size uses your live custody balance and tier caps. Swaps go through Jupiter (SOL) or Kyber (EVM). A position opens only after the fill confirms on-chain — never from a simulation.</p>
+<p><b>4. Exit by your strategy.</b> Manual TP/SL or trailing take-profit runs from live marks. Monitor, Leaderboard, and PnL History show your account’s real positions, closed trades, and RPC balances — not shared with other wallets.</p>
+</div></details>`}
 function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),inv=invOf(e),nx=Math.max(0,cash*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
  return `${liveBanner(e)}
@@ -396,19 +418,21 @@ ${e=='evm'?`<div class="card"><h3>Chains &amp; Gas</h3><div class="tw"><table><t
 <div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>
 <div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on-chain.</p>'}</div></div>
 ${(()=>{const pg=pageSlice(s.act,actPage[e]||1);return`<div class="card"><h3>Recent Activity</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. Deposit, withdraw, or add a trader — on-chain activity appears here.</p>'}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
-<details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b> — ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded.</p>'}</div></details>`}
+<details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b> — ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, MC/liq window, first-buy mode, etc.).</p>'}</div></details>
+${howItWorksHtml()}`}
 const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
 const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
 function monitor(){const tot=e=>UI[e].usd?(cashOf(e)+invOf(e)+S[e].sav)/UI[e].k*UI[e].usd:0,H=allHist(),today=H.filter(h=>Date.now()-h.t<864e5).reduce((a,h)=>a+h.usd,0);
  const heads=(LIVE?.status?.chains||[]).map(c=>`${c.code} ${c.head||'—'}`).slice(0,4).join(' · ');
- return `${liveBanner('sol')}<div class="kp"><div class="k"><small>Total portfolio</small><b>$${(tot('sol')+tot('evm')).toLocaleString(undefined,{maximumFractionDigits:0})}</b></div><div class="k"><small>Solana</small><b>$${tot('sol').toFixed(0)}</b></div><div class="k"><small>EVM</small><b>$${tot('evm').toFixed(0)}</b></div><div class="k"><small>Open positions</small><b>${S.sol.pos.length} SOL · ${S.evm.pos.length} EVM</b></div><div class="k"><small>Realized (session)</small><b class="${pnlC(today)}">${sg(today)}</b></div></div>
-<p class="mu">${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>w.status).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
+ const pnlLive=LIVE?.pnl;
+ return `${liveBanner('sol')}<div class="kp"><div class="k"><small>Total portfolio</small><b>$${(tot('sol')+tot('evm')).toLocaleString(undefined,{maximumFractionDigits:0})}</b></div><div class="k"><small>Solana</small><b>$${tot('sol').toFixed(0)}</b></div><div class="k"><small>EVM</small><b>$${tot('evm').toFixed(0)}</b></div><div class="k"><small>Open positions</small><b>${S.sol.pos.length} SOL · ${S.evm.pos.length} EVM</b></div><div class="k"><small>Realized (session)</small><b class="${pnlC(today)}">${sg(today)}</b></div>${pnlLive?`<div class="k"><small>Unrealized (RPC marks)</small><b class="${pnlC(Number(pnlLive.unrealizedQuote||0))}">${sg(Number(pnlLive.unrealizedQuote||0))}</b></div>`:''}</div>
+<p class="mu">Balances and positions are your signed-in custody wallet on live RPC. ${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>w.status).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
 <div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}</div>
 <div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON')">Resume all engines</button></div>
 <div class="card"><h3>Open positions (all chains)</h3><div class="tw"><table><tr><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Invested</th><th>P&amp;L</th><th>MC</th></tr>${['sol','evm'].flatMap(e=>S[e].pos.map(p=>`<tr><td>${bd(e)}</td><td><b>${p.sym}</b></td><td>${CH[p.ch]||p.ch}</td><td>${p.tr.n}</td><td>${UI[e].usd?usd(e,p.inv*p.rem):f(e,p.inv*p.rem)}</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>$${(p.mc/1e6).toFixed(1)}M</td></tr>`)).join('')||'<tr><td class="mu">None</td></tr>'}</table></div></div>
 ${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On-chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
 function board(){const rows=['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].tr.map(t=>({e,t,...stats(S[e].hist.filter(h=>h.trId==t.id||h.tr==t.n))}))).sort((a,b)=>(b.n>0)-(a.n>0)||(b.score??-1e9)-(a.score??-1e9));
- return segF()+`<div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'—'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'—'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'—'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet.</td></tr>'}</table></div>`}
+ return segF()+`<p class="mu" style="margin:0 0 12px">Leaderboard ranks <b>your</b> copy traders from closed on-chain exits in this account — wins, losses, and net USD P&amp;L. Other wallets never see this list.</p><div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'—'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'—'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'—'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet. Add a wallet on Trading — stats appear after confirmed exits.</td></tr>'}</table></div>`}
 function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pts=W.map(h=>c+=h.usd),mx=Math.max(0,...pts),mn=Math.min(0,...pts),rg=mx-mn||1;
  const path=pts.length>1?pts.map((v,i)=>`${i?'L':'M'}${(i/(pts.length-1)*600).toFixed(1)},${(100-(v-mn)/rg*90-5).toFixed(1)}`).join(''):'';
  const nm={STOP_LOSS:'STOP LOSS',TAKE_PROFIT:'TAKE PROFIT',TRAILING_STOP:'TRAILING STOP'};
@@ -767,35 +791,38 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   }catch(err){$('#ae').textContent=err.message; $('#ok').disabled=false}
  }
 }
-const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['tpMode','Take-profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity',4],['minMc','Min market cap',5],['maxMc','Max market cap',5],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma-separated)',3]];
+const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['buyMode','Buy mode',6],['tpMode','Take-profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity',4],['minMc','Min market cap',5],['maxMc','Max market cap',5],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma-separated)',3]];
 function unitSel(id,cur){return `<select id="${id}" style="width:auto;min-width:4.5rem"><option value="K" ${cur==='K'?'selected':''}>K (thousands)</option><option value="M" ${cur==='M'?'selected':''}>M (millions)</option></select>`}
 function settings(e){const s=S[e].set;
  const fieldHtml=([k,l,t])=>{
   if(t===2)return `<label>${l}</label><select id="s_${k}"><option ${s[k]=='MANUAL'?'selected':''}>MANUAL</option><option ${s[k]=='TRAILING'?'selected':''}>TRAILING</option></select>`;
+  if(t===6){const m=s.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';return `<label>${l}</label><select id="s_${k}"><option value="FIRST_ONLY" ${m==='FIRST_ONLY'?'selected':''}>First buy only</option><option value="EVERY_BUY" ${m==='EVERY_BUY'?'selected':''}>Every buy</option></select><p class="mu" style="margin:4px 0 0">First buy only: one copy per token for this account. Every buy: re-enter after the position closes. Still never two open positions in the same token.</p>`;}
   if(t===3)return `<label>${l}</label><input id="s_${k}" value="${s[k]??''}">`;
   if(t===4)return `<label>${l}</label><div class="row" style="gap:8px;align-items:center"><input id="s_${k}" type="number" step="any" value="${s[k]}" style="flex:1">${unitSel('s_liqUnit',s.liqUnit||'K')}</div><p class="mu" style="margin:4px 0 0">Example: 50 + K = $50,000 liquidity floor. Worker uses the saved USD amount.</p>`;
-  if(t===5){const u=s.mcUnit||'K';const tip=k==='minMc'?`Example: 50 + K = $50,000 minimum.`:`Same unit as min market cap.`;
-   return `<label>${l}</label><div class="row" style="gap:8px;align-items:center"><input id="s_${k}" type="number" step="any" value="${s[k]}" style="flex:1">${k==='minMc'?unitSel('s_mcUnit',u):`<span class="mu" id="s_mcUnitHint">${u}</span>`}</div><p class="mu" style="margin:4px 0 0">${tip}</p>`;}
+  if(t===5){const u=k==='maxMc'?(s.maxMcUnit||s.minMcUnit||'K'):(s.minMcUnit||s.mcUnit||'K');const id=k==='maxMc'?'s_maxMcUnit':'s_minMcUnit';
+   const tip=k==='minMc'?`Example: 50 + K = $50,000 minimum.`:`Example: 20 + M = $20,000,000 maximum. Each field has its own K/M unit.`;
+   return `<label>${l}</label><div class="row" style="gap:8px;align-items:center"><input id="s_${k}" type="number" step="any" value="${s[k]}" style="flex:1">${unitSel(id,u)}</div><p class="mu" style="margin:4px 0 0">${tip}</p>`;}
   return `<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label><input id="s_${k}" type="number" step="any" value="${s[k]}">`;
  };
- $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button>`;dr.classList.add('o');
- const syncMcHint=()=>{const h=$('#s_mcUnitHint'),u=$('#s_mcUnit');if(h&&u)h.textContent=u.value};
- $('#s_mcUnit')?.addEventListener('change',syncMcHint);
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button>`;dr.classList.add('o');
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
-  n.mcUnit=($('#s_mcUnit')?.value==='M')?'M':'K';n.liqUnit=($('#s_liqUnit')?.value==='M')?'M':'K';
-  const mcMul=unitMul(n.mcUnit),liqMul=unitMul(n.liqUnit);
-  const minMcUsd=n.minMc*mcMul,maxMcUsd=n.maxMc*mcMul,minLiqUsd=n.minLiq*liqMul;
+  n.buyMode=n.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';
+  n.minMcUnit=($('#s_minMcUnit')?.value==='M')?'M':'K';
+  n.maxMcUnit=($('#s_maxMcUnit')?.value==='M')?'M':'K';
+  n.liqUnit=($('#s_liqUnit')?.value==='M')?'M':'K';
+  n.mcUnit=n.minMcUnit;
+  const minMcUsd=n.minMc*unitMul(n.minMcUnit),maxMcUsd=n.maxMc*unitMul(n.maxMcUnit),minLiqUsd=n.minLiq*unitMul(n.liqUnit);
   if(!(minMcUsd>0&&maxMcUsd>0)||!(minMcUsd<maxMcUsd))return $('#se').textContent='Min market cap must be below max market cap (check K/M units).';
   if(!(minLiqUsd>0))return $('#se').textContent='Min liquidity must be greater than zero.';
   if(!(n.alloc>=1&&n.alloc<=100))n.alloc=50;n.maxDep=Math.min(n.maxDep,100);n.maxTok=Math.min(n.maxTok,100);n.sl=Math.min(Math.max(n.sl,1),99);
   try{
    const ui={...(LIVE?.settings?.row?.ui||{}),[e]:n};
    await api('PATCH','/api/settings',{
-    exitStrategy:n.tpMode,minMarketCapUsd:minMcUsd,maxMarketCapUsd:maxMcUsd,maxDeploymentPct:n.maxDep,maxOpenPositions:n.maxPos,reservePct:n.res,
+    exitStrategy:n.tpMode,firstBuyOnly:n.buyMode!=='EVERY_BUY',minMarketCapUsd:minMcUsd,maxMarketCapUsd:maxMcUsd,maxDeploymentPct:n.maxDep,maxOpenPositions:n.maxPos,reservePct:n.res,
     minTradeUsd:e==='sol'&&UI.sol.usd?n.min*UI.sol.usd:n.min,maxSlippageBps:Math.round(n.slip*100),maxPriceImpactPct:n.impact,minLiquidityUsd:minLiqUsd,
     takeProfitPct:n.tp,stopLossPct:n.sl,trailingTriggerPct:n.trTp,trailingPartialSellPct:n.trFrac,trailingDropPct:n.trTrail,ui
    });
-   dr.classList.remove('o');toast(`Settings saved — MC ${fmtUsdU(n.minMc,n.mcUnit)}–${fmtUsdU(n.maxMc,n.mcUnit)}, min liq ${fmtUsdU(n.minLiq,n.liqUnit)}. Worker uses these immediately.`);await refresh();
+   dr.classList.remove('o');toast(`Settings saved — ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)}–${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
   }catch(err){$('#se').textContent=err.message}}}
 function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd',...allHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,h.size.toFixed(2),h.usd.toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
 $('#mc').onclick=()=>{
@@ -996,8 +1023,17 @@ function beginConnectFromClick(){
 $('#cn-wrap')?.addEventListener('click',()=>{beginConnectFromClick()},{capture:true});
 $('#cn').onclick=()=>{beginConnectFromClick()};
 
-$('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="nav.classList.remove(\'o\');refresh();toast(LIVE&&LIVE.status?(\'API live · \'+(LIVE.status.telegram.botUsername||\'telegram\')+\' · workers \'+(LIVE.status.workers.map(w=>w.status).join(\',\')||\'none\')):\'Refreshing…\')">System health</button>';
-const wd2=()=>{nav.classList.remove('o');md('<h3>Security</h3><p class="mu">2FA protects withdrawals in both modes. Sessions last 7 days. Wallet sign-in proves you control the key. COPYRA never asks for a seed phrase.</p><button class="btn" onclick="cl()">Close</button>')};
+$('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="sysHealth()">System health</button>';
+const wd2=()=>{nav.classList.remove('o');const a=wallet[M];md(`<h3>Security (2FA)</h3><p class="mu">Wallet sign-in proves you control the key for this mode (${M.toUpperCase()}). Sessions last 7 days. Withdrawals use your signed-in custody wallet — COPYRA never asks for a seed phrase.</p><p class="mu">${a?'Signed in: <b style="color:var(--tx)">'+a.slice(0,6)+'…'+a.slice(-4)+'</b>':'Not signed in — connect a wallet to open your private account.'}</p><div class="row"><button class="btn" onclick="cl();CPY.go('acct')">Account &amp; 2FA</button><button class="btn" onclick="cl();CPY.go('dev')">Devices</button><button class="btn" onclick="cl()">Close</button></div>`)};
+const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){refresh();toast('Refreshing live status…');return}
+ const chains=(st.chains||[]).map(c=>`${c.label}: ${c.error||('head '+(c.head||'—')+(c.latencyMs!=null?' · '+c.latencyMs+'ms':''))+(c.canExecute?'':' · monitor only')}`).join('<br>');
+ const workers=(st.workers||[]).map(w=>`${w.name||w.component||'worker'}: ${w.status}`).join(', ')||'none';
+ md(`<h3>System health</h3><p class="mu">Live from <code>/api/status</code> — chain RPC heads, worker heartbeat, and trading guards.</p>
+<p><b>Trading</b><br>Env guard: ${st.trading?.envGuard?'on':'off'} · Settings: ${st.trading?.settingsEnabled?'enabled':'off'} · Emergency: ${st.trading?.emergencyStop?'ENGAGED':'clear'}${st.trading?.blockedReason?'<br>'+st.trading.blockedReason:''}</p>
+<p><b>Workers</b><br>${workers}</p>
+<p><b>Telegram</b><br>${st.telegram?.canPostToChat?'@'+(st.telegram.botUsername||'bot')+' can post':'unreachable'}${st.telegram?.error?' · '+st.telegram.error:''}</p>
+<p><b>Chains</b><br>${chains||'—'}</p>
+<div class="row"><button class="btn pri" onclick="cl();refresh();toast('Refreshed')">Refresh</button><button class="btn" onclick="cl()">Close</button></div>`)};
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
 setInterval(()=>{refresh()},8000);

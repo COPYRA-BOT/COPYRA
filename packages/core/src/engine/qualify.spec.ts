@@ -182,6 +182,25 @@ describe('qualifySignal', () => {
     if (!result.qualified) expect(result.reason).toBe(SkipReason.NOT_FIRST_BUY);
   });
 
+  it('allows every buy when firstBuyOnly is off (still blocks open position)', () => {
+    const again = qualifySignal(
+      qualifyInput({
+        isFirstBuy: false,
+        config: strategyConfig({ firstBuyOnly: false }),
+      }),
+    );
+    expect(again.qualified).toBe(true);
+    const open = qualifySignal(
+      qualifyInput({
+        isFirstBuy: false,
+        config: strategyConfig({ firstBuyOnly: false }),
+        portfolio: portfolio({ existingPositionForToken: true }),
+      }),
+    );
+    expect(open.qualified).toBe(false);
+    if (!open.qualified) expect(open.reason).toBe(SkipReason.POSITION_ALREADY_OPEN);
+  });
+
   it('enforces one-token-one-position when a COPYRA position is already open', () => {
     const result = qualifySignal(qualifyInput({ portfolio: portfolio({ existingPositionForToken: true }) }));
     expect(result.qualified).toBe(false);

@@ -78,6 +78,7 @@ export function toStrategyConfig(row: StrategySettings): StrategyConfig {
     trailingPartialSellPct: num(row.trailingPartialSellPct),
     trailingDropPct: num(row.trailingDropPct),
     followTraderSells: row.followTraderSells,
+    firstBuyOnly: row.firstBuyOnly !== false,
     enabledChains: row.enabledChains,
   };
 }

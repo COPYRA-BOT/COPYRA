@@ -63,6 +63,8 @@ export interface StrategyConfig {
   trailingPartialSellPct: number;
   trailingDropPct: number;
   followTraderSells: boolean;
+  /** When true, only the first qualifying buy of a token is copied per account. */
+  firstBuyOnly: boolean;
   enabledChains: Chain[];
 }
 

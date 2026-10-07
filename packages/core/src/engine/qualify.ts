@@ -248,7 +248,7 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
     };
   }
 
-  // --- first-buy-only (spec §5) and one-position-per-token (spec §6) ------
+  // --- one-position-per-token (always) + optional first-buy-only ----------
   if (portfolio.existingPositionForToken) {
     return {
       qualified: false,
@@ -256,13 +256,14 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
       detail: 'A COPYRA position in this token is already open. One token = one position.',
     };
   }
-  if (!input.isFirstBuy) {
+  // Saved strategy setting: firstBuyOnly (default) vs every qualifying buy.
+  if (config.firstBuyOnly && !input.isFirstBuy) {
     return {
       qualified: false,
       reason: SkipReason.NOT_FIRST_BUY,
       detail:
-        'This token has already had its first qualifying buy recorded. ' +
-        'Later buys raise signal strength but never open a second position.',
+        'First-buy-only mode is on: this account already copied this token. ' +
+        'Switch settings to “Every buy” to allow re-entry after the position closes.',
     };
   }
 
