@@ -3,6 +3,7 @@ import {
   getTradingAvailableQuote,
   multiUserCustodyEnabled,
   tradingWalletAddress,
+  userCustodyAddress,
 } from '@copyra/core';
 import { Chain } from '@copyra/db';
 
@@ -11,25 +12,62 @@ const SOL_CHAINS = [Chain.SOLANA] as const;
 /** Chains shown on the EVM dashboard (USDC + native gas). */
 const EVM_CHAINS = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as const;
 
-async function walletEntry(
-  chain: Chain,
-  userId: string | undefined,
-): Promise<Record<string, unknown>> {
-  if (multiUserCustodyEnabled() && userId) {
+type WalletEntry = Record<string, unknown>;
+
+/**
+ * Mode-scoped wallet balance entry.
+ *
+ * When multi-user custody is on and a userId is present, this NEVER returns the
+ * shared bot signer — only that account's custody address. RPC failures still
+ * return the custody address so the UI can stay sticky instead of flipping to
+ * the empty bot wallet (which caused “balance disappeared” + ExQW… confusion).
+ */
+async function walletEntry(chain: Chain, userId: string | undefined): Promise<WalletEntry> {
+  const multi = multiUserCustodyEnabled();
+
+  // Signed-out / no session for this mode: do not leak the shared bot wallet
+  // into the dashboard as if it were the user's balance.
+  if (multi && !userId) {
+    return {
+      chain,
+      configured: false,
+      address: null,
+      userScoped: true,
+      role: 'custody',
+      needsAuth: true,
+      native: null,
+      available: null,
+      onChainNative: null,
+      savings: null,
+    };
+  }
+
+  if (multi && userId) {
+    let address: string | null = null;
+    try {
+      address = await userCustodyAddress(userId, chain);
+    } catch (error) {
+      return {
+        chain,
+        configured: false,
+        address: null,
+        userScoped: true,
+        role: 'custody',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
     try {
       const funds = await getTradingAvailableQuote(chain, userId);
-      if (!funds.address) {
-        return { chain, configured: false, address: null, userScoped: true };
-      }
       if (chain === Chain.SOLANA) {
-        const balances = await getSolanaBalances(funds.address);
+        const balances = await getSolanaBalances(address);
         return {
           chain,
-          configured: funds.configured,
-          address: funds.address,
+          configured: true,
+          address,
           userScoped: true,
+          role: 'custody',
           nativeRaw: balances.lamports.toString(),
-          // Headline balance = real on-chain amount (not fee-buffered available).
           native: funds.onChainQuote,
           available: funds.availableQuote,
           withdrawable: funds.withdrawableQuote,
@@ -45,9 +83,10 @@ async function walletEntry(
       }
       return {
         chain,
-        configured: funds.configured,
-        address: funds.address,
+        configured: true,
+        address,
         userScoped: true,
+        role: 'custody',
         native: funds.onChainQuote,
         available: funds.availableQuote,
         withdrawable: funds.withdrawableQuote,
@@ -59,21 +98,30 @@ async function walletEntry(
         source: 'rpc',
       };
     } catch (error) {
+      // Keep custody address so the UI never falls back to the bot signer.
       return {
         chain,
-        configured: false,
+        configured: true,
+        address,
         userScoped: true,
+        role: 'custody',
         error: error instanceof Error ? error.message : String(error),
+        native: null,
+        available: null,
+        onChainNative: null,
+        savings: null,
       };
     }
   }
 
+  // Legacy single-bot mode (MULTI_USER_CUSTODY=false only).
   const address = tradingWalletAddress(chain);
   if (!address) {
     return {
       chain,
       configured: false,
       address: null,
+      role: 'bot',
       detail: 'No bot signing key configured.',
     };
   }
@@ -85,6 +133,7 @@ async function walletEntry(
         chain,
         configured: true,
         address,
+        role: 'bot',
         nativeRaw: balances.lamports.toString(),
         native: funds.onChainQuote,
         available: funds.availableQuote,
@@ -103,6 +152,7 @@ async function walletEntry(
       chain,
       configured: true,
       address,
+      role: 'bot',
       native: funds.onChainQuote,
       available: funds.availableQuote,
       withdrawable: funds.withdrawableQuote,
@@ -118,6 +168,7 @@ async function walletEntry(
       chain,
       configured: true,
       address,
+      role: 'bot',
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -133,25 +184,28 @@ export async function buildModeBalances(
 ): Promise<{
   mode: 'sol' | 'evm';
   userId: string | null;
-  wallets: Array<Record<string, unknown>>;
+  wallets: WalletEntry[];
   multiUserCustody: boolean;
+  custodyAddress: string | null;
 }> {
   const chains = mode === 'sol' ? SOL_CHAINS : EVM_CHAINS;
-  const wallets: Array<Record<string, unknown>> = [];
-  for (const chain of chains) {
-    wallets.push(await walletEntry(chain, userId));
-  }
+  // Parallel RPC per chain — EVM was sequential and one slow/dead RPC zeroed the UI.
+  const wallets = await Promise.all(chains.map((chain) => walletEntry(chain, userId)));
+  const custodyAddress =
+    (wallets.find((w) => w.userScoped && typeof w.address === 'string')?.address as string | undefined) ??
+    null;
   return {
     mode,
     userId: userId ?? null,
     wallets,
     multiUserCustody: multiUserCustodyEnabled(),
+    custodyAddress,
   };
 }
 
 /** @deprecated Prefer buildModeBalances — kept for any single-user callers. */
 export async function buildBalancesResponse(userId?: string): Promise<{
-  wallets: Array<Record<string, unknown>>;
+  wallets: WalletEntry[];
   multiUserCustody: boolean;
 }> {
   const [sol, evm] = await Promise.all([

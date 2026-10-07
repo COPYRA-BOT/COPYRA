@@ -77,6 +77,8 @@ services:
         value: "true"
       - key: EVM_TRADING_ENABLED
         value: "true"
+      - key: MULTI_USER_CUSTODY
+        value: "true"
       # Encrypted App-Level secrets scoped to ALL components — never commit:
       # DATABASE_URL, REDIS_URL, SESSION_SECRET,
       # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,

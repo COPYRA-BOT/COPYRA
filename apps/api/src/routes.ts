@@ -832,10 +832,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const solUserId = sessions.sol?.user.id;
     const evmUserId = sessions.evm?.user.id;
     const userIds = [solUserId, evmUserId].filter((id): id is string => Boolean(id));
-    const mode = authModeFromRequest(request);
-    const activeUserId = mode === 'evm' ? evmUserId : solUserId;
-
-    // Account-private queries — never inject global traders/trades via cookie-less inject().
+    // Account-private queries for BOTH mode sessions — SOL and EVM never share a userId.
     const emptyPnl = {
       since: null,
       realizedQuote: 0,
@@ -848,12 +845,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
-        activeUserId
-          ? prisma.trader.findMany({ where: { userId: activeUserId }, orderBy: { createdAt: 'desc' } })
+        userIds.length
+          ? prisma.trader.findMany({ where: { userId: { in: userIds } }, orderBy: { createdAt: 'desc' } })
           : Promise.resolve([]),
-        activeUserId
+        userIds.length
           ? prisma.position.findMany({
-              where: { userId: activeUserId },
+              where: { userId: { in: userIds } },
               orderBy: { createdAt: 'desc' },
               include: {
                 token: true,
@@ -862,32 +859,33 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               },
             })
           : Promise.resolve([]),
-        activeUserId
+        userIds.length
           ? prisma.signal.findMany({
-              where: { userId: activeUserId },
+              where: { userId: { in: userIds } },
               orderBy: { createdAt: 'desc' },
-              take: 80,
+              take: 120,
               include: { trader: true, token: true },
             })
           : Promise.resolve([]),
-        activeUserId
+        userIds.length
           ? prisma.trade.findMany({
-              where: { userId: activeUserId },
+              where: { userId: { in: userIds } },
               orderBy: { createdAt: 'desc' },
-              take: 80,
+              take: 120,
               include: { signal: { include: { trader: true } } },
             })
           : Promise.resolve([]),
+        // Independent custody reads — never the shared bot signer when a mode session exists.
         buildModeBalances('sol', solUserId),
         buildModeBalances('evm', evmUserId),
-        activeUserId
+        userIds.length
           ? prisma.notificationLog.findMany({
               where: {
-                userId: activeUserId,
+                userId: { in: userIds },
                 NOT: { kind: { in: ['worker-online', 'redeploy-finished'] } },
               },
               orderBy: { createdAt: 'desc' },
-              take: 40,
+              take: 60,
             })
           : Promise.resolve([]),
         userIds.length
@@ -904,16 +902,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               take: 80,
             })
           : Promise.resolve([]),
-        activeUserId
+        userIds.length
           ? (async () => {
               const settings = await getSettings();
               const since = settings.pnlResetAt;
               const [closed, open] = await Promise.all([
                 prisma.position.findMany({
-                  where: { userId: activeUserId, status: 'CLOSED', closedAt: { gte: since } },
+                  where: { userId: { in: userIds }, status: 'CLOSED', closedAt: { gte: since } },
                 }),
                 prisma.position.findMany({
-                  where: { userId: activeUserId, status: { in: ['OPEN', 'PARTIALLY_CLOSED'] } },
+                  where: { userId: { in: userIds }, status: { in: ['OPEN', 'PARTIALLY_CLOSED'] } },
                 }),
               ]);
               return {
@@ -960,7 +958,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         multiUserCustody: solBal.multiUserCustody,
         sol: solBal,
         evm: evmBal,
-        // Flat list kept for older clients; hydrate prefers mode-scoped objects.
+        // Flat list is custody-only when multi-user is on (never mix in the bot signer).
         wallets: [...solBal.wallets, ...evmBal.wallets],
       },
       solUsd,
