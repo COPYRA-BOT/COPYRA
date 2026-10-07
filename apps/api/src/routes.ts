@@ -8,6 +8,7 @@ import {
   getSettings,
   getSolanaBalances,
   getStrategyConfig,
+  invalidateSettingsCache,
   killSwitchSellAll,
   multiUserCustodyEnabled,
   publicReownProjectId,
@@ -129,7 +130,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       where: { id: 1 },
       data: { ...body, ui: body.ui as Prisma.InputJsonValue | undefined, updatedBy: 'dashboard' },
     });
-    // Worker calls getStrategyConfig() on every signal — saved row is live immediately.
+    invalidateSettingsCache();
+    // Worker reads settings with a short cache; invalidate so the next tick is fresh.
     return jsonSafe({ row: updated, effective: await getStrategyConfig() });
   });
 
@@ -144,6 +146,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         updatedBy: 'dashboard',
       },
     });
+    invalidateSettingsCache();
     telegram.send(
       `🛑 <b>EMERGENCY STOP ENGAGED</b>\n\nReason: ${body.reason}\nNo new positions will be opened.`,
       { kind: 'emergency-stop' },
@@ -161,6 +164,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         updatedBy: 'dashboard',
       },
     });
+    invalidateSettingsCache();
     telegram.send('✅ <b>EMERGENCY STOP CLEARED</b>\nCopy trading may resume if other guards allow it.', {
       kind: 'emergency-clear',
     });
@@ -197,6 +201,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       where: { id: 1 },
       data: { ui: nextUi as Prisma.InputJsonValue, updatedBy: 'dashboard' },
     });
+    invalidateSettingsCache();
 
     const result = await killSwitchSellAll({
       userId: session.user.id,

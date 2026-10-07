@@ -67,8 +67,8 @@ export async function confirmEvmTransaction(
 }> {
   const config = chainConfig(chain);
   const deadline = Date.now() + timeoutMs;
-  // Fast receipt polls — Base/Arb often land under 1s; do not wait a full blockTime first.
-  let interval = Math.max(100, Math.min(400, Math.floor(config.blockTimeMs / 4) || 150));
+  // Fast receipt polls — Base/Arb often land under 1s; start tight, then ease.
+  let interval = Math.max(50, Math.min(200, Math.floor(config.blockTimeMs / 6) || 80));
 
   while (Date.now() < deadline) {
     const result = await evmPool(chain)
@@ -86,6 +86,11 @@ export async function confirmEvmTransaction(
         };
       }
 
+      // requiredConfirmations is 1 on all venues — receipt success is enough.
+      if (requiredConfirmations <= 1) {
+        return { status: TxStatus.CONFIRMED, receipt, confirmations: 1, error: null };
+      }
+
       const headResult = await evmPool(chain)
         .call('getBlockNumber', (client) => client.getBlockNumber())
         .catch(() => null);
@@ -96,13 +101,12 @@ export async function confirmEvmTransaction(
       if (confirmations >= requiredConfirmations) {
         return { status: TxStatus.CONFIRMED, receipt, confirmations, error: null };
       }
-      // Landed but not yet deep enough.
       await sleep(interval);
       continue;
     }
 
     await sleep(interval);
-    interval = Math.min(1_000, Math.round(interval * 1.2));
+    interval = Math.min(500, Math.round(interval * 1.25));
   }
 
   return {

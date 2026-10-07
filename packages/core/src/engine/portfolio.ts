@@ -86,16 +86,18 @@ export async function readOnChainBalanceForAddress(
   const config = chainConfig(chain);
 
   if (config.kind === 'solana') {
-    const quotePriceUsd = await getQuoteAssetPriceUsd(chain);
-    const { spendableSol, rawLamports, slot } = await getSpendableSol(address);
-    const totalQuote = Number(rawLamports) / 1e9;
+    const [quotePriceUsd, spendable] = await Promise.all([
+      getQuoteAssetPriceUsd(chain),
+      getSpendableSol(address),
+    ]);
+    const totalQuote = Number(spendable.rawLamports) / 1e9;
     return {
-      availableQuote: spendableSol,
+      availableQuote: spendable.spendableSol,
       totalQuote,
-      amountRaw: rawLamports,
+      amountRaw: spendable.rawLamports,
       quotePriceUsd,
       totalUsd: totalQuote * quotePriceUsd,
-      blockOrSlot: slot,
+      blockOrSlot: spendable.slot,
       readAt: new Date(),
       address,
       assetAddress: 'native',

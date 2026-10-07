@@ -26,13 +26,17 @@ export async function getMarketSnapshot(
   chain: Chain,
   tokenAddress: string,
 ): Promise<TokenMarketData> {
-  const dex = await getDexscreenerMarket(chain, tokenAddress);
-
-  if (chain !== Chain.SOLANA || dex.missing) return dex;
-
-  try {
-    const prices = await getJupiterPrices([tokenAddress]);
-    const jupiter = prices.get(tokenAddress);
+  // Overlap Dexscreener + Jupiter on Solana so qualify/mark stays on the hot path.
+  if (chain === Chain.SOLANA) {
+    const [dex, jupiterResult] = await Promise.all([
+      getDexscreenerMarket(chain, tokenAddress),
+      getJupiterPrices([tokenAddress]).catch((error: unknown) => {
+        log.warn({ tokenAddress, err: error }, 'Jupiter price cross-check failed; using Dexscreener alone');
+        return null;
+      }),
+    ]);
+    if (dex.missing || !jupiterResult) return dex;
+    const jupiter = jupiterResult.get(tokenAddress);
     if (!jupiter) return dex;
 
     if (dex.priceUsd > 0) {
@@ -45,7 +49,6 @@ export async function getMarketSnapshot(
       }
     }
 
-    // Rescale market cap by the price ratio so cap and price stay consistent.
     const ratio = dex.priceUsd > 0 ? jupiter.usdPrice / dex.priceUsd : 1;
     return {
       ...dex,
@@ -54,10 +57,9 @@ export async function getMarketSnapshot(
       fdvUsd: dex.fdvUsd !== null ? dex.fdvUsd * ratio : null,
       source: `${dex.source}+jupiter:price`,
     };
-  } catch (error) {
-    log.warn({ tokenAddress, err: error }, 'Jupiter price cross-check failed; using Dexscreener alone');
-    return dex;
   }
+
+  return getDexscreenerMarket(chain, tokenAddress);
 }
 
 /** Short-lived quote-price cache so the dashboard never flashes "price unread". */

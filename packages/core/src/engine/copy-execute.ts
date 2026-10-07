@@ -139,24 +139,27 @@ export async function handleQualifiedCopy(input: QualifiedCopyInput): Promise<Qu
 
 async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCopyResult> {
   const ownerUserId = input.trader.userId;
-  const settings = await getSettings();
-  const config = await getStrategyConfig();
   const signer = signerFor(input.chain);
   const telemetry = new TelemetryTracker(input.observedAt);
   telemetry.mark('decoded');
   telemetry.mark('qualified');
 
-  const open = await prisma.position.findFirst({
-    where: {
-      userId: ownerUserId,
-      chain: input.chain,
-      tokenAddress: input.tokenAddress,
-      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
-    },
-  });
-  const firstBuy = await prisma.tokenFirstBuy.findUnique({
-    where: { chain_tokenAddress: { chain: input.chain, tokenAddress: input.tokenAddress } },
-  });
+  // Overlap settings + book lookups so sizing starts sooner on the hot path.
+  const [settings, config, open, firstBuy] = await Promise.all([
+    getSettings(),
+    getStrategyConfig(),
+    prisma.position.findFirst({
+      where: {
+        userId: ownerUserId,
+        chain: input.chain,
+        tokenAddress: input.tokenAddress,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
+      },
+    }),
+    prisma.tokenFirstBuy.findUnique({
+      where: { chain_tokenAddress: { chain: input.chain, tokenAddress: input.tokenAddress } },
+    }),
+  ]);
 
   // First-buy-only: never open/scale a second book entry in the same token.
   // Every-buy: scale into the existing open position instead of skipping.

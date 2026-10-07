@@ -23,8 +23,8 @@ import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
 const log = componentLogger('solana-monitor');
 
 /** How long we wait for a processed-commitment log to become fetchable. */
-const TX_FETCH_ATTEMPTS = 5;
-const TX_FETCH_BASE_DELAY_MS = 60;
+const TX_FETCH_ATTEMPTS = 4;
+const TX_FETCH_BASE_DELAY_MS = 40;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
 const CATCHUP_LIMIT = 20;
 /** Ignore catch-up signatures older than this (avoids 15–20s “Detected in” spam). */
@@ -159,21 +159,27 @@ async function catchUpTrader(traderId: string, address: string): Promise<void> {
   }
 }
 
-/** Fetch tx ASAP at confirmed with tight retries — keeps detect→decode under ~2s. */
+/**
+ * Fetch tx ASAP: try `processed` first (matches log subscription), then escalate
+ * to `confirmed`. Keeps detect→decode on the sub-second path without inventing data.
+ */
 async function fetchParsedTransaction(
   signature: string,
 ): Promise<ParsedTransactionWithMeta | null> {
   for (let attempt = 1; attempt <= TX_FETCH_ATTEMPTS; attempt += 1) {
+    // web3.js types only allow Finality (confirmed|finalized); Helius/Alchemy
+    // also serve processed, which matches our log subscription and lands earlier.
+    const commitment = (attempt === 1 ? 'processed' : 'confirmed') as 'confirmed';
     const fetched = await solanaPool().call('getParsedTransaction', (client) =>
       client.getParsedTransaction(signature, {
         maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-        commitment: 'confirmed',
+        commitment,
       }),
     );
     if (fetched.value) return fetched.value;
     if (attempt === TX_FETCH_ATTEMPTS) break;
     const delay = TX_FETCH_BASE_DELAY_MS * attempt;
-    log.debug({ signature, attempt, delay }, 'Parsed tx not ready; retrying');
+    log.debug({ signature, attempt, delay, commitment }, 'Parsed tx not ready; retrying');
     await sleep(delay);
   }
   return null;

@@ -6,14 +6,29 @@ import type { StrategyConfig } from './types.js';
 
 const log = componentLogger('settings');
 
+/** Short in-memory cache so exit/detect ticks do not re-hit Postgres every 250ms. */
+const SETTINGS_CACHE_TTL_MS = 250;
+let settingsCache: { at: number; row: StrategySettings } | null = null;
+
+/** Call after dashboard PATCH /api/settings so the next read is fresh. */
+export function invalidateSettingsCache(): void {
+  settingsCache = null;
+}
+
 /**
  * Strategy settings are a single database row, so the API, the worker and the
  * exit monitor can never disagree about risk limits. The spec's defaults are
  * seeded on first read and are never silently changed afterwards (spec §26).
  */
 export async function ensureSettings(): Promise<StrategySettings> {
+  const hit = settingsCache;
+  if (hit && Date.now() - hit.at < SETTINGS_CACHE_TTL_MS) return hit.row;
+
   const existing = await prisma.strategySettings.findUnique({ where: { id: 1 } });
-  if (existing) return existing;
+  if (existing) {
+    settingsCache = { at: Date.now(), row: existing };
+    return existing;
+  }
 
   const defaultChains = executableChains().map((c) => c.chain);
   try {
@@ -24,11 +39,15 @@ export async function ensureSettings(): Promise<StrategySettings> {
       },
     });
     log.info({ enabledChains: created.enabledChains }, 'Seeded default strategy settings from spec');
+    settingsCache = { at: Date.now(), row: created };
     return created;
   } catch (error) {
     // API and worker can both seed the singleton on a fresh database.
     const raced = await prisma.strategySettings.findUnique({ where: { id: 1 } });
-    if (raced) return raced;
+    if (raced) {
+      settingsCache = { at: Date.now(), row: raced };
+      return raced;
+    }
     throw error;
   }
 }

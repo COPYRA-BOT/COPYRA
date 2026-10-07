@@ -23,8 +23,8 @@ const log = componentLogger('evm-monitor');
 
 /** All executable EVM venues COPYRA can copy-trade on. */
 const POLL_CHAINS: Chain[] = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
-/** Fast poll so detect→qualify stays inside the 2s budget with WS-class RPCs. */
-const EVM_POLL_MS = 500;
+/** Fast poll so detect→qualify stays on the sub-second path with WS-class RPCs. */
+const EVM_POLL_MS = 250;
 
 interface AssetTransfer {
   hash: string;
@@ -132,13 +132,13 @@ async function pollTrader(
 }
 
 async function fetchEvmReceipt(chain: Chain, hash: string) {
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
     const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
       client.getTransactionReceipt({ hash: hash as `0x${string}` }),
     );
     if (receiptResult.value) return receiptResult.value;
-    if (attempt === 6) break;
-    await sleep(100 * attempt);
+    if (attempt === 5) break;
+    await sleep(40 * attempt);
   }
   return null;
 }

@@ -19,12 +19,12 @@ await heartbeat('running', { monitor: 'solana-logs+evm-transfers+exits-fast' });
 logger.info({}, 'COPYRA worker started. Solana logs, fast EVM polls, and sub-second TP/SL marks are live');
 
 telegram.send(
-  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again. Solana log subscriptions, fast EVM transfer polls, and TP/SL marks (≤1s tick) are active. Closing the dashboard does not stop this process.',
+  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again. Solana log subscriptions, fast EVM transfer polls, and TP/SL marks (250ms tick) are active. Closing the dashboard does not stop this process.',
   { kind: 'redeploy-finished' },
 );
 
-/** TP/SL / trailing marks — sub-second so exits stay inside the 2s budget. */
-const EXIT_TICK_MS = 400;
+/** TP/SL / trailing marks — sub-second so exits stay inside the 1s budget. */
+const EXIT_TICK_MS = 250;
 /** Heartbeat + pending-tx reconcile (not on the buy/exit critical path). */
 const MAINT_TICK_MS = 8_000;
 
