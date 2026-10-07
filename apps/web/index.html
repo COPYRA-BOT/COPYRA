@@ -50,6 +50,7 @@ h1{font:800 clamp(40px,9vw,64px)/1.02 'Inter Tight',system-ui;letter-spacing:-.0
 .ban{padding:12px 16px;border-radius:14px;background:rgba(245,185,66,.14);color:var(--w);margin:16px 0}.ban.live{background:rgba(255,107,107,.14);color:var(--r)}
 input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;padding:10px 12px;width:100%}label{display:block;margin:10px 0 4px;color:var(--mu);font-size:13px}
 .act div{padding:7px 0;border-bottom:1px solid var(--ln);font-size:14px}.act time{color:var(--mu);margin-right:8px}
+.act a{color:var(--evm);text-decoration:underline;font-weight:600}.act a:hover{opacity:.85}
 #dr{position:fixed;top:0;bottom:0;right:0;width:min(400px,100%);background:var(--sf);border-left:1px solid var(--ln);z-index:40;padding:20px;overflow:auto;transform:translateX(100%);transition:.25s}#dr.o{transform:none}
 #nav{position:fixed;top:0;bottom:0;left:0;width:min(300px,86%);background:var(--sf);z-index:40;padding:20px;transform:translateX(-100%);transition:.25s}#nav.o{transform:none}#nav button{display:block;width:100%;text-align:left;background:none;border:0;padding:14px 8px;font-size:17px;border-bottom:1px solid var(--ln)}
 #sc{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.5);display:none}#nav.o~#sc,#dr.o~#sc{display:block}
@@ -81,6 +82,21 @@ const $=s=>document.querySelector(s),UI={sol:{u:'SOL',k:1e9,usd:0,d:3,ch:['solan
 const CH={solana:'Solana',ethereum:'Ethereum',base:'Base',arb:'Arbitrum',bnb:'BNB Chain'};
 const EVM_CH_KEYS=['ethereum','base','arb','bnb'];
 const EVM_CH_TO_CHAIN={ethereum:'ETHEREUM',base:'BASE',arb:'ARBITRUM',bnb:'BSC'};
+/** Per-chain explorer bases for clickable activity links (Solscan / Etherscan / …). */
+const TX_EXPLORER={
+  SOLANA:{base:'https://solscan.io/tx/',name:'Solscan'},
+  ETHEREUM:{base:'https://etherscan.io/tx/',name:'Etherscan'},
+  BASE:{base:'https://basescan.org/tx/',name:'Basescan'},
+  ARBITRUM:{base:'https://arbiscan.io/tx/',name:'Arbiscan'},
+  BSC:{base:'https://bscscan.com/tx/',name:'BscScan'},
+  POLYGON:{base:'https://polygonscan.com/tx/',name:'PolygonScan'},
+};
+function txExplorerLink(chain,hash,label){
+  if(!hash)return'';
+  const meta=TX_EXPLORER[chain]||(String(hash).startsWith('0x')?TX_EXPLORER.ETHEREUM:TX_EXPLORER.SOLANA);
+  const name=label||meta.name;
+  return ` <a href="${meta.base}${hash}" target="_blank" rel="noopener noreferrer">${name}</a>`;
+}
 const band=m=>m<1e6?0:m<3e6?20:m<7e6?30:m<12e6?40:m<2e7?50:0;
 function sizePos(o){const{eng,total,avail,inv,al,mc,maxMc,minMc,maxDep,maxTok,liq,sUsd,score=1,min,res,chAv=1/0}=o;
  if(mc>=maxMc)return{rej:'MARKET_CAP_TOO_HIGH'};const b=band(mc);if(mc<minMc||!b)return{rej:'MARKET_CAP_TOO_LOW'};
@@ -257,14 +273,19 @@ function hydrate(snap){
    if(s.status==='SKIPPED'||String(s.status).startsWith('BLOCKED')){
     const r=s.skipReason||s.status;
     next.skip.unshift({t:when,w:who+' → '+tok,r});
-    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok} — ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}`,e});
+    const src=s.sourceTx||s.sourceTxHash||'';
+    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok} — ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e});
    }else{
-    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok} — ${s.status} · source ${ (s.sourceTx||s.sourceTxHash||'').slice(0,8)}…`,e});
+    const src=s.sourceTx||s.sourceTxHash||'';
+    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok} — ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e});
    }
   }
   for(const t of trades.filter(x=>modeOf(x.chain)===e)){
    const when=new Date(t.createdAt).toLocaleTimeString();
-   const link=t.explorerUrl?` <a href="${t.explorerUrl}" target="_blank" rel="noopener">tx</a>`:' — no hash (not broadcast)';
+   const name=(TX_EXPLORER[t.chain]||{}).name||'tx';
+   const link=t.explorerUrl
+    ?` <a href="${t.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
+    :(t.txHash?txExplorerLink(t.chain,t.txHash):' — no hash (not broadcast)');
    acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
   }
   // On-chain custody activity (deposits / withdrawals / bucket moves).
@@ -277,7 +298,9 @@ function hydrate(snap){
    const when=new Date(d.creditedAt||d.createdAt).toLocaleTimeString();
    const dec=decimalsFor(d.chain,e==='sol'?'SOL':'USDC');
    const amt=Number(d.amountRaw||0)/10**dec;
-   const explorer=d.txHash?` · ${String(d.txHash).slice(0,10)}…`:'';
+   const explorer=d.explorerUrl
+    ?` <a href="${d.explorerUrl}" target="_blank" rel="noopener noreferrer">${(TX_EXPLORER[d.chain]||{}).name||'tx'}</a>`
+    :txExplorerLink(d.chain,d.txHash);
    acts.push({t:when,ts:new Date(d.creditedAt||d.createdAt).getTime(),h:`<b>Deposit</b> ${amt.toFixed(e==='sol'?3:2)} ${e==='sol'?'SOL':'USDC'} on ${d.chain} · ${d.status}${explorer}`,e,kind:'deposit'});
   }
   for(const tr of (snap.transfers||[]).filter(x=>modeOf(x.chain)===e)){
@@ -291,22 +314,32 @@ function hydrate(snap){
    else if(tr.fromBucket==='SAVINGS'&&tr.toBucket==='TRADING'&&!tr.txHash)label='Move → Trading';
    else if(tr.txHash)label='Withdraw';
    else label='Transfer';
-   const link=tr.explorerUrl?` <a href="${tr.explorerUrl}" target="_blank" rel="noopener">tx</a>`:(tr.txHash?` · ${String(tr.txHash).slice(0,10)}…`:'');
+   const name=(TX_EXPLORER[tr.chain]||{}).name||'tx';
+   const link=tr.explorerUrl
+    ?` <a href="${tr.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
+    :txExplorerLink(tr.chain,tr.txHash);
    acts.push({t:when,ts:new Date(tr.confirmedAt||tr.requestedAt).getTime(),h:`<b>${label}</b> ${amt.toFixed(e==='sol'?3:4)} ${tr.assetSymbol||(e==='sol'?'SOL':'USDC')} · ${tr.status}${link}`,e,kind:'transfer'});
   }
   for(const n of (snap.notifications||[])){
    const kind=String(n.kind||'');
    if(kind==='worker-online')continue;
    const when=new Date(n.createdAt||Date.now()).toLocaleTimeString();
-   const body=(n.body||n.error||'sent').toString().replace(/<[^>]+>/g,' ').slice(0,140);
+   // Keep <a href> explorer links clickable; strip other Telegram HTML.
+   const body=(n.body||n.error||'sent').toString()
+    .replace(/<(?!\/?a\b)[^>]*>/gi,' ')
+    .replace(/\s+/g,' ')
+    .trim()
+    .slice(0,180);
    acts.push({t:when,ts:new Date(n.createdAt||Date.now()).getTime(),h:`Notify · ${kind||n.channel||'telegram'} · ${body}`,e,kind:'notify'});
   }
   acts.sort((a,b)=>(b.ts||0)-(a.ts||0));
   next.act=acts.slice(0,200);
   next.skip=next.skip.slice(0,40);
   const lat=status.latency||{};
-  if(lat.p50BroadcastMs!=null||lat.p50ConfirmMs!=null){
-   next.m={det:0,sub:Math.round(lat.p50BroadcastMs||0),conf:(lat.p50ConfirmMs||0)/1000,slip:0,tot:Math.round((lat.p50ConfirmMs||lat.p50BroadcastMs||0))};
+  const p50b=lat.detectToBroadcastMs?.p50??lat.p50BroadcastMs;
+  const p50c=lat.detectToConfirmMs?.p50??lat.p50ConfirmMs;
+  if(p50b!=null||p50c!=null){
+   next.m={det:0,sub:Math.round(p50b||0),conf:(p50c||0)/1000,slip:0,tot:Math.round((p50c||p50b||0))};
   }
   S[e]=next;
  }

@@ -104,9 +104,9 @@ export async function getJupiterQuote(params: QuoteParams): Promise<QuoteResult>
         () =>
           fetchJson<JupiterQuote & { error?: string }>(
             `${base}/swap/v1/quote?${query.toString()}`,
-            { headers: headers(), timeoutMs: 5_000, label: 'jupiter/quote' },
+            { headers: headers(), timeoutMs: 2_500, label: 'jupiter/quote' },
           ),
-        { attempts: 2, baseDelayMs: 120 },
+        { attempts: 2, baseDelayMs: 40 },
       );
 
       if (data.error || !data.outAmount) {
@@ -183,7 +183,7 @@ export async function buildJupiterSwap(params: SwapBuildParams): Promise<SwapBui
         method: 'POST',
         headers: { ...headers(), 'content-type': 'application/json' },
         body: JSON.stringify(body),
-        timeoutMs: 8_000,
+        timeoutMs: 2_500,
         label: 'jupiter/swap',
       });
 

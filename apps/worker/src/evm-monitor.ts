@@ -18,7 +18,10 @@ import { getAddress } from 'viem';
 
 const log = componentLogger('evm-monitor');
 
-const POLL_CHAINS: Chain[] = [Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+/** All executable EVM venues COPYRA can copy-trade on. */
+const POLL_CHAINS: Chain[] = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+/** Sub-second poll so detect→qualify stays inside the 1s budget with WS-class RPCs. */
+const EVM_POLL_MS = 750;
 
 interface AssetTransfer {
   hash: string;
@@ -50,20 +53,23 @@ export async function startEvmMonitor(): Promise<() => void> {
       where: { chain: { in: chains }, enabled: true },
     });
 
-    for (const trader of traders) {
-      if (stopped) return;
-      try {
-        await pollTrader(trader.chain, trader.id, trader.address, cursors);
-      } catch (error) {
-        log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
-      }
-    }
+    // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
+    await Promise.all(
+      traders.map(async (trader) => {
+        if (stopped) return;
+        try {
+          await pollTrader(trader.chain, trader.id, trader.address, cursors);
+        } catch (error) {
+          log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
+        }
+      }),
+    );
   };
 
   await tick();
   const timer = setInterval(() => {
     void tick();
-  }, 4_000);
+  }, EVM_POLL_MS);
 
   return () => {
     stopped = true;
@@ -207,46 +213,52 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     return;
   }
 
-  const token = await prisma.token.upsert({
-    where: { chain_address: { chain, address: tokenAddress } },
-    create: {
-      chain,
-      address: tokenAddress,
-      symbol: decoded.tokenOut?.symbol ?? null,
-      decimals: decoded.tokenOut?.decimals ?? null,
-    },
-    update: { decimals: decoded.tokenOut?.decimals ?? undefined },
-  });
-
-  const market = await getMarketSnapshot(chain, tokenAddress);
-  if (!market.missing) {
-    await prisma.token.update({
-      where: { id: token.id },
-      data: {
-        symbol: market.symbol ?? token.symbol,
-        name: market.name ?? token.name,
-        priceUsd: market.priceUsd,
-        marketCapUsd: market.marketCapUsd,
-        fdvUsd: market.fdvUsd,
-        liquidityUsd: market.liquidityUsd,
-        volume24hUsd: market.volume24hUsd,
-        marketSource: market.source,
-        marketUpdatedAt: market.fetchedAt,
+  const [token, market, firstBuy, open, config, openPositionCount] = await Promise.all([
+    prisma.token.upsert({
+      where: { chain_address: { chain, address: tokenAddress } },
+      create: {
+        chain,
+        address: tokenAddress,
+        symbol: decoded.tokenOut?.symbol ?? null,
+        decimals: decoded.tokenOut?.decimals ?? null,
       },
-    });
+      update: { decimals: decoded.tokenOut?.decimals ?? undefined },
+    }),
+    getMarketSnapshot(chain, tokenAddress),
+    prisma.tokenFirstBuy.findUnique({
+      where: { chain_tokenAddress: { chain, tokenAddress } },
+    }),
+    prisma.position.findFirst({
+      where: {
+        chain,
+        tokenAddress,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
+      },
+    }),
+    getStrategyConfig(),
+    prisma.position.count({
+      where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
+    }),
+  ]);
+  if (!market.missing) {
+    void prisma.token
+      .update({
+        where: { id: token.id },
+        data: {
+          symbol: market.symbol ?? token.symbol,
+          name: market.name ?? token.name,
+          priceUsd: market.priceUsd,
+          marketCapUsd: market.marketCapUsd,
+          fdvUsd: market.fdvUsd,
+          liquidityUsd: market.liquidityUsd,
+          volume24hUsd: market.volume24hUsd,
+          marketSource: market.source,
+          marketUpdatedAt: market.fetchedAt,
+        },
+      })
+      .catch(() => undefined);
   }
 
-  const firstBuy = await prisma.tokenFirstBuy.findUnique({
-    where: { chain_tokenAddress: { chain, tokenAddress } },
-  });
-  const open = await prisma.position.findFirst({
-    where: {
-      chain,
-      tokenAddress,
-      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
-    },
-  });
-  const config = await getStrategyConfig();
   const qualification = qualifySignal({
     decoded,
     market,
@@ -255,9 +267,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
       tradingBalanceQuote: 0,
       quotePriceUsd: 0,
       deployedUsd: 0,
-      openPositionCount: await prisma.position.count({
-        where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
-      }),
+      openPositionCount,
       existingPositionForToken: open !== null,
       readAtBlock: null,
       readAt: new Date(),

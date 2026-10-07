@@ -64,7 +64,8 @@ export async function confirmEvmTransaction(
 }> {
   const config = chainConfig(chain);
   const deadline = Date.now() + timeoutMs;
-  let interval = Math.max(300, Math.min(2_000, config.blockTimeMs));
+  // Fast receipt polls — Base/Arb often land under 1s; do not wait a full blockTime first.
+  let interval = Math.max(100, Math.min(400, Math.floor(config.blockTimeMs / 4) || 150));
 
   while (Date.now() < deadline) {
     const result = await evmPool(chain)
@@ -98,7 +99,7 @@ export async function confirmEvmTransaction(
     }
 
     await sleep(interval);
-    interval = Math.min(3_000, Math.round(interval * 1.2));
+    interval = Math.min(1_000, Math.round(interval * 1.2));
   }
 
   return {
@@ -250,7 +251,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       lastError = error;
       record(attempt, 'quote', 'error', describe(error));
       if (attempt === request.maxAttempts) return failure('QUOTE_FAILED', describe(error));
-      await sleep(250 * attempt);
+      await sleep(40 * attempt);
       continue;
     }
 

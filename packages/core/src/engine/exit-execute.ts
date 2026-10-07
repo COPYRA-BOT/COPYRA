@@ -38,26 +38,31 @@ export async function monitorOpenPositions(): Promise<void> {
     where: { status: { in: [...LIVE] } },
     include: { token: true },
   });
-  for (const position of positions) {
-    try {
-      await markAndMaybeExit(position);
-    } catch (error) {
-      await reportError(error, {
-        component: 'exit-monitor',
-        code: 'POSITION_TICK_FAILED',
-        chain: position.chain,
-        notify: true,
-        context: { positionId: position.id },
-      });
-    }
-  }
+  if (positions.length === 0) return;
+  // Shared settings for the tick — avoid N sequential DB reads before marks.
+  const [config, settings] = await Promise.all([getStrategyConfig(), getSettings()]);
+  await Promise.all(
+    positions.map(async (position) => {
+      try {
+        await markAndMaybeExit(position, config, settings);
+      } catch (error) {
+        await reportError(error, {
+          component: 'exit-monitor',
+          code: 'POSITION_TICK_FAILED',
+          chain: position.chain,
+          notify: true,
+          context: { positionId: position.id },
+        });
+      }
+    }),
+  );
 }
 
 async function markAndMaybeExit(
   position: Position & { token: { symbol: string | null; decimals: number | null } },
+  config: Awaited<ReturnType<typeof getStrategyConfig>>,
+  settings: Awaited<ReturnType<typeof getSettings>>,
 ): Promise<void> {
-  const config = await getStrategyConfig();
-  const settings = await getSettings();
   const market = await getMarketSnapshot(position.chain, position.tokenAddress);
   if (market.missing || market.priceUsd <= 0) {
     log.warn({ positionId: position.id }, 'No live mark; holding rather than exiting on a missing price');

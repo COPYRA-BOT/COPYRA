@@ -120,7 +120,8 @@ export async function confirmSolanaTransaction(
   timeoutMs: number,
 ): Promise<ConfirmationResult> {
   const deadline = Date.now() + timeoutMs;
-  let pollIntervalMs = 400;
+  // Aggressive first polls — target confirm verdict well under 1s on Helius/Alchemy.
+  let pollIntervalMs = 120;
 
   while (Date.now() < deadline) {
     const statusResult = await solanaPool()
@@ -176,7 +177,7 @@ export async function confirmSolanaTransaction(
     }
 
     await sleep(pollIntervalMs);
-    pollIntervalMs = Math.min(1_500, Math.round(pollIntervalMs * 1.3));
+    pollIntervalMs = Math.min(800, Math.round(pollIntervalMs * 1.25));
   }
 
   // Timed out with no verdict. Deliberately UNKNOWN, not FAILED: the
@@ -316,7 +317,7 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       if (attempt === request.maxAttempts) {
         return failure(TxStatus.FAILED, 'QUOTE_FAILED', describe(error));
       }
-      await sleep(200 * attempt);
+      await sleep(40 * attempt);
       continue;
     }
 

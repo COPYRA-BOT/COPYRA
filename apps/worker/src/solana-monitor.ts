@@ -52,6 +52,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
         log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
         continue;
       }
+      // 'processed' fires as soon as a leader sees the tx — shaves hundreds of ms vs confirmed.
       const id = connection.onLogs(
         pubkey,
         (logs, ctx) => {
@@ -59,7 +60,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
             log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
           });
         },
-        'confirmed',
+        'processed',
       );
       subscriptions.set(trader.id, id);
       log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
@@ -99,7 +100,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   const fetched = await solanaPool().call('getParsedTransaction', (client) =>
     client.getParsedTransaction(signature, {
       maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-      commitment: 'confirmed',
+      commitment: 'confirmed', // parse at confirmed for stable balances; detect already used processed logs
     }),
   );
   const tx = fetched.value;
@@ -167,49 +168,55 @@ async function handleSignature(traderId: string, signature: string, slot: number
     return;
   }
 
-  const token = await prisma.token.upsert({
-    where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
-    create: {
-      chain: Chain.SOLANA,
-      address: tokenAddress,
-      symbol: decoded.tokenOut?.symbol ?? null,
-      decimals: decoded.tokenOut?.decimals ?? null,
-    },
-    update: {
-      decimals: decoded.tokenOut?.decimals ?? undefined,
-    },
-  });
-
-  const market = await getMarketSnapshot(Chain.SOLANA, tokenAddress);
-  if (!market.missing) {
-    await prisma.token.update({
-      where: { id: token.id },
-      data: {
-        symbol: market.symbol ?? token.symbol,
-        name: market.name ?? token.name,
-        priceUsd: market.priceUsd,
-        marketCapUsd: market.marketCapUsd,
-        fdvUsd: market.fdvUsd,
-        liquidityUsd: market.liquidityUsd,
-        volume24hUsd: market.volume24hUsd,
-        marketSource: market.source,
-        marketUpdatedAt: market.fetchedAt,
+  // Parallelize market + DB lookups — sequential awaits were eating the 1s budget.
+  const [token, market, firstBuy, open, config, openPositionCount] = await Promise.all([
+    prisma.token.upsert({
+      where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
+      create: {
+        chain: Chain.SOLANA,
+        address: tokenAddress,
+        symbol: decoded.tokenOut?.symbol ?? null,
+        decimals: decoded.tokenOut?.decimals ?? null,
       },
-    });
+      update: {
+        decimals: decoded.tokenOut?.decimals ?? undefined,
+      },
+    }),
+    getMarketSnapshot(Chain.SOLANA, tokenAddress),
+    prisma.tokenFirstBuy.findUnique({
+      where: { chain_tokenAddress: { chain: Chain.SOLANA, tokenAddress } },
+    }),
+    prisma.position.findFirst({
+      where: {
+        chain: Chain.SOLANA,
+        tokenAddress,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
+      },
+    }),
+    getStrategyConfig(),
+    prisma.position.count({
+      where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
+    }),
+  ]);
+  if (!market.missing) {
+    void prisma.token
+      .update({
+        where: { id: token.id },
+        data: {
+          symbol: market.symbol ?? token.symbol,
+          name: market.name ?? token.name,
+          priceUsd: market.priceUsd,
+          marketCapUsd: market.marketCapUsd,
+          fdvUsd: market.fdvUsd,
+          liquidityUsd: market.liquidityUsd,
+          volume24hUsd: market.volume24hUsd,
+          marketSource: market.source,
+          marketUpdatedAt: market.fetchedAt,
+        },
+      })
+      .catch(() => undefined);
   }
 
-  const firstBuy = await prisma.tokenFirstBuy.findUnique({
-    where: { chain_tokenAddress: { chain: Chain.SOLANA, tokenAddress } },
-  });
-  const open = await prisma.position.findFirst({
-    where: {
-      chain: Chain.SOLANA,
-      tokenAddress,
-      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
-    },
-  });
-
-  const config = await getStrategyConfig();
   const qualification = qualifySignal({
     decoded,
     market,
@@ -218,9 +225,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
       tradingBalanceQuote: 0,
       quotePriceUsd: 0,
       deployedUsd: 0,
-      openPositionCount: await prisma.position.count({
-        where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
-      }),
+      openPositionCount,
       existingPositionForToken: open !== null,
       readAtBlock: null,
       readAt: new Date(),

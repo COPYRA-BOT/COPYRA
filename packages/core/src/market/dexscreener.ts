@@ -44,10 +44,20 @@ export interface TokenMarketData extends MarketSnapshot {
   pairCreatedAt: Date | null;
 }
 
+/** Short TTL cache so exit ticks and dual Solana lookups do not re-hit Dexscreener every 750ms. */
+const MARKET_CACHE_TTL_MS = 1_500;
+const marketCache = new Map<string, { at: number; value: TokenMarketData }>();
+
 export async function getDexscreenerMarket(
   chain: Chain,
   tokenAddress: string,
 ): Promise<TokenMarketData> {
+  const cacheKey = `${chain}:${tokenAddress.toLowerCase()}`;
+  const cached = marketCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < MARKET_CACHE_TTL_MS) {
+    return cached.value;
+  }
+
   const slug = chainConfig(chain).dexscreenerSlug;
   const fetchedAt = new Date();
 
@@ -80,9 +90,9 @@ export async function getDexscreenerMarket(
       () =>
         fetchJson<{ pairs: DexscreenerPair[] | null }>(
           `${BASE_URL}/latest/dex/tokens/${tokenAddress}`,
-          { timeoutMs: 5_000, label: 'dexscreener/tokens' },
+          { timeoutMs: 2_000, label: 'dexscreener/tokens' },
         ),
-      { attempts: 2, baseDelayMs: 200 },
+      { attempts: 2, baseDelayMs: 50 },
     );
     pairs = data.pairs ?? [];
   } catch (error) {
@@ -91,7 +101,10 @@ export async function getDexscreenerMarket(
   }
 
   const onChain = pairs.filter((p) => p.chainId === slug);
-  if (onChain.length === 0) return empty;
+  if (onChain.length === 0) {
+    marketCache.set(cacheKey, { at: Date.now(), value: empty });
+    return empty;
+  }
 
   // Deepest pool: the one a swap will route through.
   const best = onChain.reduce((a, b) =>
@@ -104,7 +117,7 @@ export async function getDexscreenerMarket(
   // may be split over several pools and the aggregator will route across them.
   const totalLiquidityUsd = onChain.reduce((sum, p) => sum + (p.liquidity?.usd ?? 0), 0);
 
-  return {
+  const snapshot: TokenMarketData = {
     priceUsd: Number.isFinite(priceUsd) ? priceUsd : 0,
     // Prefer circulating market cap; fall back to FDV, which is what most
     // low-cap launches report, and record which one was used.
@@ -121,6 +134,8 @@ export async function getDexscreenerMarket(
     pairAddress: best.pairAddress,
     pairCreatedAt: best.pairCreatedAt ? new Date(best.pairCreatedAt) : null,
   };
+  marketCache.set(cacheKey, { at: Date.now(), value: snapshot });
+  return snapshot;
 }
 
 /** Batched variant for the position monitor, which marks many tokens per tick. */

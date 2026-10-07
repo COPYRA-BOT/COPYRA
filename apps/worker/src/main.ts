@@ -15,28 +15,44 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
 
 const stopSolana = await startSolanaMonitor();
 const stopEvm = await startEvmMonitor();
-await heartbeat('running', { monitor: 'solana-logs+evm-transfers+exits' });
-logger.info({}, 'COPYRA worker started — Solana logs, EVM polls, and exit marks are live');
+await heartbeat('running', { monitor: 'solana-logs+evm-transfers+exits-fast' });
+logger.info({}, 'COPYRA worker started — Solana logs, fast EVM polls, and sub-second TP/SL marks are live');
 
 telegram.send(
-  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again — Solana log subscriptions, Ethereum/Base/Arb/BNB USDC balance + transfer polls, and TP/SL marks are active. Closing the dashboard does not stop this process.',
+  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again — Solana log subscriptions, fast EVM transfer polls, and TP/SL marks (≤1s tick) are active. Closing the dashboard does not stop this process.',
   { kind: 'redeploy-finished' },
 );
 
-const timer = setInterval(() => {
-  void heartbeat('running', { monitor: 'solana+evm+exits', pid: process.pid }).catch((error: unknown) => {
-    logger.error({ err: error }, 'Heartbeat failed');
-  });
+/** TP/SL / trailing marks — keep well under 1s so exits can fire in milliseconds. */
+const EXIT_TICK_MS = 750;
+/** Heartbeat + pending-tx reconcile (not on the buy/exit critical path). */
+const MAINT_TICK_MS = 8_000;
+
+const exitTimer = setInterval(() => {
   void monitorOpenPositions().catch((error: unknown) => {
     logger.error({ err: error }, 'Exit monitor tick failed');
   });
+}, EXIT_TICK_MS);
+
+const maintTimer = setInterval(() => {
+  void heartbeat('running', { monitor: 'solana+evm+exits', pid: process.pid, exitTickMs: EXIT_TICK_MS }).catch(
+    (error: unknown) => {
+      logger.error({ err: error }, 'Heartbeat failed');
+    },
+  );
   void reconcilePendingTrades().catch((error: unknown) => {
     logger.error({ err: error }, 'Reconcile tick failed');
   });
-}, 8_000);
+}, MAINT_TICK_MS);
+
+// First exit pass immediately so open positions are not waiting a full interval after boot.
+void monitorOpenPositions().catch((error: unknown) => {
+  logger.error({ err: error }, 'Exit monitor initial tick failed');
+});
 
 const shutdown = async () => {
-  clearInterval(timer);
+  clearInterval(exitTimer);
+  clearInterval(maintTimer);
   stopSolana();
   stopEvm();
   await heartbeat('stopped', {});
