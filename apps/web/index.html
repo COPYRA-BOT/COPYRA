@@ -120,7 +120,7 @@ const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN
 /** Display units: K = thousands USD, M = millions USD. Saved to strategy row as absolute USD. */
 const unitMul=u=>u==='M'?1e6:1e3;
 const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'FIRST_ONLY',maxDep:80,maxTok:50,bl:''});
-const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
+const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
 /** Pagination for activity / trade-history lists (10 rows per page). */
@@ -154,7 +154,7 @@ window.setActPage=(e,p)=>{actPage[e]=Math.max(1,p|0);draw()};
 window.setUnifiedActPage=(p)=>{actPage.unified=Math.max(1,p|0);draw()};
 window.setHistPage=(p)=>{histPage=Math.max(1,p|0);draw()};
 const f=(e,u,d=UI[e].d)=>(u/UI[e].k).toFixed(d),usd=(e,u)=>'$'+(u/UI[e].k*UI[e].usd).toLocaleString(undefined,{maximumFractionDigits:2}),sg=(x,d=2)=>(x>=0?'+':'')+x.toFixed(d);
-const cashOf=e=>Object.values(S[e].cash).reduce((a,b)=>a+b,0),openP=e=>S[e].pos,invOf=e=>openP(e).reduce((a,p)=>a+p.inv*p.rem,0);
+const cashOf=e=>Object.values(S[e].cash).reduce((a,b)=>a+b,0),availOf=e=>Object.values(S[e].availByCh||S[e].cash).reduce((a,b)=>a+b,0),openP=e=>S[e].pos,invOf=e=>openP(e).reduce((a,p)=>a+p.inv*p.rem,0);
 const log=(e,h)=>{S[e].act.unshift({t:new Date().toLocaleTimeString(),h,e});S[e].act.length=Math.min(S[e].act.length,80)};
 const toast=m=>{const t=$('#ts');t.textContent=m;t.style.display='block';clearTimeout(toast.i);toast.i=setTimeout(()=>t.style.display='none',2600)};
 async function api(method,path,body,opts){
@@ -176,6 +176,7 @@ const chOf=c=>({SOLANA:'solana',BASE:'base',ARBITRUM:'arb',BSC:'bnb',ETHEREUM:'e
 function botFrom(status,settings){if(settings?.row?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';if(status?.trading?.blockedReason)return'PAUSED';if(settings?.row?.tradingEnabled&&status?.trading?.envGuard)return'ON';return'PAUSED'}
 function hydrate(snap){
  LIVE=snap;ERR=null;
+ // Keep last-good SOL/USD so the dashboard never flashes "price unread".
  if(snap.solUsd>0)UI.sol.usd=snap.solUsd;
  // Keep mode wallets aligned with independent sessions (never mix SOL/EVM accounts).
  if(snap.auth?.sol?.address)wallet.sol=snap.auth.sol.address;
@@ -220,10 +221,15 @@ function hydrate(snap){
   for(const w of wallets){
    if(w.error)continue;
    const ch=chOf(w.chain);
-   if(typeof w.native==='number'){
+   // Prefer true on-chain amount for the headline balance.
+   const onChain=typeof w.onChainNative==='number'?w.onChainNative:typeof w.native==='number'?w.native:null;
+   const available=typeof w.available==='number'?w.available:onChain;
+   if(typeof onChain==='number'){
     sawRpc=true;
     if(next.cash[ch]==null)next.cash[ch]=0;
-    next.cash[ch]=Math.round(w.native*UI[e].k);
+    next.cash[ch]=Math.round(onChain*UI[e].k);
+    if(next.availByCh[ch]==null)next.availByCh[ch]=0;
+    next.availByCh[ch]=Math.round((typeof available==='number'?available:onChain)*UI[e].k);
    }
    if(typeof w.savings==='number'){
     sawRpc=true;
@@ -235,7 +241,7 @@ function hydrate(snap){
    if(typeof w.withdrawable==='number'){
     if(next.wdByCh[ch]==null)next.wdByCh[ch]=0;
     next.wdByCh[ch]=Math.round(w.withdrawable*UI[e].k);
-   }else if(typeof w.native==='number'){
+   }else if(typeof onChain==='number'){
     next.wdByCh[ch]=next.cash[ch];
    }
    if(typeof w.gasReserve==='number'){
@@ -247,6 +253,7 @@ function hydrate(snap){
   // Preserve last-good balances on transient RPC errors — never flash 0 while connected.
   if(!sawRpc&&wallet[e]&&prev){
    next.cash={...prev.cash};
+   next.availByCh={...(prev.availByCh||prev.cash)};
    next.savByCh={...(prev.savByCh||{})};
    next.wdByCh={...(prev.wdByCh||{})};
    next.gasResByCh={...(prev.gasResByCh||{})};
@@ -256,6 +263,7 @@ function hydrate(snap){
    for(const ch of Object.keys(next.cash)){
     const w=wallets.find(x=>chOf(x.chain)===ch);
     if(w&&w.error&&prev.cash[ch]>0)next.cash[ch]=prev.cash[ch];
+    if(w&&w.error&&prev.availByCh?.[ch]>0)next.availByCh[ch]=prev.availByCh[ch];
     if(w&&w.error&&prev.savByCh?.[ch]>0)next.savByCh[ch]=prev.savByCh[ch];
     if(w&&w.error&&prev.wdByCh?.[ch]>0)next.wdByCh[ch]=prev.wdByCh[ch];
    }
@@ -399,12 +407,12 @@ function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><
 <p><b>3. Size and execute on-chain.</b> Position size uses your live custody balance and tier caps. Swaps go through Jupiter (SOL) or Kyber (EVM). A position opens only after the fill confirms on-chain — never from a simulation.</p>
 <p><b>4. Exit by your strategy.</b> Manual TP/SL or trailing take-profit runs from live marks. Monitor, Leaderboard, and PnL History show your account’s real positions, closed trades, and RPC balances — not shared with other wallets.</p>
 </div></details>`}
-function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),inv=invOf(e),nx=Math.max(0,cash*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
+function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=invOf(e),nx=Math.max(0,avail*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
  return `${liveBanner(e)}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${f(e,cash+inv)} ${X.u}</div><div class="mu">≈ ${X.usd?usd(e,cash+inv):'price unread'}</div>
-<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>Available</small><b>${f(e,cash)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${f(e,inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${f(e,nx)} ${X.u}</b>${X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of available. Balance is <b>your custody wallet</b> on RPC${s.wa?' · '+s.wa.slice(0,4)+'…'+s.wa.slice(-4):wallet[e]?' · sign in to load custody':' · connect wallet'}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${f(e,cash+inv)} ${X.u}</div><div class="mu">≈ ${X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')}</div>
+<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${f(e,cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${f(e,avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${f(e,inv)}</b></div></div>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${f(e,nx)} ${X.u}</b>${X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. Balance is <b>your custody wallet</b> on live RPC${s.wa?' · '+s.wa.slice(0,4)+'…'+s.wa.slice(-4):wallet[e]?' · sign in to load custody':' · connect wallet'}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${f(e,s.sav)} ${X.u}</div><div class="mu">Reserved on the bot wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>

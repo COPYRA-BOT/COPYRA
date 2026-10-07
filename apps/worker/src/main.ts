@@ -23,8 +23,8 @@ telegram.send(
   { kind: 'redeploy-finished' },
 );
 
-/** TP/SL / trailing marks — keep well under 1s so exits can fire in milliseconds. */
-const EXIT_TICK_MS = 750;
+/** TP/SL / trailing marks — sub-second so exits stay inside the 2s budget. */
+const EXIT_TICK_MS = 400;
 /** Heartbeat + pending-tx reconcile (not on the buy/exit critical path). */
 const MAINT_TICK_MS = 8_000;
 

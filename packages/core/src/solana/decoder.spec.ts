@@ -105,7 +105,7 @@ describe('decodeSolanaTransaction', () => {
     expect(decoded.venue).toBe('Jupiter v6');
     expect(decoded.tokenIn?.address).toBe(WRAPPED_SOL_MINT_STR);
     expect(decoded.tokenOut?.address).toBe(TOKEN);
-    expect(decoded.classificationBasis).toMatch(/quote asset/);
+    expect(decoded.classificationBasis).toMatch(/quote units|quote asset/i);
   });
 
   it('classifies a token spend + quote-asset receive as SELL', () => {
@@ -169,5 +169,32 @@ describe('decodeSolanaTransaction', () => {
       traderAddress: TRADER,
     });
     expect(decoded.classification).toBe(TxClassification.STAKE);
+  });
+
+  it('classifies multi-leg Pump-style buys (quote spend + token + leftover WSOL) as BUY', () => {
+    const pumpAmm = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
+    const decoded = decodeSolanaTransaction({
+      tx: tx({
+        programs: [pumpAmm],
+        // Spent SOL + received meme token + dust WSOL leftover (3 legs).
+        preToken: [
+          tokenBalance(TRADER, TOKEN, '0', 6, 1),
+          tokenBalance(TRADER, WRAPPED_SOL_MINT_STR, '0', 9, 2),
+        ],
+        postToken: [
+          tokenBalance(TRADER, TOKEN, '999000000', 6, 1),
+          tokenBalance(TRADER, WRAPPED_SOL_MINT_STR, '15000', 9, 2),
+        ],
+        preSol: 2_000_000_000,
+        postSol: 1_499_995_000,
+        fee: 5_000,
+      }),
+      signature: 'PumpMultiLeg',
+      traderAddress: TRADER,
+    });
+    expect(decoded.classification).toBe(TxClassification.BUY);
+    expect(decoded.tokenOut?.address).toBe(TOKEN);
+    expect(decoded.tokenIn?.address).toBe(WRAPPED_SOL_MINT_STR);
+    expect(decoded.venue).toBe('Pump.fun AMM');
   });
 });

@@ -44,8 +44,8 @@ export interface TokenMarketData extends MarketSnapshot {
   pairCreatedAt: Date | null;
 }
 
-/** Short TTL cache so exit ticks and dual Solana lookups do not re-hit Dexscreener every 750ms. */
-const MARKET_CACHE_TTL_MS = 1_500;
+/** Short TTL cache so exit ticks and dual Solana lookups do not re-hit Dexscreener every tick. */
+const MARKET_CACHE_TTL_MS = 2_000;
 const marketCache = new Map<string, { at: number; value: TokenMarketData }>();
 
 export async function getDexscreenerMarket(

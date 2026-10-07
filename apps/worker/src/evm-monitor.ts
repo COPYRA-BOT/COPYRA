@@ -23,8 +23,8 @@ const log = componentLogger('evm-monitor');
 
 /** All executable EVM venues COPYRA can copy-trade on. */
 const POLL_CHAINS: Chain[] = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
-/** Sub-second poll so detect→qualify stays inside the 1s budget with WS-class RPCs. */
-const EVM_POLL_MS = 750;
+/** Fast poll so detect→qualify stays inside the 2s budget with WS-class RPCs. */
+const EVM_POLL_MS = 500;
 
 interface AssetTransfer {
   hash: string;
@@ -211,24 +211,34 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     data: { lastActivityAt: new Date(), lastSignature: hash },
   });
 
-  telegram.send(
-    renderDetection({
-      chain,
-      traderLabel: trader.label,
-      traderAddress: trader.address,
-      classification: decoded.classification,
-      tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
-      tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
-      sourceTxHash: hash,
-      detectLatencyMs: null,
-    }),
-    { kind: 'detection', userId: trader.userId },
-  );
+  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null;
+  const silent =
+    decoded.classification === TxClassification.UNKNOWN ||
+    decoded.classification === TxClassification.TRANSFER_IN ||
+    decoded.classification === TxClassification.TRANSFER_OUT ||
+    decoded.classification === TxClassification.APPROVAL ||
+    !tokenAddress;
+  if (!silent) {
+    telegram.send(
+      renderDetection({
+        chain,
+        traderLabel: trader.label,
+        traderAddress: trader.address,
+        classification: decoded.classification,
+        tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
+        tokenAddress,
+        sourceTxHash: hash,
+        detectLatencyMs: null,
+      }),
+      { kind: 'detection', userId: trader.userId },
+    );
+  }
 
-  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
-  if (!tokenAddress) {
-    await prisma.processedSignature.create({
-      data: { chain, signature: hash, traderId, outcome: decoded.classification },
+  if (!tokenAddress || decoded.classification !== TxClassification.BUY) {
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+      create: { chain, signature: hash, traderId, outcome: decoded.classification },
+      update: { outcome: decoded.classification, processedAt: new Date() },
     });
     return;
   }

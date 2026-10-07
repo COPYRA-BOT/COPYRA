@@ -22,13 +22,22 @@ import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
 
 const log = componentLogger('solana-monitor');
 
-/** How long we wait for a processed-commitment log to become fetchable at confirmed. */
-const TX_FETCH_ATTEMPTS = 8;
-const TX_FETCH_BASE_DELAY_MS = 120;
+/** How long we wait for a processed-commitment log to become fetchable. */
+const TX_FETCH_ATTEMPTS = 5;
+const TX_FETCH_BASE_DELAY_MS = 60;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
-const CATCHUP_LIMIT = 40;
+const CATCHUP_LIMIT = 20;
+/** Ignore catch-up signatures older than this (avoids 15–20s “Detected in” spam). */
+const CATCHUP_MAX_AGE_MS = 45_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
+/** Classifications that are noise for Telegram (no copy path). */
+const SILENT_CLASSIFICATIONS = new Set<string>([
+  TxClassification.UNKNOWN,
+  TxClassification.TRANSFER_IN,
+  TxClassification.TRANSFER_OUT,
+  TxClassification.APPROVAL,
+]);
 
 /**
  * Real-time Solana trader monitor.
@@ -128,8 +137,11 @@ async function catchUpTrader(traderId: string, address: string): Promise<void> {
   const entries = fetched.value ?? [];
   if (entries.length === 0) return;
 
+  const now = Date.now();
   for (const entry of entries) {
     if (entry.err) continue;
+    // Skip stale history — live onLogs already covers the hot path.
+    if (entry.blockTime && now - entry.blockTime * 1000 > CATCHUP_MAX_AGE_MS) continue;
     const signature = entry.signature;
     const existing = await prisma.processedSignature.findUnique({
       where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
@@ -147,7 +159,7 @@ async function catchUpTrader(traderId: string, address: string): Promise<void> {
   }
 }
 
-/** Retry getParsedTransaction until the processed log is available at confirmed. */
+/** Fetch tx ASAP at confirmed with tight retries — keeps detect→decode under ~2s. */
 async function fetchParsedTransaction(
   signature: string,
 ): Promise<ParsedTransactionWithMeta | null> {
@@ -254,7 +266,13 @@ async function handleSignature(traderId: string, signature: string, slot: number
     data: { lastActivityAt: new Date(), lastSignature: signature },
   });
 
-  if (!priorDetection) {
+  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null;
+  // Skip Telegram spam for fee-only / unknown / transfer noise with no tradeable leg.
+  const notifyDetection =
+    !priorDetection &&
+    !SILENT_CLASSIFICATIONS.has(decoded.classification) &&
+    Boolean(tokenAddress);
+  if (notifyDetection) {
     telegram.send(
       renderDetection({
         chain: Chain.SOLANA,
@@ -262,7 +280,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
         traderAddress: trader.address,
         classification: decoded.classification,
         tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
-        tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
+        tokenAddress,
         sourceTxHash: signature,
         detectLatencyMs: decoded.blockTime ? Date.now() - decoded.blockTime.getTime() : null,
       }),
@@ -270,10 +288,11 @@ async function handleSignature(traderId: string, signature: string, slot: number
     );
   }
 
-  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
-  if (!tokenAddress) {
-    await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, traderId, outcome: decoded.classification },
+  if (!tokenAddress || decoded.classification !== TxClassification.BUY) {
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+      create: { chain: Chain.SOLANA, signature, traderId, outcome: decoded.classification },
+      update: { outcome: decoded.classification, processedAt: new Date() },
     });
     return;
   }
