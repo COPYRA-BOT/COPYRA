@@ -2,7 +2,7 @@
   "name": "copyra",
   "version": "1.0.0",
   "private": true,
-  "description": "COPYRA — real on-chain copy-trading for Solana and EVM",
+  "description": "COPYRA: real on chain copy trading for Solana and EVM",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.11"
