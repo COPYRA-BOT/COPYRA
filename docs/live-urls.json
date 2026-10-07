@@ -1,7 +1,7 @@
 {
   "production": "https://copyra.fun",
-  "platform": "https://copyra.fun",
+  "platform": "https://copyra-nl7kz.ondigitalocean.app",
   "healthPath": "/health",
   "statusPath": "/api/status",
-  "notes": "Set platform to your DigitalOcean *.ondigitalocean.app URL (Networking tab) and mirror it in PUBLIC_PLATFORM_URL + CORS_ORIGINS. Both URLs serve the same deploy when DNS is correct."
+  "notes": "App Platform ingress is always https://copyra-nl7kz.ondigitalocean.app. Use that URL if https://copyra.fun returns Cloudflare 526. copyra.fun must be Cloudflare-proxied to the platform host with an Origin Rule that rewrites Host → copyra-nl7kz.ondigitalocean.app; do not also register copyra.fun as a domain inside App Platform."
 }

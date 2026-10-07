@@ -76,6 +76,8 @@ function isAllowedOrigin(origin: string): boolean {
   if (allowed.includes(normalized)) return true;
   try {
     const host = new URL(normalized).host.toLowerCase();
+    // Any DigitalOcean App Platform ingress host is the same deploy.
+    if (host.endsWith('.ondigitalocean.app')) return true;
     return allowed.some((a) => {
       try {
         return new URL(a).host.toLowerCase() === host;

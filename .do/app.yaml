@@ -7,11 +7,13 @@ features:
   - buildpack-stack=ubuntu-22
 alerts:
   - rule: DEPLOYMENT_FAILED
-  - rule: DOMAIN_FAILED
 
-domains:
-  - domain: copyra.fun
-    type: PRIMARY
+# IMPORTANT: do NOT register copyra.fun here while Cloudflare proxies the domain.
+# App Platform already terminates TLS on *.ondigitalocean.app (built-in Cloudflare).
+# Putting the custom domain on BOTH Cloudflare (nameservers) and App Platform
+# breaks origin cert validation → HTTPS 526 and app status "Degraded".
+# Keep copyra.fun only in Cloudflare; origin = this app’s *.ondigitalocean.app host
+# with a Cloudflare Origin Rule that rewrites the Host header (see docs/DEPLOY.md).
 
 ingress:
   rules:
@@ -65,10 +67,10 @@ services:
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
         value: "https://copyra.fun"
-      # Set PUBLIC_PLATFORM_URL to your DO starter URL (Overview → Live App
-      # when using *.ondigitalocean.app). Add the same host to CORS_ORIGINS.
+      - key: PUBLIC_PLATFORM_URL
+        value: "https://copyra-nl7kz.ondigitalocean.app"
       - key: CORS_ORIGINS
-        value: "https://copyra.fun"
+        value: "https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app"
       - key: TRADING_ENABLED
         value: "true"
       - key: SOL_TRADING_ENABLED

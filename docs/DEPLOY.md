@@ -1,14 +1,42 @@
 # COPYRA deployment
 
-Live site: **https://copyra.fun**
+Live site: **https://copyra.fun**  
+Always-on platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
+
+## Fix HTTPS 526 / App “Degraded” (Cloudflare + App Platform)
+
+If DigitalOcean shows **Degraded** and `https://copyra.fun` returns **Cloudflare 526**, while
+`https://copyra-nl7kz.ondigitalocean.app/health` returns `{"ok":true,...}`, the **app is up** —
+the custom domain TLS path is wrong.
+
+**Cause:** `copyra.fun` is on Cloudflare nameservers (external CDN) **and** was also registered as
+an App Platform custom domain. DO docs forbid that combo: App Platform tries to mint a cert for
+`copyra.fun`, validation fails behind Cloudflare, origin TLS breaks → **526**, app status **Degraded**.
+
+**Do this once in Cloudflare (required — cannot be done from git):**
+
+1. **DNS** → `@` (and `www` if used) **CNAME** → `copyra-nl7kz.ondigitalocean.app` → **Proxied** (orange cloud).
+2. **SSL/TLS** → Overview → encryption mode **Full** (or **Full (strict)**).
+3. **Rules → Origin Rules → Create rule**
+   - Name: `DO App Platform Host`
+   - When: Hostname equals `copyra.fun` (add `www.copyra.fun` if needed)
+   - Then: **Host header → Rewrite to** `copyra-nl7kz.ondigitalocean.app`
+   - Deploy
+4. In **DigitalOcean → copyra → Networking → Domains**: delete `copyra.fun` if it is still listed
+   (the app spec no longer declares it). Status should return to **Healthy**.
+5. Purge Cloudflare cache; open `https://copyra.fun/health`.
+
+Until step 3 is done, use **https://copyra-nl7kz.ondigitalocean.app** — it is the live app.
+
+---
 
 The Dockerfile is split into **independent BuildKit stages** so a backend-only change does not rebundle the Reown/Vite wallet app. First cold build is still longer; later pushes should reuse the cached `deps` + `build-web` (or `build-backend`) layers.
 
 **Before you push:** run `npm run deploy:verify` (lint, types, tests, production build). GitHub Actions runs the same check on `main`.
 
-**After deploy:** open the URLs in `docs/live-urls.json` — production **https://copyra.fun** and your `*.ondigitalocean.app` platform URL (same build).
+**After deploy:** open the URLs in `docs/live-urls.json` — production **https://copyra.fun** and the platform URL above (same build).
 
 ## Processes (one Docker build)
 
@@ -35,7 +63,8 @@ The production Dockerfile expects the **repository root** as the build context.
 | Autodeploy | **On** |
 | Source Directory | **leave blank** (repo root) |
 | Dockerfile path | `Dockerfile` |
-| Primary domain | **`copyra.fun`** |
+| Custom domain | Managed in **Cloudflare only** (not in App Platform Domains) |
+| Platform ingress | **`copyra-nl7kz.ondigitalocean.app`** |
 
 ### Components
 
@@ -117,17 +146,14 @@ After editing env: **Force Rebuild and Deploy**. Then confirm:
 
 ### Cloudflare HTTPS `526`
 
-`http://copyra.fun` may work while `https://copyra.fun` returns **526**. In Cloudflare SSL/TLS set mode to **Full** (or Full strict once DO has a valid cert), and ensure the origin is the App Platform ingress — not a dead IP.
+See the top section **Fix HTTPS 526 / App “Degraded”**. Short version: do **not** add `copyra.fun` in App Platform Domains; proxy it in Cloudflare to `copyra-nl7kz.ondigitalocean.app` with an Origin Rule that rewrites the **Host** header to that ingress. SSL mode **Full**.
 
-### Cloudflare + DNS
-
-`copyra.fun` often resolves through Cloudflare. In Cloudflare DNS, the `@` record must point at the DigitalOcean App Platform target from **Networking → Domains** (CNAME or A as DO shows). If Cloudflare returns an empty `404` while the app is Healthy in DO, the origin/DNS target is wrong — fix DNS, then purge cache.
-
-After DNS is correct you should see:
+After that you should see:
 
 - `GET https://copyra.fun/` → dashboard HTML
 - `GET https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`
 - `GET https://copyra.fun/api/status` → live status JSON
+- `GET https://copyra-nl7kz.ondigitalocean.app/health` → same JSON (always)
 
 ### Prove the image locally
 
