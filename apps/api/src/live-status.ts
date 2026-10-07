@@ -17,7 +17,7 @@ import { authModeFromRequest, readBothSessions } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
 const CHAIN_RPC_TIMEOUT_MS = 1_800;
-const STATUS_CACHE_MS = 6_000;
+const STATUS_CACHE_MS = 15_000;
 const TELEGRAM_CACHE_MS = 60_000;
 
 type ChainHead = {

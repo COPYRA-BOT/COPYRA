@@ -185,9 +185,14 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
     return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
   }
 
+  // Per-mode kill switch / pause (dashboard ui.sol / ui.evm) — independent of the other mode.
+  const modeKey = input.chain === Chain.SOLANA ? 'sol' : 'evm';
+  const modeUi = (settings.ui as Record<string, { engine?: string } | undefined> | null)?.[modeKey];
+  const modeStopped = modeUi?.engine === 'STOPPED' || modeUi?.engine === 'PAUSED';
+
   const gate = executionGate({
     signerAvailable: signer.available,
-    tradingEnabled: config.tradingEnabled,
+    tradingEnabled: config.tradingEnabled && !modeStopped,
     emergencyStop: settings.emergencyStop,
     emergencyStopReason: settings.emergencyStopReason,
   });

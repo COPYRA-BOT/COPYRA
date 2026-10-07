@@ -173,6 +173,99 @@ async function markAndMaybeExit(
   });
 }
 
+/**
+ * Kill switch for one mode: market-sell 100% of that account’s open positions
+ * on Solana (sol) or all EVM execution chains (evm). Proceeds return to custody.
+ */
+export async function killSwitchSellAll(input: {
+  userId: string;
+  mode: 'sol' | 'evm';
+}): Promise<{
+  mode: 'sol' | 'evm';
+  attempted: number;
+  sold: number;
+  failed: number;
+  results: Array<{ positionId: string; chain: Chain; token: string; ok: boolean; error?: string }>;
+}> {
+  const chains =
+    input.mode === 'sol'
+      ? [Chain.SOLANA]
+      : [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+  const positions = await prisma.position.findMany({
+    where: {
+      userId: input.userId,
+      chain: { in: chains },
+      status: { in: [...LIVE] },
+    },
+  });
+  const settings = await getSettings();
+  const results: Array<{
+    positionId: string;
+    chain: Chain;
+    token: string;
+    ok: boolean;
+    error?: string;
+  }> = [];
+  let sold = 0;
+  let failed = 0;
+
+  for (const position of positions) {
+    const token = position.tokenSymbol ?? position.tokenAddress.slice(0, 8);
+    try {
+      await withLock(`exit:${position.id}`, 180_000, async () => {
+        const fresh = await prisma.position.findUnique({ where: { id: position.id } });
+        if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) {
+          return;
+        }
+        let mark = Number(fresh.lastPriceUsd ?? fresh.entryPriceUsd ?? 0);
+        if (!(mark > 0)) {
+          const market = await getMarketSnapshot(fresh.chain, fresh.tokenAddress);
+          mark = market.priceUsd > 0 ? market.priceUsd : Number(fresh.entryPriceUsd ?? 1) || 1;
+        }
+        await executeExit(
+          fresh,
+          1,
+          TradeReason.EMERGENCY_STOP,
+          `Kill switch (${input.mode}) — sell all open positions to custody`,
+          mark,
+          settings.pnlResetAt,
+        );
+      });
+      const after = await prisma.position.findUnique({
+        where: { id: position.id },
+        select: { status: true },
+      });
+      const ok = after?.status === PositionStatus.CLOSED;
+      if (ok) sold += 1;
+      else failed += 1;
+      results.push({
+        positionId: position.id,
+        chain: position.chain,
+        token,
+        ok,
+        error: ok ? undefined : 'sell not confirmed',
+      });
+    } catch (error) {
+      failed += 1;
+      results.push({
+        positionId: position.id,
+        chain: position.chain,
+        token,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    mode: input.mode,
+    attempted: positions.length,
+    sold,
+    failed,
+    results,
+  };
+}
+
 async function executeExit(
   position: Position,
   fraction: number,

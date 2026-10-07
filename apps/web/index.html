@@ -173,7 +173,15 @@ async function api(method,path,body,opts){
 }
 const modeOf=c=>c==='SOLANA'?'sol':'evm';
 const chOf=c=>({SOLANA:'solana',BASE:'base',ARBITRUM:'arb',BSC:'bnb',ETHEREUM:'ethereum'}[c]||String(c).toLowerCase());
-function botFrom(status,settings){if(settings?.row?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';if(status?.trading?.blockedReason)return'PAUSED';if(settings?.row?.tradingEnabled&&status?.trading?.envGuard)return'ON';return'PAUSED'}
+function botFrom(status,settings,e){
+  const modeUi=(settings?.row?.ui||{})[e]||{};
+  if(modeUi.engine==='STOPPED')return'STOPPED';
+  if(modeUi.engine==='PAUSED')return'PAUSED';
+  if(settings?.row?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';
+  if(status?.trading?.blockedReason)return'PAUSED';
+  if(settings?.row?.tradingEnabled&&status?.trading?.envGuard)return'ON';
+  return'PAUSED';
+}
 function hydrate(snap){
  LIVE=snap;ERR=null;
  // Keep last-good SOL/USD so the dashboard never flashes "price unread".
@@ -187,7 +195,7 @@ function hydrate(snap){
  for(const e of['sol','evm']){
   const prev=S[e];
   const next=empty(e);
-  next.bot=botFrom(status,st);
+  next.bot=botFrom(status,st,e);
   next.set={...dflt(e),...(ui[e]||{})};
   // Absolute USD from the strategy row is source of truth; each field has its own K/M unit.
   if(next.set.liqUnit!=='M')next.set.liqUnit='K';
@@ -219,12 +227,11 @@ function hydrate(snap){
   const signedIn=!!(wallet[e]||snap.auth?.[e]?.address);
   const wallets=custodyWallets.length?custodyWallets:(multiCust||signedIn?[]:allWallets);
   const scopedAddr=modeBal?.custodyAddress||wallets.find(w=>w.address)?.address||null;
-  // Live custody address only — never invent or keep a previous address without RPC.
   next.wa=scopedAddr||null;
   let savSum=0;
   let sawRpc=false;
-  let hadRpcError=false;
-  // Reset buckets every hydrate — amounts always match the latest custody RPC (or empty).
+  let hadHardError=false;
+  // Start from zeros; fill only from custody RPC (or server rpc-cache of a prior real read).
   next.cash=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
   next.availByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
   next.savByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
@@ -232,13 +239,16 @@ function hydrate(snap){
   next.gasResByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
   for(const w of wallets){
    const ch=chOf(w.chain);
-   if(w.error||w.needsAuth){hadRpcError=true;continue}
+   if(w.needsAuth){hadHardError=true;continue}
    const onChain=typeof w.onChainNative==='number'?w.onChainNative:typeof w.native==='number'?w.native:null;
    const available=typeof w.available==='number'?w.available:onChain;
+   // Accept live RPC and short server cache — both are real prior chain reads.
    if(typeof onChain==='number'){
     sawRpc=true;
     next.cash[ch]=Math.round(onChain*UI[e].k);
     next.availByCh[ch]=Math.round((typeof available==='number'?available:onChain)*UI[e].k);
+   }else if(w.error){
+    hadHardError=true;
    }
    if(typeof w.savings==='number'){
     sawRpc=true;
@@ -255,10 +265,22 @@ function hydrate(snap){
    }
   }
   next.sav=Math.round(savSum*UI[e].k);
-  next.balReady=sawRpc;
-  next.balError=hadRpcError&&!sawRpc;
+  // If this poll failed but we already showed a real custody read for the same address, keep it
+  // (never flash empty while the wallet still has funds). Fresh RPC zeros still show as zero.
+  if(!sawRpc&&signedIn&&prev?.balReady&&prev.wa&&scopedAddr&&prev.wa===scopedAddr){
+   next.cash={...prev.cash};
+   next.availByCh={...(prev.availByCh||prev.cash)};
+   next.savByCh={...(prev.savByCh||{})};
+   next.wdByCh={...(prev.wdByCh||{})};
+   next.gasResByCh={...(prev.gasResByCh||{})};
+   next.sav=prev.sav;
+   next.balReady=true;
+   next.balError=true;
+  }else{
+   next.balReady=sawRpc;
+   next.balError=hadHardError&&!sawRpc;
+  }
   next.needsAuth=multiCust&&!signedIn;
-  // Worker/bot signer balances (informational only — not Trading/Savings buckets).
   const worker=snap.balances?.worker;
   if(e==='sol'&&worker?.solana){
    const w=worker.solana;
@@ -271,8 +293,7 @@ function hydrate(snap){
     if(w.error)err=w.error;
    }
    next.worker={address:addr,onChain:sum,symbol:'USDC',error:err};
-  }else next.worker=null;
-  try{localStorage.removeItem('cpy_bal_'+e)}catch{}
+  }else next.worker=prev?.worker||null;
   const mine=traders.filter(t=>modeOf(t.chain)===e);
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
@@ -422,16 +443,17 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
  const showAmt=!!wallet[e]&&s.balReady;
  const loading=!!wallet[e]&&!s.balReady&&!s.balError;
- const amt=(u)=>{if(!wallet[e])return'—';if(loading)return'…';if(s.balError&&!s.balReady)return'—';return f(e,u)};
+ const amt=(u)=>{if(!wallet[e])return'—';if(loading)return'…';if(!s.balReady)return'—';return f(e,u)};
  const wrk=s.worker;
  const wrkNote=!wallet[e]
   ?`<div class="ban live" style="margin-bottom:12px">Connect + sign in — Trading/Savings are live RPC reads of <b>your custody wallet</b>.</div>`
-  :(s.balError?`<div class="ban live" style="margin-bottom:12px">Custody RPC read failed — buckets are not guessed. Tap refresh or wait for the next poll.</div>`
+  :(!s.balReady&&s.balError?`<div class="ban live" style="margin-bottom:12px">Custody RPC briefly unavailable — retrying. Buckets stay blank until a real read succeeds (never invent zeros).</div>`
+  :(s.balReady&&s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody RPC (refresh in progress).</div>`
   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
-   ?`<div class="ban live" style="margin-bottom:12px">Shared worker wallet has <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b> (<code>${(wrk.address||'').slice(0,6)}…${(wrk.address||'').slice(-4)}</code>), but Trading uses <b>your custody</b>. Use Deposit so funds land on ${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'custody'}.</div>`
-   :''));
+   ?`<div class="ban live" style="margin-bottom:12px">Shared worker wallet has <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Trading buckets use <b>your custody</b> — Deposit to ${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'custody'}.</div>`
+   :'')));
  return `${liveBanner(e)}${wrkNote}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):(loading?'reading custody RPC…':'sign in for live custody')}</div>
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):(loading?'reading custody RPC…':(wallet[e]?'waiting for custody RPC…':'sign in for live custody'))}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
 <p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'—'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect + sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
@@ -439,8 +461,8 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
 <div class="row"><button class="btn" onclick="mv('s2t')">Move to Trading</button><button class="btn" onclick="wd()">Withdraw</button></div></div></div>
 <div class="card"><div class="row sp"><h3>Copy Trading ${st}</h3><button class="sw ${s.bot=='ON'?'on':''}" aria-label="Bot on/off" onclick="bot('${e}',S['${e}'].bot=='ON'?'PAUSED':'ON')"></button></div>
-<p class="mu" style="max-width:80ch">${strat(e)}</p><div class="row"><button class="btn" onclick="bot('${e}','PAUSED')">Pause Bot</button><button class="btn" onclick="bot('${e}','ON')">Resume Bot</button><button class="btn red" onclick="stopAll('${e}')">STOP ALL TRADING</button><button class="btn" onclick="settings('${e}')">Settings</button></div>
-<p class="mu">Paused or stopped = no new buys. Open positions keep being monitored and sold by TP/SL.</p></div>
+<p class="mu" style="max-width:80ch">${strat(e)}</p><div class="row"><button class="btn" onclick="bot('${e}','PAUSED')">Pause Bot</button><button class="btn" onclick="bot('${e}','ON')">Resume Bot</button><button class="btn red" onclick="killSwitch('${e}')">Kill Switch</button><button class="btn" onclick="settings('${e}')">Settings</button></div>
+<p class="mu">Pause = no new buys (this mode). Kill Switch = stop this mode and sell all open positions back to custody.</p></div>
 <div class="card"><h3>Execution Metrics</h3>${L?`<div class="kp"><div class="k"><small>Detected</small><b>${L.det} ms</b></div><div class="k"><small>Submitted</small><b>${L.sub} ms</b></div><div class="k"><small>Confirmation</small><b>${L.conf.toFixed(1)} s</b></div><div class="k"><small>Slippage</small><b>${L.slip.toFixed(2)}%</b></div><div class="k"><small>Total (≤2 s)</small><b class="${L.tot<=2000?'g':'wn'}">${(L.tot/1e3).toFixed(2)} s ${L.tot<=2000?'✓':'⚠ slow'}</b></div></div>`:'<p class="mu">Metrics appear after the first confirmed COPYRA fill. Until then the engine has never broadcast.</p>'}
 <p class="mu">Timings are measured from confirmed trades, never invented.${e=='evm'?' Gas is sponsored by COPYRA when execution is live.':''}</p></div>
 ${e=='evm'?`<div class="card"><h3>Chains &amp; Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'—'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
@@ -478,18 +500,39 @@ function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip
 window.switchMode=(x)=>{if(M===x)return;M=x;T='trading';try{window.CopyraWallet?.setMode?.(M)}catch{};draw();refresh()};
 const md=(h)=>{const s=$('#md');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow='';box.innerHTML=h}s.classList.add('o')};
 const cl=()=>{const s=$('#md');s.classList.remove('o');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow=''}};
+async function patchModeEngine(e,engine){
+  const row=LIVE?.settings?.row||{};
+  const ui={...(row.ui&&typeof row.ui==='object'?row.ui:{})};
+  ui[e]={...(ui[e]&&typeof ui[e]==='object'?ui[e]:{}),engine, ...(engine==='ON'?{killSwitchAt:null}:{})};
+  await api('PATCH','/api/settings',{ui, tradingEnabled: engine==='ON' ? true : row.tradingEnabled});
+}
 async function bot(e,v){
  try{
-  if(v==='STOPPED')await api('POST','/api/settings/emergency-stop',{reason:'STOP ALL TRADING from dashboard'});
-  else{
-   if(LIVE?.status?.trading?.emergencyStop)await api('POST','/api/settings/emergency-clear');
-   await api('PATCH','/api/settings',{tradingEnabled:v==='ON'});
+  if(v==='STOPPED'){
+   await killSwitch(e,true);
+   return;
   }
-  toast(`${e.toUpperCase()} ${v==='ON'?'resume requested':'paused'}`);
+  await patchModeEngine(e,v);
+  toast(`${e.toUpperCase()} ${v==='ON'?'resumed':'paused'} (this mode only)`);
   await refresh();
  }catch(err){toast(err.message)}
 }
-function stopAll(e){md(`<h3>Stop all trading?</h3><p class="mu">Engages the emergency stop. No new buys will be placed. Existing positions keep being monitored for TP/SL.</p><div class="row"><button class="btn red" onclick="bot('${e}','STOPPED');cl()">STOP ALL TRADING</button><button class="btn" onclick="cl()">Cancel</button></div>`)}
+function killSwitch(e,fromBot){
+  const label=e==='sol'?'SOL':'EVM';
+  md(`<h3>Kill Switch — ${label} mode</h3>
+<p class="mu">Stops <b>only ${label} mode</b> (the other mode keeps running). Market-sells <b>all open ${label} positions</b> back to your custody trading balance. This broadcasts real on-chain sells.</p>
+<div class="row"><button class="btn red" id="ks-go">Kill Switch</button><button class="btn" onclick="cl()">Cancel</button></div>`);
+  $('#ks-go').onclick=async()=>{
+   const btn=$('#ks-go');btn.disabled=true;btn.textContent='Selling…';
+   try{
+    const res=await api('POST','/api/kill-switch',{mode:e},{mode:e});
+    cl();
+    toast(`Kill Switch ${label}: ${res.sold||0} sold`+(res.failed?`, ${res.failed} failed`:'')+(res.attempted===0?' (no open positions)':''));
+    await refresh();
+   }catch(err){btn.disabled=false;btn.textContent='Kill Switch';toast(err.message||'Kill switch failed')}
+  };
+  if(fromBot){/* modal already shown */}
+}
 function addT(){const e=M;md(`<h3>Add trader (${e.toUpperCase()})</h3><label>Trader name</label><input id="an" maxlength=40><label>Wallet address</label><input id="aa"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Add &amp; start copying</button><button class="btn" onclick="cl()">Cancel</button></div>`);
  $('#ok').onclick=async()=>{const n=$('#an').value.trim(),a=$('#aa').value.trim(),er=!n?'Enter a name.':(e=='sol'?!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a):!/^0x[0-9a-fA-F]{40}$/.test(a))?`Not a valid ${e=='sol'?'Solana':'EVM'} wallet address.`:'';
   if(er)return $('#ae').textContent=er;

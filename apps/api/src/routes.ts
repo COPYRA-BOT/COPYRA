@@ -8,6 +8,7 @@ import {
   getSettings,
   getSolanaBalances,
   getStrategyConfig,
+  killSwitchSellAll,
   multiUserCustodyEnabled,
   publicReownProjectId,
   resolveWebOrigin,
@@ -164,6 +165,50 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       kind: 'emergency-clear',
     });
     return jsonSafe(updated);
+  });
+
+  /**
+   * Per-mode kill switch: stop new buys for this mode and market-sell all of
+   * that account’s open positions back to custody (SOL or USDC).
+   */
+  app.post('/api/kill-switch', async (request, reply) => {
+    const body = z.object({ mode: z.enum(['sol', 'evm']) }).parse(request.body ?? {});
+    const session = await requireAuthed(request, reply, body.mode);
+    if (!session) return;
+
+    const row = await getSettings();
+    const prevUi =
+      row.ui && typeof row.ui === 'object' && !Array.isArray(row.ui)
+        ? (row.ui as Record<string, unknown>)
+        : {};
+    const prevMode =
+      prevUi[body.mode] && typeof prevUi[body.mode] === 'object' && !Array.isArray(prevUi[body.mode])
+        ? (prevUi[body.mode] as Record<string, unknown>)
+        : {};
+    const nextUi = {
+      ...prevUi,
+      [body.mode]: {
+        ...prevMode,
+        engine: 'STOPPED',
+        killSwitchAt: new Date().toISOString(),
+      },
+    };
+    await prisma.strategySettings.update({
+      where: { id: 1 },
+      data: { ui: nextUi as Prisma.InputJsonValue, updatedBy: 'dashboard' },
+    });
+
+    const result = await killSwitchSellAll({
+      userId: session.user.id,
+      mode: body.mode,
+    });
+
+    telegram.send(
+      `☠️ <b>KILL SWITCH (${body.mode.toUpperCase()})</b>\nAccount: <code>${session.user.address.slice(0, 6)}…${session.user.address.slice(-4)}</code>\nPositions attempted: ${result.attempted}\nSold: ${result.sold} · Failed: ${result.failed}\nProceeds return to custody trading balance.`,
+      { kind: 'kill-switch', userId: session.user.id },
+    );
+
+    return jsonSafe({ ok: true, ...result });
   });
 
   app.get('/api/traders', async (request, reply) => {
