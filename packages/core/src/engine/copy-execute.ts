@@ -18,6 +18,7 @@ import { getMarketSnapshot, type TokenMarketData } from '../market/index.js';
 import { componentLogger } from '../obs/logger.js';
 import { reportError } from '../obs/sentry.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
+import { multiUserCustodyEnabled } from '../security/user-custody.js';
 import { executeSolanaSwap, lamportsFromSol, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
 import { LockHeldError, withLock } from '../util/redis.js';
 import { renderBuy, renderFailure, renderSkip, renderSubmitted } from '../notify/messages.js';
@@ -54,7 +55,11 @@ export interface QualifiedCopyResult {
   txHash: string | null;
 }
 
+/** Shared bot key, or per-account custody when MULTI_USER_CUSTODY is on. */
 function signerFor(chain: Chain): { available: boolean; address: string | null } {
+  if (multiUserCustodyEnabled()) {
+    return { available: true, address: null };
+  }
   return chain === Chain.SOLANA
     ? { available: solanaSigner.available, address: solanaSigner.address }
     : { available: evmSigner.available, address: evmSigner.address };
@@ -213,7 +218,8 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
 
   let portfolio;
   try {
-    portfolio = await buildPortfolioState(input.chain, input.tokenAddress);
+    // Size against THIS account's custody wallet — never the shared bot signer.
+    portfolio = await buildPortfolioState(input.chain, input.tokenAddress, ownerUserId);
     await snapshotBalance(input.chain, portfolio.balance);
   } catch (error) {
     if (error instanceof NoTradingWalletError) {
@@ -222,7 +228,9 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         data: {
           status: SignalStatus.BLOCKED_NO_SIGNER,
           skipReason: SkipReason.TRADER_DISABLED,
-          skipDetail: error.message,
+          skipDetail:
+            error.message +
+            ' Deposit SOL/USDC to your COPYRA custody wallet, then resume copying.',
         },
       });
       return {
@@ -364,6 +372,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         })
       : await executeEvmSwap({
           chain: input.chain,
@@ -377,6 +386,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         });
 
   const fields = telemetry.toTradeFields();

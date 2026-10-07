@@ -14,6 +14,7 @@ import { getMarketSnapshot } from '../market/index.js';
 import { componentLogger } from '../obs/logger.js';
 import { reportError } from '../obs/sentry.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
+import { multiUserCustodyEnabled } from '../security/user-custody.js';
 import { executeSolanaSwap, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
 import { withLock } from '../util/redis.js';
 import {
@@ -25,7 +26,11 @@ import {
 import { telegram } from '../notify/telegram.js';
 import { evaluateExit, computeTrailingStop, updateHighWaterMark } from './exits.js';
 import { executionGate, fractionOfRaw, wholeUnits } from './execution-gate.js';
-import { getPnlSummary, readOnChainBalance } from './portfolio.js';
+import {
+  getPnlSummary,
+  readOnChainBalanceForAddress,
+  resolveTradingAddress,
+} from './portfolio.js';
 import { getSettings, getStrategyConfig } from './settings.js';
 import { TelemetryTracker } from './telemetry.js';
 
@@ -135,7 +140,9 @@ async function markAndMaybeExit(
 
   if (action.action === 'HOLD') return;
 
-  const signerOk = position.chain === Chain.SOLANA ? solanaSigner.available : evmSigner.available;
+  const signerOk =
+    multiUserCustodyEnabled() ||
+    (position.chain === Chain.SOLANA ? solanaSigner.available : evmSigner.available);
   const gate = executionGate({
     signerAvailable: signerOk,
     tradingEnabled: true,
@@ -229,6 +236,7 @@ async function executeExit(
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         })
       : await executeEvmSwap({
           chain: position.chain,
@@ -242,6 +250,7 @@ async function executeExit(
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         });
 
   await prisma.trade.update({
@@ -337,7 +346,10 @@ async function executeExit(
     },
   });
 
-  const balance = await readOnChainBalance(position.chain).catch(() => null);
+  const tradingAddress = await resolveTradingAddress(position.chain, ownerUserId).catch(() => null);
+  const balance = tradingAddress
+    ? await readOnChainBalanceForAddress(position.chain, tradingAddress).catch(() => null)
+    : null;
   const total = await getPnlSummary(pnlResetAt, ownerUserId);
   const source = await prisma.signal.findFirst({
     where: { positionId: position.id },

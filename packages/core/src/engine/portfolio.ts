@@ -8,9 +8,31 @@ import { chainConfig } from '../config/chains.js';
 import { getQuoteAssetPriceUsd } from '../market/index.js';
 import { componentLogger } from '../obs/logger.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
+import { multiUserCustodyEnabled, userCustodyAddress } from '../security/user-custody.js';
 import { getErc20Balance, getNativeBalance } from '../evm/tokens.js';
 import { getSpendableSol } from '../solana/executor.js';
 import type { PortfolioState } from './types.js';
+
+/** Savings reservation for an address (avoids importing funds.ts — circular). */
+async function savingsQuoteForAddress(chain: Chain, address: string): Promise<number> {
+  const config = chainConfig(chain);
+  const assetAddress =
+    config.kind === 'solana' ? 'native' : (config.stableAsset ?? 'native').toLowerCase();
+  const decimals =
+    config.kind === 'solana' ? 9 : (config.stableAssetDecimals ?? config.nativeDecimals);
+  const row = await prisma.walletBalance.findUnique({
+    where: {
+      chain_address_bucket_assetAddress: {
+        chain,
+        address,
+        bucket: BalanceBucket.SAVINGS,
+        assetAddress,
+      },
+    },
+  });
+  if (!row) return 0;
+  return Number(BigInt(row.amountRaw)) / 10 ** decimals;
+}
 
 const log = componentLogger('portfolio');
 
@@ -127,6 +149,22 @@ export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> 
   return readOnChainBalanceForAddress(chain, address);
 }
 
+/** Bot signer address, or the account's custody wallet when multi-user custody is on. */
+export async function resolveTradingAddress(
+  chain: Chain,
+  userId?: string,
+): Promise<string | null> {
+  if (userId && multiUserCustodyEnabled()) {
+    try {
+      return await userCustodyAddress(userId, chain);
+    } catch (error) {
+      log.warn({ err: error, userId, chain }, 'Could not resolve user custody address');
+      return null;
+    }
+  }
+  return tradingWalletAddress(chain);
+}
+
 /** Persists a balance snapshot so the dashboard can show read-time and source. */
 export async function snapshotBalance(
   chain: Chain,
@@ -174,26 +212,29 @@ export async function snapshotBalance(
 /**
  * Builds the portfolio state the sizing function needs.
  *
- * Balance comes from the chain; deployed capital and position counts come from
- * the database, because those are COPYRA's own bookkeeping of transactions it
- * confirmed on-chain. The reconciliation worker is what keeps the second set
- * honest against the first.
+ * Balance comes from the chain (the account custody wallet when multi-user
+ * custody is enabled); deployed capital and position counts come from the
+ * database for that same account.
  */
 export async function buildPortfolioState(
   chain: Chain,
   tokenAddress: string,
+  userId?: string,
 ): Promise<{ state: PortfolioState; balance: OnChainBalance }> {
-  const balance = await readOnChainBalance(chain);
-  const { getSavingsQuote } = await import('./funds.js');
-  const savingsQuote = await getSavingsQuote(chain).catch(() => 0);
+  const address = await resolveTradingAddress(chain, userId);
+  if (!address) throw new NoTradingWalletError(chain);
+  const balance = await readOnChainBalanceForAddress(chain, address);
+  const savingsQuote = await savingsQuoteForAddress(chain, address).catch(() => 0);
 
+  const owner = userId ? { userId } : {};
   const [openPositions, tokenPosition] = await Promise.all([
     prisma.position.findMany({
-      where: { status: { in: LIVE_POSITION_STATUSES } },
+      where: { ...owner, status: { in: LIVE_POSITION_STATUSES } },
       select: { id: true, entryValueUsd: true, realizedPnlUsd: true, chain: true },
     }),
     prisma.position.findFirst({
       where: {
+        ...owner,
         chain,
         tokenAddress: chain === Chain.SOLANA ? tokenAddress : tokenAddress.toLowerCase(),
         status: { in: LIVE_POSITION_STATUSES },

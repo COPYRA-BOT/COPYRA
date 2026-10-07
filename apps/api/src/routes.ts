@@ -13,6 +13,7 @@ import {
   getSolanaBalances,
   getStrategyConfig,
   monitorableChains,
+  multiUserCustodyEnabled,
   publicReownProjectId,
   resolveWebOrigin,
   solanaSigner,
@@ -79,7 +80,9 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/status', async (request) => {
     const settings = await getSettings();
-    const signerAvailable = solanaSigner.available || evmSigner.available;
+    // Per-account custody wallets can sign without the shared bot key.
+    const signerAvailable =
+      multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available;
     const telegramStatus = await telegram.verify().catch((error: unknown) => ({
       tokenValid: false,
       botUsername: null,
@@ -200,7 +203,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe({
       row,
       effective: config,
-      blockedReason: tradingBlockedReason(row, solanaSigner.available || evmSigner.available),
+      blockedReason: tradingBlockedReason(
+        row,
+        multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available,
+      ),
     });
   });
 

@@ -85,6 +85,11 @@ export async function markSeenOnce(key: string, ttlSeconds: number): Promise<boo
   return result === 'OK';
 }
 
+/** Clears a seen mark so a deferred signature can be retried (e.g. tx-not-found). */
+export async function clearSeen(key: string): Promise<void> {
+  await redis().del(`seen:${key}`);
+}
+
 const AUTH_NONCE_TTL_SEC = 600;
 
 /** One-time SIWE/SIWS nonce in Redis (GETDEL on consume). */

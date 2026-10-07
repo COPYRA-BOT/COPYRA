@@ -1,5 +1,6 @@
 import {
   MAX_SUPPORTED_TX_VERSION,
+  clearSeen,
   componentLogger,
   decodeSolanaTransaction,
   getMarketSnapshot,
@@ -8,6 +9,7 @@ import {
   isSolanaQuoteAsset,
   markSeenOnce,
   qualifySignal,
+  sleep,
   solanaConnection,
   solanaPool,
   telegram,
@@ -15,9 +17,17 @@ import {
   renderDetection,
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
 
 const log = componentLogger('solana-monitor');
+
+/** How long we wait for a processed-commitment log to become fetchable at confirmed. */
+const TX_FETCH_ATTEMPTS = 8;
+const TX_FETCH_BASE_DELAY_MS = 120;
+/** Recent signatures to re-scan per trader on each catch-up tick. */
+const CATCHUP_LIMIT = 40;
+/** Outcomes that mean "try again later" — never treat as final. */
+const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 
 /**
  * Real-time Solana trader monitor.
@@ -25,6 +35,9 @@ const log = componentLogger('solana-monitor');
  * Subscribes to confirmed logs for each enabled Solana trader wallet through
  * the configured Helius/Alchemy connection. Every notification is a real
  * signature; nothing is invented.
+ *
+ * Also runs a catch-up poll so signatures that raced `getParsedTransaction`
+ * (processed log → confirmed fetch returns null) are not permanently lost.
  */
 export async function startSolanaMonitor(): Promise<() => void> {
   const connection = solanaConnection();
@@ -66,6 +79,17 @@ export async function startSolanaMonitor(): Promise<() => void> {
       log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
     }
 
+    // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
+    await Promise.all(
+      traders.map(async (trader) => {
+        try {
+          await catchUpTrader(trader.id, trader.address);
+        } catch (error) {
+          log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+        }
+      }),
+    );
+
     log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
   };
 
@@ -85,6 +109,63 @@ export async function startSolanaMonitor(): Promise<() => void> {
   };
 }
 
+/**
+ * Re-scan recent signatures for a trader. Replays anything not yet finalized,
+ * including rows previously marked `tx-not-found`.
+ */
+async function catchUpTrader(traderId: string, address: string): Promise<void> {
+  let pubkey: PublicKey;
+  try {
+    pubkey = new PublicKey(address);
+  } catch {
+    return;
+  }
+
+  const fetched = await solanaPool().call('getSignaturesForAddress', (client) =>
+    client.getSignaturesForAddress(pubkey, { limit: CATCHUP_LIMIT }),
+  );
+  const entries = fetched.value ?? [];
+  if (entries.length === 0) return;
+
+  for (const entry of entries) {
+    if (entry.err) continue;
+    const signature = entry.signature;
+    const existing = await prisma.processedSignature.findUnique({
+      where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+    });
+    if (existing && !RETRYABLE_OUTCOMES.has(existing.outcome)) continue;
+
+    if (existing && RETRYABLE_OUTCOMES.has(existing.outcome)) {
+      await prisma.processedSignature.delete({
+        where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+      });
+    }
+    await clearSeen(`sol:${signature}:${traderId}`);
+    const slot = entry.slot ?? 0;
+    await handleSignature(traderId, signature, slot);
+  }
+}
+
+/** Retry getParsedTransaction until the processed log is available at confirmed. */
+async function fetchParsedTransaction(
+  signature: string,
+): Promise<ParsedTransactionWithMeta | null> {
+  for (let attempt = 1; attempt <= TX_FETCH_ATTEMPTS; attempt += 1) {
+    const fetched = await solanaPool().call('getParsedTransaction', (client) =>
+      client.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
+        commitment: 'confirmed',
+      }),
+    );
+    if (fetched.value) return fetched.value;
+    if (attempt === TX_FETCH_ATTEMPTS) break;
+    const delay = TX_FETCH_BASE_DELAY_MS * attempt;
+    log.debug({ signature, attempt, delay }, 'Parsed tx not ready; retrying');
+    await sleep(delay);
+  }
+  return null;
+}
+
 async function handleSignature(traderId: string, signature: string, slot: number): Promise<void> {
   const first = await markSeenOnce(`sol:${signature}:${traderId}`, 86_400);
   if (!first) return;
@@ -92,21 +173,45 @@ async function handleSignature(traderId: string, signature: string, slot: number
   const existing = await prisma.processedSignature.findUnique({
     where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
   });
-  if (existing) return;
+  if (existing && !RETRYABLE_OUTCOMES.has(existing.outcome)) return;
+  if (existing && RETRYABLE_OUTCOMES.has(existing.outcome)) {
+    await prisma.processedSignature.delete({
+      where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+    });
+  }
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
 
-  const fetched = await solanaPool().call('getParsedTransaction', (client) =>
-    client.getParsedTransaction(signature, {
-      maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-      commitment: 'confirmed', // parse at confirmed for stable balances; detect already used processed logs
-    }),
-  );
-  const tx = fetched.value;
+  const tx = await fetchParsedTransaction(signature);
   if (!tx) {
-    await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, traderId, outcome: 'tx-not-found' },
+    // Do NOT permanently discard — clear the redis mark and record a retryable outcome
+    // so the next catch-up tick can re-fetch once the RPC has the tx.
+    await clearSeen(`sol:${signature}:${traderId}`);
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+      create: { chain: Chain.SOLANA, signature, traderId, outcome: 'tx-not-found' },
+      update: { outcome: 'tx-not-found', processedAt: new Date() },
+    });
+    log.warn({ signature, traderId, slot }, 'Trader tx not fetchable yet; deferred for catch-up');
+    return;
+  }
+
+  // Already decoded+signaled (e.g. prior partial path) — finalize idempotency and stop.
+  const priorDetection = await prisma.detectedTransaction.findUnique({
+    where: { chain_txHash_traderId: { chain: Chain.SOLANA, txHash: signature, traderId } },
+    include: { signal: { select: { id: true, status: true } } },
+  });
+  if (priorDetection?.signal) {
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+      create: {
+        chain: Chain.SOLANA,
+        signature,
+        traderId,
+        outcome: String(priorDetection.signal.status),
+      },
+      update: { outcome: String(priorDetection.signal.status), processedAt: new Date() },
     });
     return;
   }
@@ -118,47 +223,51 @@ async function handleSignature(traderId: string, signature: string, slot: number
     observedAt: new Date(),
   });
 
-  const detection = await prisma.detectedTransaction.create({
-    data: {
-      chain: Chain.SOLANA,
-      txHash: signature,
-      traderId: trader.id,
-      blockNumber: BigInt(slot),
-      blockTime: decoded.blockTime,
-      classification: decoded.classification,
-      venue: decoded.venue,
-      tokenInAddress: decoded.tokenIn?.address,
-      tokenInSymbol: decoded.tokenIn?.symbol,
-      tokenInDecimals: decoded.tokenIn?.decimals,
-      tokenInAmountRaw: decoded.tokenIn?.amountRaw,
-      tokenOutAddress: decoded.tokenOut?.address,
-      tokenOutSymbol: decoded.tokenOut?.symbol,
-      tokenOutDecimals: decoded.tokenOut?.decimals,
-      tokenOutAmountRaw: decoded.tokenOut?.amountRaw,
-      feeRaw: decoded.feeRaw,
-      rawDecoded: decoded.raw as object,
-      decodedAt: new Date(),
-    },
-  });
+  const detection =
+    priorDetection ??
+    (await prisma.detectedTransaction.create({
+      data: {
+        chain: Chain.SOLANA,
+        txHash: signature,
+        traderId: trader.id,
+        blockNumber: BigInt(slot),
+        blockTime: decoded.blockTime,
+        classification: decoded.classification,
+        venue: decoded.venue,
+        tokenInAddress: decoded.tokenIn?.address,
+        tokenInSymbol: decoded.tokenIn?.symbol,
+        tokenInDecimals: decoded.tokenIn?.decimals,
+        tokenInAmountRaw: decoded.tokenIn?.amountRaw,
+        tokenOutAddress: decoded.tokenOut?.address,
+        tokenOutSymbol: decoded.tokenOut?.symbol,
+        tokenOutDecimals: decoded.tokenOut?.decimals,
+        tokenOutAmountRaw: decoded.tokenOut?.amountRaw,
+        feeRaw: decoded.feeRaw,
+        rawDecoded: decoded.raw as object,
+        decodedAt: new Date(),
+      },
+    }));
 
   await prisma.trader.update({
     where: { id: trader.id },
     data: { lastActivityAt: new Date(), lastSignature: signature },
   });
 
-  telegram.send(
-    renderDetection({
-      chain: Chain.SOLANA,
-      traderLabel: trader.label,
-      traderAddress: trader.address,
-      classification: decoded.classification,
-      tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
-      tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
-      sourceTxHash: signature,
-      detectLatencyMs: decoded.blockTime ? Date.now() - decoded.blockTime.getTime() : null,
-    }),
-    { kind: 'detection', userId: trader.userId },
-  );
+  if (!priorDetection) {
+    telegram.send(
+      renderDetection({
+        chain: Chain.SOLANA,
+        traderLabel: trader.label,
+        traderAddress: trader.address,
+        classification: decoded.classification,
+        tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
+        tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
+        sourceTxHash: signature,
+        detectLatencyMs: decoded.blockTime ? Date.now() - decoded.blockTime.getTime() : null,
+      }),
+      { kind: 'detection', userId: trader.userId },
+    );
+  }
 
   const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
   if (!tokenAddress) {
@@ -308,8 +417,10 @@ async function handleSignature(traderId: string, signature: string, slot: number
     observedAt: decoded.blockTime ?? new Date(),
   });
 
-  await prisma.processedSignature.create({
-    data: { chain: Chain.SOLANA, signature, traderId, outcome: result.status },
+  await prisma.processedSignature.upsert({
+    where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
+    create: { chain: Chain.SOLANA, signature, traderId, outcome: result.status },
+    update: { outcome: result.status, processedAt: new Date() },
   });
 
   log.info(

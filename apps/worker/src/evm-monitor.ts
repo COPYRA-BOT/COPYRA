@@ -1,5 +1,6 @@
 import {
   chainConfig,
+  clearSeen,
   componentLogger,
   decodeEvmTransaction,
   evmPool,
@@ -11,6 +12,7 @@ import {
   qualifySignal,
   renderDetection,
   renderSkip,
+  sleep,
   telegram,
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
@@ -128,24 +130,41 @@ async function pollTrader(
   cursors.set(key, maxBlock);
 }
 
+async function fetchEvmReceipt(chain: Chain, hash: string) {
+  for (let attempt = 1; attempt <= 6; attempt += 1) {
+    const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
+      client.getTransactionReceipt({ hash: hash as `0x${string}` }),
+    );
+    if (receiptResult.value) return receiptResult.value;
+    if (attempt === 6) break;
+    await sleep(100 * attempt);
+  }
+  return null;
+}
+
 async function handleEvmHash(chain: Chain, traderId: string, hash: string): Promise<void> {
   const first = await markSeenOnce(`evm:${hash}:${traderId}`, 86_400);
   if (!first) return;
   const existing = await prisma.processedSignature.findUnique({
     where: { chain_signature_traderId: { chain, signature: hash, traderId } },
   });
-  if (existing) return;
+  if (existing && existing.outcome !== 'receipt-not-found') return;
+  if (existing?.outcome === 'receipt-not-found') {
+    await prisma.processedSignature.delete({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+    });
+  }
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
 
-  const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
-    client.getTransactionReceipt({ hash: hash as `0x${string}` }),
-  );
-  const receipt = receiptResult.value;
+  const receipt = await fetchEvmReceipt(chain, hash);
   if (!receipt) {
-    await prisma.processedSignature.create({
-      data: { chain, signature: hash, traderId, outcome: 'receipt-not-found' },
+    await clearSeen(`evm:${hash}:${traderId}`);
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+      create: { chain, signature: hash, traderId, outcome: 'receipt-not-found' },
+      update: { outcome: 'receipt-not-found', processedAt: new Date() },
     });
     return;
   }

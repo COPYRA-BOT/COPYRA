@@ -9,6 +9,11 @@ import { env } from '../config/env.js';
 import { TelemetryTracker } from '../engine/telemetry.js';
 import { componentLogger } from '../obs/logger.js';
 import { NoSignerError, solanaSigner } from '../security/signer.js';
+import {
+  multiUserCustodyEnabled,
+  signUserSolanaTransaction,
+  userCustodyAddress,
+} from '../security/user-custody.js';
 import { withRetry, sleep } from '../util/retry.js';
 import { MAX_SUPPORTED_TX_VERSION, solanaPool, WRAPPED_SOL_MINT_STR } from './connection.js';
 import { computeBalanceDeltas } from './decoder.js';
@@ -34,6 +39,8 @@ export interface SwapRequest {
   telemetry: TelemetryTracker;
   /** Correlates retries so a repeat can never double-broadcast. */
   idempotencyKey: string;
+  /** When set with multi-user custody, spend/sign from that account's custody wallet. */
+  userId?: string;
 }
 
 export interface ExecutionOutcome {
@@ -283,7 +290,8 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     ...extra,
   });
 
-  if (!solanaSigner.available) {
+  const useUserCustody = Boolean(request.userId && multiUserCustodyEnabled());
+  if (!useUserCustody && !solanaSigner.available) {
     record(0, 'sign', 'error', 'No Solana signing key configured');
     return failure(
       TxStatus.FAILED,
@@ -291,7 +299,19 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       new NoSignerError('solana').message,
     );
   }
-  const walletAddress = solanaSigner.requireAddress();
+  let walletAddress: string;
+  try {
+    walletAddress = useUserCustody
+      ? await userCustodyAddress(request.userId as string, Chain.SOLANA)
+      : solanaSigner.requireAddress();
+  } catch (error) {
+    record(0, 'sign', 'error', describe(error));
+    return failure(TxStatus.FAILED, 'NO_SIGNER', describe(error));
+  }
+  log.info(
+    { wallet: walletAddress, userId: request.userId ?? null, custody: useUserCustody },
+    'Solana swap will spend from trading wallet',
+  );
 
   let lastError: unknown;
 
@@ -369,7 +389,9 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
         Buffer.from(built.swapTransaction, 'base64'),
       );
       blockhash = transaction.message.recentBlockhash;
-      signature = solanaSigner.sign(transaction);
+      signature = useUserCustody
+        ? await signUserSolanaTransaction(request.userId as string, transaction)
+        : solanaSigner.sign(transaction);
       telemetry.mark('signed');
       record(attempt, 'sign', 'ok', `signature=${signature}`, signature);
     } catch (error) {
