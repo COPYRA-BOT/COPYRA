@@ -132,7 +132,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   const first = await markSeenOnce(`evm:${hash}:${traderId}`, 86_400);
   if (!first) return;
   const existing = await prisma.processedSignature.findUnique({
-    where: { chain_signature: { chain, signature: hash } },
+    where: { chain_signature_traderId: { chain, signature: hash, traderId } },
   });
   if (existing) return;
 
@@ -145,7 +145,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   const receipt = receiptResult.value;
   if (!receipt) {
     await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: 'receipt-not-found' },
+      data: { chain, signature: hash, traderId, outcome: 'receipt-not-found' },
     });
     return;
   }
@@ -202,13 +202,13 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
       sourceTxHash: hash,
       detectLatencyMs: null,
     }),
-    { kind: 'detection' },
+    { kind: 'detection', userId: trader.userId },
   );
 
   const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
   if (!tokenAddress) {
     await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: decoded.classification },
+      data: { chain, signature: hash, traderId, outcome: decoded.classification },
     });
     return;
   }
@@ -230,6 +230,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     }),
     prisma.position.findFirst({
       where: {
+        userId: trader.userId,
         chain,
         tokenAddress,
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
@@ -237,7 +238,10 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     }),
     getStrategyConfig(),
     prisma.position.count({
-      where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
+      where: {
+        userId: trader.userId,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
+      },
     }),
   ]);
   if (!market.missing) {
@@ -283,6 +287,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   if (!qualification.qualified) {
     await prisma.signal.create({
       data: {
+        userId: trader.userId,
         chain,
         traderId: trader.id,
         tokenId: token.id,
@@ -312,10 +317,10 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         liquidityUsd: market.liquidityUsd,
         sourceTxHash: hash,
       }),
-      { kind: 'skip' },
+      { kind: 'skip', userId: trader.userId },
     );
     await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: `skipped:${qualification.reason}` },
+      data: { chain, signature: hash, traderId, outcome: `skipped:${qualification.reason}` },
     });
     return;
   }
@@ -335,7 +340,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   });
 
   await prisma.processedSignature.create({
-    data: { chain, signature: hash, outcome: result.status },
+    data: { chain, signature: hash, traderId, outcome: result.status },
   });
   log.info({ hash, trader: trader.label, token: tokenAddress, status: result.status }, 'Processed EVM trader transaction');
 }

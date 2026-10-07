@@ -204,10 +204,15 @@ model User {
   createdAt  DateTime @default(now())
   lastSeenAt DateTime @default(now())
 
-  sessions       Session[]
-  custodyWallets UserCustodyWallet[]
-  transfers      Transfer[]
+  sessions        Session[]
+  custodyWallets  UserCustodyWallet[]
+  transfers       Transfer[]
   custodyDeposits CustodyDeposit[]
+  traders         Trader[]
+  signals         Signal[]
+  positions       Position[]
+  trades          Trade[]
+  notifications   NotificationLog[]
 
   @@map("users")
 }
@@ -282,6 +287,9 @@ model Session {
 
 model Trader {
   id        String   @id @default(cuid())
+  /// Owning dashboard account — traders are never shared across wallets.
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain     Chain
   address   String
   label     String
@@ -300,8 +308,10 @@ model Trader {
   detections DetectedTransaction[]
   signals    Signal[]
 
-  @@unique([chain, address])
+  /// Same watched address may exist for different users; never twice for one user.
+  @@unique([userId, chain, address])
   @@index([enabled])
+  @@index([userId, enabled])
   @@map("traders")
 }
 
@@ -418,14 +428,17 @@ model DetectedTransaction {
 }
 
 /// Hard idempotency barrier. A signature recorded here is never processed
-/// twice, even across process restarts or a WebSocket replay storm.
+/// twice for the same trader row, even across restarts or replay storms.
+/// Keyed by traderId so two accounts watching the same wallet each get a copy.
 model ProcessedSignature {
   chain       Chain
   signature   String
+  traderId    String
   processedAt DateTime @default(now())
   outcome     String
 
-  @@id([chain, signature])
+  @@id([chain, signature, traderId])
+  @@index([traderId])
   @@map("processed_signatures")
 }
 
@@ -435,6 +448,9 @@ model ProcessedSignature {
 
 model Signal {
   id       String @id @default(cuid())
+  /// Owning account (copied from trader at create time).
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain    Chain
   traderId String
   trader   Trader @relation(fields: [traderId], references: [id], onDelete: Cascade)
@@ -493,6 +509,7 @@ model Signal {
   @@unique([chain, sourceTxHash, traderId])
   @@index([status, createdAt])
   @@index([chain, tokenAddress])
+  @@index([userId, createdAt])
   @@map("signals")
 }
 
@@ -502,6 +519,9 @@ model Signal {
 
 model Position {
   id      String @id @default(cuid())
+  /// Owning account — open-position uniqueness is per user, not global.
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain   Chain
   tokenId String
   token   Token  @relation(fields: [tokenId], references: [id])
@@ -569,6 +589,8 @@ model Position {
 
   @@index([status, chain])
   @@index([chain, tokenAddress, status])
+  @@index([userId, status])
+  @@index([userId, chain, tokenAddress, status])
   @@map("positions")
 }
 
@@ -578,6 +600,9 @@ model Position {
 
 model Trade {
   id         String   @id @default(cuid())
+  /// Owning account — fills are never visible across wallets.
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// Caller-supplied idempotency key. A retry with the same key never produces
   /// a second broadcast.
   idempotencyKey String @unique
@@ -672,6 +697,7 @@ model Trade {
   @@index([status, createdAt])
   @@index([positionId])
   @@index([chain, txHash])
+  @@index([userId, createdAt])
   @@map("trades")
 }
 
@@ -855,6 +881,9 @@ model DriftFlag {
 
 model NotificationLog {
   id        String   @id @default(cuid())
+  /// Owning account when the event is user-scoped; null = system-wide (hidden from dashboards).
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   channel   String
   kind      String
   /// Rendered message, retained so the exact text sent can be audited.
@@ -866,5 +895,6 @@ model NotificationLog {
   createdAt DateTime @default(now())
 
   @@index([kind, createdAt])
+  @@index([userId, createdAt])
   @@map("notification_logs")
 }

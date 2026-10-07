@@ -117,7 +117,8 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
 
     const trade = await prisma.trade.create({
       data: {
-        idempotencyKey: `user-swap:${session.user.address}:${signature}`,
+        userId: session.user.id,
+        idempotencyKey: `user-swap:${session.user.id}:${signature}`,
         chain: Chain.SOLANA,
         side: TradeSide.BUY,
         reason: TradeReason.MANUAL,

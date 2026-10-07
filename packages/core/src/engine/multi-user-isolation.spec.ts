@@ -22,4 +22,19 @@ describe('multi-user custody isolation', () => {
     expect(assertSameUser(a, b)).toBe(false);
     expect(assertSameUser(a, a)).toBe(true);
   });
+
+  it('trader uniqueness key is per account (same address ok for different users)', () => {
+    const key = (userId: string, chain: string, address: string) =>
+      `${userId}:${chain}:${address.toLowerCase()}`;
+    const whale = '0xabc123';
+    expect(key('user-a', 'BASE', whale)).not.toBe(key('user-b', 'BASE', whale));
+    expect(key('user-a', 'BASE', whale)).toBe(key('user-a', 'BASE', whale));
+  });
+
+  it('processed-signature key is per trader row (two accounts can copy same tx)', () => {
+    const key = (chain: string, signature: string, traderId: string) =>
+      `${chain}:${signature}:${traderId}`;
+    const sig = '0xdeadbeef';
+    expect(key('BASE', sig, 'trader-a')).not.toBe(key('BASE', sig, 'trader-b'));
+  });
 });

@@ -90,7 +90,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   if (!first) return;
 
   const existing = await prisma.processedSignature.findUnique({
-    where: { chain_signature: { chain: Chain.SOLANA, signature } },
+    where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
   });
   if (existing) return;
 
@@ -106,7 +106,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   const tx = fetched.value;
   if (!tx) {
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: 'tx-not-found' },
+      data: { chain: Chain.SOLANA, signature, traderId, outcome: 'tx-not-found' },
     });
     return;
   }
@@ -157,13 +157,13 @@ async function handleSignature(traderId: string, signature: string, slot: number
       sourceTxHash: signature,
       detectLatencyMs: decoded.blockTime ? Date.now() - decoded.blockTime.getTime() : null,
     }),
-    { kind: 'detection' },
+    { kind: 'detection', userId: trader.userId },
   );
 
   const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
   if (!tokenAddress) {
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: decoded.classification },
+      data: { chain: Chain.SOLANA, signature, traderId, outcome: decoded.classification },
     });
     return;
   }
@@ -188,6 +188,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
     }),
     prisma.position.findFirst({
       where: {
+        userId: trader.userId,
         chain: Chain.SOLANA,
         tokenAddress,
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
@@ -195,7 +196,10 @@ async function handleSignature(traderId: string, signature: string, slot: number
     }),
     getStrategyConfig(),
     prisma.position.count({
-      where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
+      where: {
+        userId: trader.userId,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
+      },
     }),
   ]);
   if (!market.missing) {
@@ -241,6 +245,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   if (!qualification.qualified) {
     await prisma.signal.create({
       data: {
+        userId: trader.userId,
         chain: Chain.SOLANA,
         traderId: trader.id,
         tokenId: token.id,
@@ -270,10 +275,10 @@ async function handleSignature(traderId: string, signature: string, slot: number
         liquidityUsd: market.liquidityUsd,
         sourceTxHash: signature,
       }),
-      { kind: 'skip' },
+      { kind: 'skip', userId: trader.userId },
     );
     await prisma.processedSignature.create({
-      data: { chain: Chain.SOLANA, signature, outcome: `skipped:${qualification.reason}` },
+      data: { chain: Chain.SOLANA, signature, traderId, outcome: `skipped:${qualification.reason}` },
     });
     return;
   }
@@ -293,7 +298,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   });
 
   await prisma.processedSignature.create({
-    data: { chain: Chain.SOLANA, signature, outcome: result.status },
+    data: { chain: Chain.SOLANA, signature, traderId, outcome: result.status },
   });
 
   log.info(

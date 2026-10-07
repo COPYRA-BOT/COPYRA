@@ -193,10 +193,12 @@ async function executeExit(
   const existing = await prisma.trade.findUnique({ where: { idempotencyKey } });
   if (existing?.status === TxStatus.CONFIRMED) return;
 
+  const ownerUserId = position.userId;
   const trade = existing
     ? existing
     : await prisma.trade.create({
         data: {
+          userId: ownerUserId,
           idempotencyKey,
           positionId: position.id,
           chain: position.chain,
@@ -278,7 +280,7 @@ async function executeExit(
         txHash: outcome.txHash,
         broadcastLatencyMs: telemetry.sinceStart('broadcast') ?? null,
       }),
-      { kind: 'sell-submitted', tradeId: trade.id, positionId: position.id },
+      { kind: 'sell-submitted', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
   }
 
@@ -299,7 +301,7 @@ async function executeExit(
         txHash: outcome.txHash,
         attempts: outcome.attempts,
       }),
-      { kind: 'sell-failed', tradeId: trade.id, positionId: position.id },
+      { kind: 'sell-failed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
     return;
   }
@@ -336,7 +338,7 @@ async function executeExit(
   });
 
   const balance = await readOnChainBalance(position.chain).catch(() => null);
-  const total = await getPnlSummary(pnlResetAt);
+  const total = await getPnlSummary(pnlResetAt, ownerUserId);
   const source = await prisma.signal.findFirst({
     where: { positionId: position.id },
     include: { trader: true },
@@ -354,7 +356,7 @@ async function executeExit(
         trailingStopPriceUsd: computeTrailingStop(markPriceUsd, config.trailingDropPct),
         txHash: outcome.txHash as string,
       }),
-      { kind: 'trailing-armed', tradeId: trade.id, positionId: position.id },
+      { kind: 'trailing-armed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
   }
 
@@ -382,6 +384,6 @@ async function executeExit(
       txHash: outcome.txHash as string,
       portionPct: fraction * 100,
     }),
-    { kind: 'sell-confirmed', tradeId: trade.id, positionId: position.id },
+    { kind: 'sell-confirmed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
   );
 }

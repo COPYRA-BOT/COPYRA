@@ -22,7 +22,7 @@ import {
 } from '@copyra/core';
 import { Chain, prisma, type Prisma } from '@copyra/db';
 import { PublicKey } from '@solana/web3.js';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { getAddress, isAddress } from 'viem';
 import { z } from 'zod';
 import {
@@ -51,12 +51,33 @@ function parseChainAddress(chain: Chain, raw: string): string {
   return getAddress(raw).toLowerCase();
 }
 
+/** Require a signed-in wallet for the requested mode (or X-Copyra-Mode). */
+async function requireAuthed(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  mode?: AuthMode,
+) {
+  const resolved = mode ?? authModeFromRequest(request);
+  const session = await readSession(request, resolved);
+  if (!session) {
+    reply.code(401).send({
+      error: `Connect your ${resolved === 'evm' ? 'EVM' : 'Solana'} wallet and sign in first. Each wallet has its own private account.`,
+    });
+    return null;
+  }
+  return session;
+}
+
+function modeForChain(chain: Chain): AuthMode {
+  return chain === Chain.SOLANA ? 'sol' : 'evm';
+}
+
 export async function registerRoutes(app: FastifyInstance): Promise<void> {
   await registerSwapRoutes(app);
   // /health is registered in main.ts before plugins so App Platform liveness
   // does not depend on route registration order.
 
-  app.get('/api/status', async () => {
+  app.get('/api/status', async (request) => {
     const settings = await getSettings();
     const signerAvailable = solanaSigner.available || evmSigner.available;
     const telegramStatus = await telegram.verify().catch((error: unknown) => ({
@@ -101,16 +122,30 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       }),
     );
 
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const activeUserId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    // Counts are account-private when signed in; unsigned clients see zeros (never other users).
+
     const heartbeats = await prisma.workerHeartbeat.findMany();
-    const [openPositions, signals24h, confirmedTrades] = await Promise.all([
-      prisma.position.count({ where: { status: { in: ['OPEN', 'PARTIALLY_CLOSED', 'PENDING_OPEN'] } } }),
-      prisma.signal.count({ where: { createdAt: { gte: new Date(Date.now() - 86_400_000) } } }),
-      prisma.trade.findMany({
-        where: { status: 'CONFIRMED', totalLatencyMs: { not: null } },
-        select: { totalLatencyMs: true, broadcastAt: true, sourceDetectedAt: true },
-        take: 200,
-      }),
-    ]);
+    const [openPositions, signals24h, confirmedTrades] = activeUserId
+      ? await Promise.all([
+          prisma.position.count({
+            where: {
+              userId: activeUserId,
+              status: { in: ['OPEN', 'PARTIALLY_CLOSED', 'PENDING_OPEN'] },
+            },
+          }),
+          prisma.signal.count({
+            where: { userId: activeUserId, createdAt: { gte: new Date(Date.now() - 86_400_000) } },
+          }),
+          prisma.trade.findMany({
+            where: { userId: activeUserId, status: 'CONFIRMED', totalLatencyMs: { not: null } },
+            select: { totalLatencyMs: true, broadcastAt: true, sourceDetectedAt: true },
+            take: 200,
+          }),
+        ])
+      : [0, 0, [] as { totalLatencyMs: number | null; broadcastAt: Date | null; sourceDetectedAt: Date | null }[]];
 
     const confirmSamples = confirmedTrades
       .map((t) => t.totalLatencyMs)
@@ -235,8 +270,24 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(updated);
   });
 
-  app.get('/api/traders', async () => {
-    const traders = await prisma.trader.findMany({ orderBy: { createdAt: 'desc' } });
+  app.get('/api/traders', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const userIds = [sessions.sol?.user.id, sessions.evm?.user.id].filter(
+      (id): id is string => Boolean(id),
+    );
+    if (userIds.length === 0) {
+      return reply.code(401).send({
+        error: 'Connect a wallet and sign in first. Traders are private to each account.',
+      });
+    }
+    // Prefer the active mode session when both are signed in.
+    const mode = authModeFromRequest(request);
+    const activeId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    const scopeIds = activeId ? [activeId] : userIds;
+    const traders = await prisma.trader.findMany({
+      where: { userId: { in: scopeIds } },
+      orderBy: { createdAt: 'desc' },
+    });
     return jsonSafe(traders);
   });
 
@@ -249,18 +300,54 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         notes: z.string().max(500).optional(),
       })
       .parse(request.body);
+    const session = await requireAuthed(request, reply, modeForChain(body.chain));
+    if (!session) return;
     let address: string;
     try {
       address = parseChainAddress(body.chain, body.address.trim());
     } catch {
       return reply.code(400).send({ error: 'Invalid address for the selected chain.' });
     }
-    const trader = await prisma.trader.upsert({
-      where: { chain_address: { chain: body.chain, address } },
-      create: { chain: body.chain, address, label: body.label, notes: body.notes ?? null },
-      update: { label: body.label, notes: body.notes ?? null, enabled: true },
+    const existing = await prisma.trader.findUnique({
+      where: {
+        userId_chain_address: {
+          userId: session.user.id,
+          chain: body.chain,
+          address,
+        },
+      },
     });
-    return jsonSafe(trader);
+    if (existing) {
+      return reply.code(409).send({
+        error: 'This wallet is already on your trader list. Duplicate addresses are not allowed.',
+        traderId: existing.id,
+      });
+    }
+    try {
+      const trader = await prisma.trader.create({
+        data: {
+          userId: session.user.id,
+          chain: body.chain,
+          address,
+          label: body.label,
+          notes: body.notes ?? null,
+        },
+      });
+      return jsonSafe(trader);
+    } catch (error) {
+      // Race: unique (userId, chain, address) — never allow the same wallet twice per account.
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: string }).code === 'P2002'
+      ) {
+        return reply.code(409).send({
+          error: 'This wallet is already on your trader list. Duplicate addresses are not allowed.',
+        });
+      }
+      throw error;
+    }
   });
 
   app.patch('/api/traders/:id', async (request, reply) => {
@@ -272,26 +359,43 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         notes: z.string().max(500).nullable().optional(),
       })
       .parse(request.body);
-    try {
-      const trader = await prisma.trader.update({ where: { id }, data: body });
-      return jsonSafe(trader);
-    } catch {
-      return reply.code(404).send({ error: 'Trader not found' });
+    const sessions = await readBothSessions(request);
+    const userIds = [sessions.sol?.user.id, sessions.evm?.user.id].filter(
+      (id): id is string => Boolean(id),
+    );
+    if (userIds.length === 0) {
+      return reply.code(401).send({ error: 'Sign in to manage your traders.' });
     }
+    const owned = await prisma.trader.findFirst({ where: { id, userId: { in: userIds } } });
+    if (!owned) return reply.code(404).send({ error: 'Trader not found on this account.' });
+    const trader = await prisma.trader.update({ where: { id: owned.id }, data: body });
+    return jsonSafe(trader);
   });
 
   app.delete('/api/traders/:id', async (request, reply) => {
     const { id } = request.params as { id: string };
-    try {
-      await prisma.trader.delete({ where: { id } });
-      return { ok: true };
-    } catch {
-      return reply.code(404).send({ error: 'Trader not found' });
+    const sessions = await readBothSessions(request);
+    const userIds = [sessions.sol?.user.id, sessions.evm?.user.id].filter(
+      (id): id is string => Boolean(id),
+    );
+    if (userIds.length === 0) {
+      return reply.code(401).send({ error: 'Sign in to manage your traders.' });
     }
+    const owned = await prisma.trader.findFirst({ where: { id, userId: { in: userIds } } });
+    if (!owned) return reply.code(404).send({ error: 'Trader not found on this account.' });
+    await prisma.trader.delete({ where: { id: owned.id } });
+    return { ok: true };
   });
 
-  app.get('/api/positions', async () => {
+  app.get('/api/positions', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view your positions.' });
+    }
     const positions = await prisma.position.findMany({
+      where: { userId },
       orderBy: { createdAt: 'desc' },
       include: {
         token: true,
@@ -302,8 +406,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(positions);
   });
 
-  app.get('/api/signals', async () => {
+  app.get('/api/signals', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view your signals.' });
+    }
     const signals = await prisma.signal.findMany({
+      where: { userId },
       orderBy: { createdAt: 'desc' },
       take: 80,
       include: { trader: true, token: true },
@@ -311,8 +422,15 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(signals);
   });
 
-  app.get('/api/trades', async () => {
+  app.get('/api/trades', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view your trades.' });
+    }
     const trades = await prisma.trade.findMany({
+      where: { userId },
       orderBy: { createdAt: 'desc' },
       take: 80,
       include: { signal: { include: { trader: true } } },
@@ -333,15 +451,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(events);
   });
 
-  app.get('/api/pnl', async () => {
+  app.get('/api/pnl', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view your PnL.' });
+    }
     const settings = await getSettings();
     const since = settings.pnlResetAt;
     const [closed, open] = await Promise.all([
       prisma.position.findMany({
-        where: { status: 'CLOSED', closedAt: { gte: since } },
+        where: { userId, status: 'CLOSED', closedAt: { gte: since } },
       }),
       prisma.position.findMany({
-        where: { status: { in: ['OPEN', 'PARTIALLY_CLOSED'] } },
+        where: { userId, status: { in: ['OPEN', 'PARTIALLY_CLOSED'] } },
       }),
     ]);
     const realized = closed.reduce((s, p) => s + Number(p.realizedPnlQuote), 0);
@@ -648,16 +772,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return { ok: true, mode };
   });
 
-  app.get('/api/notifications', async (request) => {
+  app.get('/api/notifications', async (request, reply) => {
     const query = z
       .object({
         page: z.coerce.number().int().positive().default(1),
         pageSize: z.coerce.number().int().positive().max(50).default(10),
       })
       .parse(request.query);
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view your notifications.' });
+    }
     const skip = (query.page - 1) * query.pageSize;
-    // Drop noisy worker-online heartbeats from the operator feed.
-    const where = { NOT: { kind: 'worker-online' } };
+    // Only this account's alerts — never system-wide or other users'.
+    const where = {
+      userId,
+      NOT: { kind: { in: ['worker-online', 'redeploy-finished'] } },
+    };
     const [total, logs] = await Promise.all([
       prisma.notificationLog.count({ where }),
       prisma.notificationLog.findMany({
@@ -681,19 +814,64 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const solUserId = sessions.sol?.user.id;
     const evmUserId = sessions.evm?.user.id;
     const userIds = [solUserId, evmUserId].filter((id): id is string => Boolean(id));
+    const mode = authModeFromRequest(request);
+    const activeUserId = mode === 'evm' ? evmUserId : solUserId;
 
-    const [statusRes, settingsRes, traders, positions, signals, trades, pnlRes, solBal, evmBal, notifications, transfers, deposits] =
+    // Account-private queries — never inject global traders/trades via cookie-less inject().
+    const emptyPnl = {
+      since: null,
+      realizedQuote: 0,
+      unrealizedQuote: 0,
+      openCount: 0,
+      closedCount: 0,
+    };
+
+    const [statusRes, settingsRes, traders, positions, signals, trades, solBal, evmBal, notifications, transfers, deposits, pnl] =
       await Promise.all([
         app.inject({ method: 'GET', url: '/api/status' }),
         app.inject({ method: 'GET', url: '/api/settings' }),
-        app.inject({ method: 'GET', url: '/api/traders' }),
-        app.inject({ method: 'GET', url: '/api/positions' }),
-        app.inject({ method: 'GET', url: '/api/signals' }),
-        app.inject({ method: 'GET', url: '/api/trades' }),
-        app.inject({ method: 'GET', url: '/api/pnl' }),
+        activeUserId
+          ? prisma.trader.findMany({ where: { userId: activeUserId }, orderBy: { createdAt: 'desc' } })
+          : Promise.resolve([]),
+        activeUserId
+          ? prisma.position.findMany({
+              where: { userId: activeUserId },
+              orderBy: { createdAt: 'desc' },
+              include: {
+                token: true,
+                trades: { orderBy: { createdAt: 'desc' }, take: 8 },
+                signals: { include: { trader: true }, orderBy: { createdAt: 'asc' }, take: 4 },
+              },
+            })
+          : Promise.resolve([]),
+        activeUserId
+          ? prisma.signal.findMany({
+              where: { userId: activeUserId },
+              orderBy: { createdAt: 'desc' },
+              take: 80,
+              include: { trader: true, token: true },
+            })
+          : Promise.resolve([]),
+        activeUserId
+          ? prisma.trade.findMany({
+              where: { userId: activeUserId },
+              orderBy: { createdAt: 'desc' },
+              take: 80,
+              include: { signal: { include: { trader: true } } },
+            })
+          : Promise.resolve([]),
         buildModeBalances('sol', solUserId),
         buildModeBalances('evm', evmUserId),
-        app.inject({ method: 'GET', url: '/api/notifications?page=1&pageSize=40' }),
+        activeUserId
+          ? prisma.notificationLog.findMany({
+              where: {
+                userId: activeUserId,
+                NOT: { kind: { in: ['worker-online', 'redeploy-finished'] } },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 40,
+            })
+          : Promise.resolve([]),
         userIds.length
           ? prisma.transfer.findMany({
               where: { userId: { in: userIds } },
@@ -708,6 +886,27 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               take: 80,
             })
           : Promise.resolve([]),
+        activeUserId
+          ? (async () => {
+              const settings = await getSettings();
+              const since = settings.pnlResetAt;
+              const [closed, open] = await Promise.all([
+                prisma.position.findMany({
+                  where: { userId: activeUserId, status: 'CLOSED', closedAt: { gte: since } },
+                }),
+                prisma.position.findMany({
+                  where: { userId: activeUserId, status: { in: ['OPEN', 'PARTIALLY_CLOSED'] } },
+                }),
+              ]);
+              return {
+                since,
+                realizedQuote: closed.reduce((s, p) => s + Number(p.realizedPnlQuote), 0),
+                unrealizedQuote: open.reduce((s, p) => s + Number(p.unrealizedPnlQuote ?? 0), 0),
+                openCount: open.length,
+                closedCount: closed.length,
+              };
+            })()
+          : Promise.resolve(emptyPnl),
       ]);
 
     let solUsd = 0;
@@ -717,22 +916,18 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       solUsd = 0;
     }
 
-    const notifBody = notifications.json() as { items?: unknown[] } | unknown[];
-    const notificationItems = Array.isArray(notifBody)
-      ? notifBody
-      : notifBody && typeof notifBody === 'object' && Array.isArray((notifBody as { items?: unknown[] }).items)
-        ? (notifBody as { items: unknown[] }).items
-        : [];
-
     return jsonSafe({
       status: statusRes.json(),
       settings: settingsRes.json(),
-      traders: traders.json(),
-      positions: positions.json(),
-      signals: signals.json(),
-      trades: trades.json(),
-      pnl: pnlRes.json(),
-      notifications: notificationItems,
+      traders,
+      positions,
+      signals,
+      trades: trades.map((t) => ({
+        ...t,
+        explorerUrl: t.txHash ? explorerTxUrl(t.chain, t.txHash) : t.explorerUrl,
+      })),
+      pnl,
+      notifications,
       transfers,
       deposits,
       auth: {

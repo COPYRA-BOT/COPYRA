@@ -240,14 +240,18 @@ export interface PnlSummary {
  * entirely from confirmed trades. Unrealised P&L uses the last real price mark
  * the monitor recorded, with the mark time exposed so the UI can show staleness.
  */
-export async function getPnlSummary(since: Date): Promise<PnlSummary> {
+export async function getPnlSummary(since: Date, userId?: string): Promise<PnlSummary> {
+  const owner = userId ? { userId } : {};
   const [closed, open] = await Promise.all([
     prisma.position.findMany({
-      where: { status: PositionStatus.CLOSED, closedAt: { gte: since } },
+      where: { ...owner, status: PositionStatus.CLOSED, closedAt: { gte: since } },
       select: { realizedPnlQuote: true, realizedPnlUsd: true, feesQuote: true },
     }),
     prisma.position.findMany({
-      where: { status: { in: [PositionStatus.OPEN, PositionStatus.PARTIALLY_CLOSED] } },
+      where: {
+        ...owner,
+        status: { in: [PositionStatus.OPEN, PositionStatus.PARTIALLY_CLOSED] },
+      },
       select: {
         unrealizedPnlQuote: true,
         unrealizedPnlUsd: true,

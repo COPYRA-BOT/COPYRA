@@ -89,13 +89,26 @@ async function recordFirstBuy(input: QualifiedCopyInput, signalId: string | null
  * the only path to OPEN / EXECUTED.
  */
 export async function handleQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCopyResult> {
-  const lockKey = `copy:${input.chain}:${input.tokenAddress}`;
+  const ownerUserId = input.trader.userId;
+  if (!ownerUserId) {
+    log.error({ traderId: input.trader.id }, 'Trader missing userId — refusing shared execution');
+    return {
+      status: SignalStatus.SKIPPED,
+      signalId: null,
+      positionId: null,
+      tradeId: null,
+      txHash: null,
+    };
+  }
+  // Per-account lock so two users can copy the same token independently.
+  const lockKey = `copy:${ownerUserId}:${input.chain}:${input.tokenAddress}`;
   try {
     return await withLock(lockKey, 120_000, () => runQualifiedCopy(input));
   } catch (error) {
     if (error instanceof LockHeldError) {
       const signal = await prisma.signal.create({
         data: {
+          userId: ownerUserId,
           chain: input.chain,
           traderId: input.trader.id,
           tokenId: input.token.id,
@@ -104,7 +117,7 @@ export async function handleQualifiedCopy(input: QualifiedCopyInput): Promise<Qu
           sourceTxHash: input.sourceTxHash,
           status: SignalStatus.SKIPPED,
           skipReason: SkipReason.DUPLICATE_SIGNAL,
-          skipDetail: 'Another worker is already executing this token.',
+          skipDetail: 'Another worker is already executing this token for this account.',
           signalStrength: input.signalStrength,
           marketCapUsdAtSignal: input.market.marketCapUsd,
           liquidityUsdAtSignal: input.market.liquidityUsd,
@@ -120,6 +133,7 @@ export async function handleQualifiedCopy(input: QualifiedCopyInput): Promise<Qu
 }
 
 async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCopyResult> {
+  const ownerUserId = input.trader.userId;
   const settings = await getSettings();
   const config = await getStrategyConfig();
   const signer = signerFor(input.chain);
@@ -129,6 +143,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
 
   const open = await prisma.position.findFirst({
     where: {
+      userId: ownerUserId,
       chain: input.chain,
       tokenAddress: input.tokenAddress,
       status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
@@ -141,6 +156,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   if (open) {
     const signal = await prisma.signal.create({
       data: {
+        userId: ownerUserId,
         chain: input.chain,
         traderId: input.trader.id,
         tokenId: input.token.id,
@@ -149,7 +165,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         sourceTxHash: input.sourceTxHash,
         status: SignalStatus.SKIPPED,
         skipReason: SkipReason.POSITION_ALREADY_OPEN,
-        skipDetail: 'A COPYRA position in this token is already open.',
+        skipDetail: 'This account already has an open COPYRA position in this token.',
         signalStrength: input.signalStrength,
         marketCapUsdAtSignal: input.market.marketCapUsd,
         liquidityUsdAtSignal: input.market.liquidityUsd,
@@ -170,6 +186,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
 
   const signal = await prisma.signal.create({
     data: {
+      userId: ownerUserId,
       chain: input.chain,
       traderId: input.trader.id,
       tokenId: input.token.id,
@@ -220,9 +237,21 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   }
 
   telemetry.mark('riskChecked');
+  // Size against this account's open-book only (never another wallet's positions).
+  const accountOpenCount = await prisma.position.count({
+    where: {
+      userId: ownerUserId,
+      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
+    },
+  });
+  const accountPortfolio = {
+    ...portfolio.state,
+    openPositionCount: accountOpenCount,
+    existingPositionForToken: false,
+  };
   const sizing = calculatePositionSize({
     config,
-    portfolio: portfolio.state,
+    portfolio: accountPortfolio,
     market: input.market,
     tier: input.marketCapTier,
     signalStrength: input.signalStrength,
@@ -254,7 +283,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         liquidityUsd: input.market.liquidityUsd,
         sourceTxHash: input.sourceTxHash,
       }),
-      { kind: 'skip' },
+      { kind: 'skip', userId: ownerUserId },
     );
     return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
   }
@@ -268,6 +297,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
 
   const position = await prisma.position.create({
     data: {
+      userId: ownerUserId,
       chain: input.chain,
       tokenId: input.token.id,
       tokenAddress: input.tokenAddress,
@@ -286,9 +316,10 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
     },
   });
 
-  const idempotencyKey = `copy:${input.chain}:${input.sourceTxHash}:${input.trader.id}`;
+  const idempotencyKey = `copy:${ownerUserId}:${input.chain}:${input.sourceTxHash}:${input.trader.id}`;
   const trade = await prisma.trade.create({
     data: {
+      userId: ownerUserId,
       idempotencyKey,
       positionId: position.id,
       signalId: signal.id,
@@ -394,7 +425,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         txHash: outcome.txHash,
         broadcastLatencyMs: telemetry.sinceStart('broadcast') ?? null,
       }),
-      { kind: 'buy-submitted', tradeId: trade.id, positionId: position.id },
+      { kind: 'buy-submitted', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
   }
 
@@ -414,7 +445,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         txHash: outcome.txHash,
         attempts: outcome.attempts,
       }),
-      { kind: 'buy-failed', tradeId: trade.id, positionId: position.id },
+      { kind: 'buy-failed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
     if (keepPending) {
       await reportError(new Error(outcome.errorMessage ?? 'confirmation unknown'), {
@@ -464,7 +495,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   });
 
   const mark = await getMarketSnapshot(input.chain, input.tokenAddress).catch(() => input.market);
-  const pnl = await getPnlSummary(settings.pnlResetAt);
+  const pnl = await getPnlSummary(settings.pnlResetAt, ownerUserId);
   telegram.send(
     renderBuy({
       chain: input.chain,
@@ -500,7 +531,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
       openPnlQuote: pnl.unrealizedPnlQuote,
       txHash: outcome.txHash as string,
     }),
-    { kind: 'buy-confirmed', tradeId: trade.id, positionId: position.id },
+    { kind: 'buy-confirmed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
   );
 
   log.info(
