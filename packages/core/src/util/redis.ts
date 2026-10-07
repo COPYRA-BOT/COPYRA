@@ -90,7 +90,8 @@ export async function clearSeen(key: string): Promise<void> {
   await redis().del(`seen:${key}`);
 }
 
-const AUTH_NONCE_TTL_SEC = 600;
+/** Wallet SIWE/SIWS nonces — 5 minutes (one-time consume). */
+const AUTH_NONCE_TTL_SEC = 300;
 
 /** One-time SIWE/SIWS nonce in Redis (GETDEL on consume). */
 export async function storeAuthNonce(

@@ -11,9 +11,10 @@ import {
   recordEvmCustodyDeposit,
   withdrawToWallet,
 } from '@copyra/core';
-import { Chain } from '@copyra/db';
+import { Chain, prisma } from '@copyra/db';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { consumeStepUp } from './account/redis-codes.js';
 import { type AuthMode, readSession } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
@@ -299,10 +300,28 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         amount: z.number().positive(),
         fromBucket: z.enum(['savings', 'trading']).default('trading'),
         chain: chainSchema.optional(),
+        stepUpToken: z.string().min(10).optional(),
       })
       .parse(request.body);
     const session = await requireSession(request, reply, body.mode);
     if (!session) return;
+
+    // Step-up: email/2FA accounts need a fresh TOTP (or recovery) token; wallet-only
+    // accounts may pass a step-up from a fresh signature. Existing wallet sessions
+    // without TOTP keep working when stepUpToken is omitted (SIWE already proved control).
+    const acct = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { totpEnabled: true, email: true, passwordHash: true },
+    });
+    if (acct?.totpEnabled || (acct?.email && acct.passwordHash)) {
+      if (!body.stepUpToken || !(await consumeStepUp(session.user.id, body.stepUpToken))) {
+        return reply.code(403).send({
+          error: 'Confirm with your authenticator code before withdrawing.',
+          code: 'NEED_STEP_UP',
+          need2fa: Boolean(acct.totpEnabled),
+        });
+      }
+    }
 
     let chain = modeChain(body.mode, body.chain);
     if (body.mode === 'evm') {

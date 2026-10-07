@@ -156,6 +156,14 @@ const schema = z.object({
   RESEND_API_KEY: z.string().trim().optional(),
   ALERT_EMAIL_TO: z.string().trim().optional(),
   ALERT_EMAIL_FROM: z.string().trim().optional(),
+
+  /** Account layer (feat/accounts) — optional until Google / email sign-in is enabled. */
+  GOOGLE_CLIENT_ID: z.string().trim().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().trim().optional(),
+  ACCOUNT_EMAIL_FROM: z.string().trim().optional(),
+  WEBAUTHN_RP_ID: z.string().trim().optional(),
+  WEBAUTHN_RP_NAME: z.string().trim().optional(),
+  REFERRAL_MIN_CLAIM_USD: z.coerce.number().nonnegative().default(1),
 });
 
 const parsed = schema.safeParse(process.env);
