@@ -13,17 +13,18 @@ const EVM_CHAINS = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as co
 
 type WalletEntry = Record<string, unknown>;
 
-const BALANCE_RPC_TIMEOUT_MS = 8_000;
-/** Fresh cache — avoid Alchemy 429 from snapshot + poll hammering. */
-const BAL_CACHE_FRESH_MS = 12_000;
-/** Serve last good balance while RPC is failing (never invent; only replay a prior RPC success). */
-const BAL_CACHE_STALE_MS = 10 * 60_000;
+const BALANCE_RPC_TIMEOUT_MS = 6_000;
+/** Serve immediately without waiting on RPC. */
+const BAL_CACHE_FRESH_MS = 8_000;
+/** Keep last confirmed custody read across blips (never invent; only replay prior success). */
+const BAL_CACHE_STALE_MS = 60 * 60_000;
 
 type CacheRow = { at: number; entry: WalletEntry };
 const balanceCache = new Map<string, CacheRow>();
+const refreshInflight = new Map<string, Promise<void>>();
 let workerCache: { at: number; value: Awaited<ReturnType<typeof fetchWorkerWalletBalances>> } | null =
   null;
-const WORKER_CACHE_MS = 45_000;
+const WORKER_CACHE_MS = 60_000;
 
 function cacheKey(chain: Chain, address: string): string {
   return `${chain}:${address.toLowerCase()}`;
@@ -76,12 +77,7 @@ function staleGood(chain: Chain, address: string): WalletEntry | null {
   };
 }
 
-async function readCustodyFunds(chain: Chain, userId: string, address: string): Promise<WalletEntry> {
-  const fresh = balanceCache.get(cacheKey(chain, address));
-  if (fresh && Date.now() - fresh.at < BAL_CACHE_FRESH_MS) {
-    return { ...fresh.entry, source: 'rpc-cache', cachedAt: new Date(fresh.at).toISOString() };
-  }
-
+async function fetchCustodyFunds(chain: Chain, userId: string, address: string): Promise<WalletEntry> {
   return withTimeout(
     (async () => {
       try {
@@ -106,7 +102,9 @@ async function readCustodyFunds(chain: Chain, userId: string, address: string): 
         return entry;
       } catch (error) {
         const cached = staleGood(chain, address);
-        if (cached) return { ...cached, staleError: error instanceof Error ? error.message : String(error) };
+        if (cached) {
+          return { ...cached, staleError: error instanceof Error ? error.message : String(error) };
+        }
         return {
           chain,
           configured: true,
@@ -139,6 +137,41 @@ async function readCustodyFunds(chain: Chain, userId: string, address: string): 
       };
     },
   );
+}
+
+function kickCustodyRefresh(chain: Chain, userId: string, address: string): void {
+  const key = cacheKey(chain, address);
+  if (refreshInflight.has(key)) return;
+  const work = fetchCustodyFunds(chain, userId, address)
+    .then(() => undefined)
+    .finally(() => {
+      refreshInflight.delete(key);
+    });
+  refreshInflight.set(key, work);
+}
+
+/**
+ * Stale-while-revalidate: return last confirmed custody balance immediately,
+ * refresh RPC in the background. Only waits on RPC when there is no cache yet.
+ */
+async function readCustodyFunds(chain: Chain, userId: string, address: string): Promise<WalletEntry> {
+  const hit = balanceCache.get(cacheKey(chain, address));
+  const age = hit ? Date.now() - hit.at : Number.POSITIVE_INFINITY;
+
+  if (hit && age < BAL_CACHE_FRESH_MS) {
+    return { ...hit.entry, source: 'rpc-cache', cachedAt: new Date(hit.at).toISOString() };
+  }
+
+  if (hit && age < BAL_CACHE_STALE_MS) {
+    kickCustodyRefresh(chain, userId, address);
+    return {
+      ...hit.entry,
+      source: 'rpc-cache',
+      cachedAt: new Date(hit.at).toISOString(),
+    };
+  }
+
+  return fetchCustodyFunds(chain, userId, address);
 }
 
 /**

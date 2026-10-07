@@ -76,7 +76,12 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'solana',
     rpcUrl: env.SOLANA_RPC_URL,
     wsUrl: env.SOLANA_WS_URL,
-    rpcFallbacks: env.SOLANA_RPC_FALLBACK_URLS,
+    // Env fallbacks first, then public endpoints so custody reads survive provider blips.
+    rpcFallbacks: [
+      ...env.SOLANA_RPC_FALLBACK_URLS,
+      'https://solana-rpc.publicnode.com',
+      'https://api.mainnet-beta.solana.com',
+    ].filter((url, i, all) => url && all.indexOf(url) === i),
     canExecute: Boolean(env.SOLANA_RPC_URL),
     blockTimeMs: 400,
     requiredConfirmations: 1,

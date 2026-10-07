@@ -231,18 +231,18 @@ function hydrate(snap){
   let savSum=0;
   let sawRpc=false;
   let hadHardError=false;
-  // Start from zeros; fill only from custody RPC (or server rpc-cache of a prior real read).
-  next.cash=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
-  next.availByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
-  next.savByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
-  next.wdByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
-  next.gasResByCh=e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
+  const blankCash=()=>e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0};
+  next.cash=blankCash();
+  next.availByCh=blankCash();
+  next.savByCh=blankCash();
+  next.wdByCh=blankCash();
+  next.gasResByCh=blankCash();
   for(const w of wallets){
    const ch=chOf(w.chain);
    if(w.needsAuth){hadHardError=true;continue}
    const onChain=typeof w.onChainNative==='number'?w.onChainNative:typeof w.native==='number'?w.native:null;
    const available=typeof w.available==='number'?w.available:onChain;
-   // Accept live RPC and short server cache — both are real prior chain reads.
+   // Live RPC + server rpc-cache are both real prior chain reads — paint immediately.
    if(typeof onChain==='number'){
     sawRpc=true;
     next.cash[ch]=Math.round(onChain*UI[e].k);
@@ -265,20 +265,35 @@ function hydrate(snap){
    }
   }
   next.sav=Math.round(savSum*UI[e].k);
-  // If this poll failed but we already showed a real custody read for the same address, keep it
-  // (never flash empty while the wallet still has funds). Fresh RPC zeros still show as zero.
-  if(!sawRpc&&signedIn&&prev?.balReady&&prev.wa&&scopedAddr&&prev.wa===scopedAddr){
-   next.cash={...prev.cash};
-   next.availByCh={...(prev.availByCh||prev.cash)};
-   next.savByCh={...(prev.savByCh||{})};
-   next.wdByCh={...(prev.wdByCh||{})};
-   next.gasResByCh={...(prev.gasResByCh||{})};
-   next.sav=prev.sav;
+  // Instant fill: memory → localStorage last confirmed for this custody address (no RPC wait).
+  const applyConfirmed=(src)=>{
+   if(!src)return false;
+   next.cash={...src.cash};
+   next.availByCh={...(src.availByCh||src.cash)};
+   next.savByCh={...(src.savByCh||{})};
+   next.wdByCh={...(src.wdByCh||{})};
+   next.gasResByCh={...(src.gasResByCh||{})};
+   next.sav=src.sav||0;
+   if(src.wa)next.wa=src.wa;
    next.balReady=true;
-   next.balError=true;
+   return true;
+  };
+  if(!sawRpc){
+   const samePrev=signedIn&&prev?.balReady&&prev.wa&&scopedAddr&&prev.wa===scopedAddr;
+   if(samePrev&&applyConfirmed(prev)){
+    next.balError=true;
+   }else{
+    const local=loadCustodyBal(e,scopedAddr||prev?.wa);
+    if(local&&applyConfirmed(local)) next.balError=true;
+    else { next.balReady=false; next.balError=hadHardError; }
+   }
   }else{
-   next.balReady=sawRpc;
-   next.balError=hadHardError&&!sawRpc;
+   next.balReady=true;
+   next.balError=false;
+   saveCustodyBal(e,{
+    at:Date.now(),wa:next.wa,cash:next.cash,availByCh:next.availByCh,
+    savByCh:next.savByCh,wdByCh:next.wdByCh,gasResByCh:next.gasResByCh,sav:next.sav
+   });
   }
   next.needsAuth=multiCust&&!signedIn;
   const worker=snap.balances?.worker;
@@ -439,23 +454,52 @@ function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><
 <p><b>3. Size and execute on-chain.</b> Position size uses your live custody balance and tier caps. Swaps go through Jupiter (SOL) or Kyber (EVM). A position opens only after the fill confirms on-chain — never from a simulation.</p>
 <p><b>4. Exit by your strategy.</b> Manual TP/SL or trailing take-profit runs from live marks. Monitor, Leaderboard, and PnL History show your account’s real positions, closed trades, and RPC balances — not shared with other wallets.</p>
 </div></details>`}
+function loadCustodyBal(e,addr){
+ try{
+  const raw=localStorage.getItem('cpy_custody_bal_'+e);
+  if(!raw)return null;
+  const s=JSON.parse(raw);
+  if(!s||!s.wa||!s.cash||!s.at)return null;
+  if(addr&&s.wa!==addr)return null;
+  if(Date.now()-s.at>24*3600_000)return null;
+  return s;
+ }catch{return null}
+}
+function saveCustodyBal(e,payload){
+ if(!payload?.wa||!payload?.cash)return;
+ try{localStorage.setItem('cpy_custody_bal_'+e,JSON.stringify(payload))}catch{}
+}
+function paintLocalCustody(){
+ for(const e of['sol','evm']){
+  const saved=loadCustodyBal(e,null);
+  if(!saved||!S[e]||S[e].balReady)continue;
+  S[e].wa=saved.wa;
+  S[e].cash={...saved.cash};
+  S[e].availByCh={...(saved.availByCh||saved.cash)};
+  S[e].savByCh={...(saved.savByCh||{})};
+  S[e].wdByCh={...(saved.wdByCh||{})};
+  S[e].gasResByCh={...(saved.gasResByCh||{})};
+  S[e].sav=saved.sav||0;
+  S[e].balReady=true;
+  S[e].balError=false;
+ }
+}
 function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=invOf(e),nx=Math.max(0,avail*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
- const showAmt=!!wallet[e]&&s.balReady;
- const loading=!!wallet[e]&&!s.balReady&&!s.balError;
- const amt=(u)=>{if(!wallet[e])return'—';if(loading)return'…';if(!s.balReady)return'—';return f(e,u)};
+ const showAmt=s.balReady;
+ const amt=(u)=>showAmt?f(e,u):'*';
  const wrk=s.worker;
  const wrkNote=!wallet[e]
-  ?`<div class="ban live" style="margin-bottom:12px">Connect + sign in — Trading/Savings are live RPC reads of <b>your custody wallet</b>.</div>`
-  :(!s.balReady&&s.balError?`<div class="ban live" style="margin-bottom:12px">Custody RPC briefly unavailable — retrying. Buckets stay blank until a real read succeeds (never invent zeros).</div>`
-  :(s.balReady&&s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody RPC (refresh in progress).</div>`
+  ?`<div class="ban live" style="margin-bottom:12px">Connect + sign in. Trading/Savings show <b>your custody wallet</b> (Deposit funds there — not the shared worker key).</div>`
+  :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody (*). Amounts appear automatically from cache / RPC.</div>`
+  :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance — refreshing in background.</div>`
   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
-   ?`<div class="ban live" style="margin-bottom:12px">Shared worker wallet has <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Trading buckets use <b>your custody</b> — Deposit to ${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'custody'}.</div>`
+   ?`<div class="ban live" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
    :'')));
  return `${liveBanner(e)}${wrkNote}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):(loading?'reading custody RPC…':(wallet[e]?'waiting for custody RPC…':'sign in for live custody'))}</div>
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):'*'}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'—'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect + sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'*'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect + sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${amt(s.sav)} ${X.u}</div><div class="mu">Reserved on your custody wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
@@ -1108,7 +1152,8 @@ const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){ref
 <div class="row"><button class="btn pri" onclick="cl();refresh();toast('Refreshed')">Refresh</button><button class="btn" onclick="cl()">Close</button></div>`)};
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
-setInterval(()=>{refresh()},6000);
+paintLocalCustody();
+setInterval(()=>{refresh()},5000);
 try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{refresh()}}catch{}
 refresh();draw();
 restoreWallets();
