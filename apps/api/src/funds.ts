@@ -74,7 +74,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
             : 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
           : multiUserCustodyEnabled()
             ? 'Could not read RPC balance for your custody wallet. Check SOLANA_RPC_URL / EVM RPC env vars on the API component.'
-            : 'No bot signing key — deposit destination and withdraw are unavailable until the host secret store has the Solana/EVM bot signing material.',
+            : 'No bot signing key. Deposit destination and withdraw are unavailable until the host secret store has the Solana/EVM bot signing material.',
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -360,7 +360,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         );
         return reply.code(400).send({
           error: gasReady.length
-            ? `Custody on ${chain} needs ${symbol} for gas. ${gasReady.map((g) => g.chain).join(', ')} already has gas — switch network or top up.`
+            ? `Custody on ${chain} needs ${symbol} for gas. ${gasReady.map((g) => g.chain).join(', ')} already has gas. Switch network or top up.`
             : `Custody needs a tiny ${symbol} for network gas (USDC never pays gas). Your wallet will send a small top-up.`,
           code: 'CUSTODY_NEEDS_GAS',
           recommendedTopUpWei: wei,

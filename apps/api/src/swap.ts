@@ -157,7 +157,7 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
       note:
         confirmation.status === TxStatus.CONFIRMED
           ? 'Confirmed on-chain via getSignatureStatuses.'
-          : 'Not confirmed. The explorer link is the only proof path — this response is not a fill.',
+          : 'Not confirmed. The explorer link is the only proof path. This response is not a fill.',
     });
   });
 

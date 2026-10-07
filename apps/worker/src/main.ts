@@ -16,10 +16,10 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
 const stopSolana = await startSolanaMonitor();
 const stopEvm = await startEvmMonitor();
 await heartbeat('running', { monitor: 'solana-logs+evm-transfers+exits-fast' });
-logger.info({}, 'COPYRA worker started — Solana logs, fast EVM polls, and sub-second TP/SL marks are live');
+logger.info({}, 'COPYRA worker started. Solana logs, fast EVM polls, and sub-second TP/SL marks are live');
 
 telegram.send(
-  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again — Solana log subscriptions, fast EVM transfer polls, and TP/SL marks (≤1s tick) are active. Closing the dashboard does not stop this process.',
+  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live again. Solana log subscriptions, fast EVM transfer polls, and TP/SL marks (≤1s tick) are active. Closing the dashboard does not stop this process.',
   { kind: 'redeploy-finished' },
 );
 

@@ -116,13 +116,15 @@ function decide(p,x){const E=1e-12,up=v=>p.entry*(1+v/100)*(1-E),sl=p.entry*(1-p
  return x>=up(p.tp)?{f:1,why:'TAKE_PROFIT'}:null}
 function stats(r){const n=r.length,w=r.filter(x=>x.usd>0).length,l=r.filter(x=>x.usd<0).length,wr=n?w/n*100:0,pnl=r.reduce((s,x)=>s+x.usd,0);
  return{n,w,l,wr,pnl,best:n?Math.max(...r.map(x=>x.usd)):null,worst:n?Math.min(...r.map(x=>x.usd)):null,score:n?wr*Math.log(1+n)/10+Math.sign(pnl)*Math.log(1+Math.abs(pnl)):null}}
-const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN_BLACKLISTED:'Token is blacklisted',NOT_FIRST_BUY:'Watched wallet already bought this token — first-buy-only skips later buys',LIQUIDITY_TOO_LOW:'Pool liquidity below your minimum',MAX_OPEN_POSITIONS:'Max open positions reached',INSUFFICIENT_CHAIN_LIQUIDITY:'Not enough USDC pre-positioned on this chain (no bridging during trades)',MARKET_CAP_TOO_HIGH:'Market cap above your saved maximum',MARKET_CAP_TOO_LOW:'Market cap below your saved minimum',MAX_DEPLOYED:'Max capital already deployed',INSUFFICIENT_BALANCE:'Available balance below minimum trade',TRADE_BELOW_MINIMUM:'Calculated trade below minimum',MINIMUM_RESERVE:'Trade would break your minimum reserve',NO_ROUTE:'No swap route found',PRICE_IMPACT_TOO_HIGH:'Price impact above your limit',NOT_A_BUY:'Not a buy',BLOCKED_NO_SIGNER:'Qualified, but no server signing key is configured so nothing was broadcast',BLOCKED_DISABLED:'Qualified, but trading is disabled by the host or settings guard',IS_SELL:'Trader sold — not an entry'};
+const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN_BLACKLISTED:'Token is blacklisted',NOT_FIRST_BUY:'Watched wallet already bought this token. First buy only skips later buys.',LIQUIDITY_TOO_LOW:'Pool liquidity below your minimum',MAX_OPEN_POSITIONS:'Max open positions reached',INSUFFICIENT_CHAIN_LIQUIDITY:'Not enough USDC on this chain for a new position',MARKET_CAP_TOO_HIGH:'Market cap above your saved maximum',MARKET_CAP_TOO_LOW:'Market cap below your saved minimum',MAX_DEPLOYED:'Max capital already deployed',INSUFFICIENT_BALANCE:'Available balance below minimum trade',TRADE_BELOW_MINIMUM:'Calculated trade below minimum',MINIMUM_RESERVE:'Trade would break your minimum reserve',NO_ROUTE:'No swap route found',PRICE_IMPACT_TOO_HIGH:'Price impact above your limit',NOT_A_BUY:'Not a buy',BLOCKED_NO_SIGNER:'Qualified, but no signing key is configured so nothing was broadcast',BLOCKED_DISABLED:'Qualified, but trading is disabled by the host or settings guard',IS_SELL:'Trader sold (not an entry)'};
 /** Display units: K = thousands USD, M = millions USD. Saved to strategy row as absolute USD. */
 const unitMul=u=>u==='M'?1e6:1e3;
 const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'FIRST_ONLY',maxDep:80,maxTok:50,bl:''});
 const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,balError:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
+/** Trade history P&L filter: all | profit | loss */
+let histPnL='all';
 /** Pagination for activity / trade-history lists (10 rows per page). */
 let actPage={sol:1,evm:1,unified:1},histPage=1;
 const PAGE_N=10;
@@ -184,7 +186,7 @@ function botFrom(status,settings,e){
 }
 function hydrate(snap){
  LIVE=snap;ERR=null;
- // Keep last-good SOL/USD so the dashboard never flashes "price unread".
+ // Keep last-good SOL/USD so the dashboard never flashes "*".
  if(snap.solUsd>0)UI.sol.usd=snap.solUsd;
  // Keep mode wallets aligned with independent sessions (never mix SOL/EVM accounts).
  if(snap.auth?.sol?.address)wallet.sol=snap.auth.sol.address;
@@ -222,7 +224,7 @@ function hydrate(snap){
   const modeBal=snap.balances?.[e];
   const multiCust=!!(modeBal?.multiUserCustody??snap.balances?.multiUserCustody);
   const allWallets=modeBal?.wallets||(snap.balances?.wallets||[]).filter(w=>modeOf(w.chain)===e);
-  // Only this account's custody wallets — NEVER the shared bot signer (ExQW… / 0xc859…).
+  // Only this account's custody wallets. NEVER the shared bot signer (ExQW… / 0xc859…).
   const custodyWallets=allWallets.filter(w=>w.userScoped||w.role==='custody');
   const signedIn=!!(wallet[e]||snap.auth?.[e]?.address);
   const wallets=custodyWallets.length?custodyWallets:(multiCust||signedIn?[]:allWallets);
@@ -242,7 +244,7 @@ function hydrate(snap){
    if(w.needsAuth){hadHardError=true;continue}
    const onChain=typeof w.onChainNative==='number'?w.onChainNative:typeof w.native==='number'?w.native:null;
    const available=typeof w.available==='number'?w.available:onChain;
-   // Live RPC + server rpc-cache are both real prior chain reads — paint immediately.
+   // Live RPC + server rpc-cache are both real prior chain reads. paint immediately.
    if(typeof onChain==='number'){
     sawRpc=true;
     next.cash[ch]=Math.round(onChain*UI[e].k);
@@ -331,13 +333,18 @@ function hydrate(snap){
   });
   const tradeSig={};
   for(const s of signals){if(s.id)tradeSig[s.id]=s}
+  const posById=Object.fromEntries(positions.map(p=>[p.id,p]));
   next.hist=trades.filter(t=>modeOf(t.chain)===e&&t.side==='SELL').map(t=>{
    const sig=t.signal||tradeSig[t.signalId];
    const trRow=byId[sig?.traderId];
+   const pos=t.positionId?posById[t.positionId]:null;
    const valueUsd=Number(t.valueUsd||0);
-   const isStop=String(t.reason).includes('STOP');
-   const usdPnl=isStop?-Math.abs(valueUsd):valueUsd;
-   return{t:new Date(t.confirmedAt||t.createdAt).getTime(),e,sym:t.tokenSymbol||'TOKEN',ch:chOf(t.chain),tr:trRow?.n||sig?.trader?.label||'COPYRA',trId:trRow?.id||sig?.traderId||'',why:t.reason==='STOP_LOSS'?'STOP_LOSS':t.reason==='TRAILING_STOP'?'TRAILING_STOP':'TAKE_PROFIT',partial:t.reason==='TRAILING_STOP',size:valueUsd,usd:usdPnl,pct:0,hash:t.txHash,url:t.explorerUrl};
+   const entryUsd=Number(pos?.entryValueUsd||0);
+   const usdPnl=pos&&pos.realizedPnlUsd!=null?Number(pos.realizedPnlUsd):valueUsd;
+   const size=valueUsd>0?valueUsd:entryUsd;
+   const pct=entryUsd>0?(usdPnl/entryUsd)*100:0;
+   const why=t.reason==='STOP_LOSS'?'STOP_LOSS':t.reason==='TRAILING_STOP'?'TRAILING_STOP':t.reason==='EMERGENCY_STOP'?'KILL SWITCH':'TAKE_PROFIT';
+   return{t:new Date(t.confirmedAt||t.createdAt).getTime(),e,sym:t.tokenSymbol||'TOKEN',ch:chOf(t.chain),tr:trRow?.n||sig?.trader?.label||'Watched trader',trId:trRow?.id||sig?.traderId||'',why,partial:t.reason==='TRAILING_STOP',size,usd:usdPnl,pct,hash:t.txHash,url:t.explorerUrl};
   });
   const acts=[];
   for(const s of signals.filter(x=>modeOf(x.chain)===e)){
@@ -349,10 +356,10 @@ function hydrate(snap){
     const r=s.skipReason||s.status;
     next.skip.unshift({t:when,w:who+' → '+tok,r});
     const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok} — ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e});
+    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok}. ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e});
    }else{
     const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok} — ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e});
+    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok}. ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e});
    }
   }
   for(const t of trades.filter(x=>modeOf(x.chain)===e)){
@@ -360,10 +367,10 @@ function hydrate(snap){
    const name=(TX_EXPLORER[t.chain]||{}).name||'tx';
    const link=t.explorerUrl
     ?` <a href="${t.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
-    :(t.txHash?txExplorerLink(t.chain,t.txHash):' — no hash (not broadcast)');
+    :(t.txHash?txExplorerLink(t.chain,t.txHash):'. No hash (not broadcast)');
    acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
   }
-  // On-chain custody activity (deposits / withdrawals / bucket moves).
+  // On chain custody activity (deposits / withdrawals / bucket moves).
   const decimalsFor=(chain,sym)=>{
    if(chain==='SOLANA'||sym==='SOL')return 9;
    if(chain==='BSC')return 18;
@@ -379,7 +386,7 @@ function hydrate(snap){
    acts.push({t:when,ts:new Date(d.creditedAt||d.createdAt).getTime(),h:`<b>Deposit</b> ${amt.toFixed(e==='sol'?3:2)} ${e==='sol'?'SOL':'USDC'} on ${d.chain} · ${d.status}${explorer}`,e,kind:'deposit'});
   }
   for(const tr of (snap.transfers||[]).filter(x=>modeOf(x.chain)===e)){
-   // Same-bucket + txHash rows mirror custodyDeposit — skip to avoid duplicate Deposit lines.
+   // Same-bucket + txHash rows mirror custodyDeposit. skip to avoid duplicate Deposit lines.
    if(tr.fromBucket===tr.toBucket&&tr.txHash)continue;
    const when=new Date(tr.confirmedAt||tr.requestedAt).toLocaleTimeString();
    const dec=decimalsFor(tr.chain,tr.assetSymbol);
@@ -428,7 +435,7 @@ async function refresh(){
    ERR=null;
    hydrate(snap);
   }catch(err){
-   // Keep last LIVE hydrate — never blank balances because one request failed.
+   // Keep last LIVE hydrate. never blank balances because one request failed.
    ERR=err instanceof Error?err.message:String(err);
   }
   if(!document.querySelector('#md.o,#dr.o'))draw();
@@ -437,22 +444,22 @@ async function refresh(){
 }
 function liveBanner(e){
  const t=LIVE?.status?.trading;
- if(ERR)return `<div class="ban live">API unreachable: ${ERR}</div>`;
- if(!LIVE)return `<div class="ban">Reading live chain data…</div>`;
- if(t?.observeOnly)return `<div class="ban">Observe-only: no server bot key. COPYRA decodes real wallets and will not broadcast. ${t.blockedReason||''}</div>`;
+ if(ERR)return `<div class="ban live">Connection issue: ${ERR}</div>`;
+ if(!LIVE)return `<div class="ban">Loading market data…</div>`;
+ if(t?.observeOnly)return `<div class="ban">Signing is offline. COPYRA still monitors wallets and will not broadcast until a signing key is available. ${t.blockedReason||''}</div>`;
  if(t?.blockedReason)return `<div class="ban live">${t.blockedReason}</div>`;
- return `<div class="ban" style="background:rgba(61,220,151,.12);color:var(--g)">Live: balances, signals and fills come from chain / RPC. Nothing is invented in this page.</div>`;
+ return `<div class="ban" style="background:rgba(61,220,151,.12);color:var(--g)">Live market data. Balances, signals, and fills are read from chain RPC.</div>`;
 }
 // ---- UI (same markup as the uploaded COPYRA frontend) ----
 const bd=e=>`<span class="bd ${e}">${e.toUpperCase()}</span>`,pnlC=x=>x>=0?'g':'rd';
-function fmtUsdU(v,u){const n=Number(v);if(!Number.isFinite(n))return'—';return u==='M'?`$${n}M`:`$${n}K`}
-function strat(e){const s=S[e].set,mu=s.minMcUnit||s.mcUnit||'K',xu=s.maxMcUnit||mu,lu=s.liqUnit||'K',buy=s.buyMode==='EVERY_BUY'?'Every qualifying buy':'First buy only';return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL −${s.sl}% · ${buy} · Market cap ${fmtUsdU(s.minMc,mu)}–${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
+function fmtUsdU(v,u){const n=Number(v);if(!Number.isFinite(n))return'*';return u==='M'?`$${n}M`:`$${n}K`}
+function strat(e){const s=S[e].set,mu=s.minMcUnit||s.mcUnit||'K',xu=s.maxMcUnit||mu,lu=s.liqUnit||'K',buy=s.buyMode==='EVERY_BUY'?'Every qualifying buy':'First buy only';return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL ${s.sl}% · ${buy} · Market cap ${fmtUsdU(s.minMc,mu)} to ${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
 function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><summary><b>How it works</b></summary>
 <div class="mu" style="padding-top:10px;line-height:1.55;max-width:72ch">
-<p><b>1. Watch real wallets.</b> You add trader addresses. The worker subscribes to live Solana / EVM RPC feeds and decodes each confirmed transaction — buys, sells, airdrops, transfers.</p>
-<p><b>2. Qualify against your settings.</b> Only genuine quote-asset buys that pass your saved market-cap window, min liquidity, slippage, position limits, and buy mode are eligible. <b>First buy only</b> copies that watched wallet’s first buy of a token and skips their later buys of it. <b>Every buy</b> also copies additional buys of the same token (scaling into your open position). Unqualified activity is listed under Skipped Trades with the exact reason.</p>
-<p><b>3. Size and execute on-chain.</b> Position size uses your live custody balance and tier caps. Swaps go through Jupiter (SOL) or Kyber (EVM). A position opens only after the fill confirms on-chain — never from a simulation.</p>
-<p><b>4. Exit by your strategy.</b> Manual TP/SL or trailing take-profit runs from live marks. Monitor, Leaderboard, and PnL History show your account’s real positions, closed trades, and RPC balances — not shared with other wallets.</p>
+<p><b>1. Watch wallets.</b> Add trader addresses. The worker subscribes to live Solana and EVM feeds and decodes confirmed buys, sells, airdrops, and transfers.</p>
+<p><b>2. Apply your rules.</b> Only quote asset buys that pass your market cap window, liquidity, slippage, position limits, and buy mode are eligible. <b>First buy only</b> copies that wallet’s first buy of a token. <b>Every buy</b> also copies later buys of the same token. Skipped trades list the exact reason.</p>
+<p><b>3. Execute on chain.</b> Size uses your live custody balance and tier caps. Swaps go through Jupiter (SOL) or Kyber (EVM). A position opens only after the fill confirms on chain.</p>
+<p><b>4. Exit by strategy.</b> Manual take profit and stop loss, or trailing take profit, run from live marks. Monitor, Leaderboard, and PnL History show this account’s positions and closed trades.</p>
 </div></details>`}
 function loadCustodyBal(e,addr){
  try{
@@ -490,50 +497,52 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
  const amt=(u)=>showAmt?f(e,u):'*';
  const wrk=s.worker;
  const wrkNote=!wallet[e]
-  ?`<div class="ban live" style="margin-bottom:12px">Connect + sign in. Trading/Savings show <b>your custody wallet</b> (Deposit funds there — not the shared worker key).</div>`
+  ?`<div class="ban live" style="margin-bottom:12px">Connect and sign in. Trading/Savings show <b>your custody wallet</b> (Deposit funds there. not the shared worker key).</div>`
   :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody (*). Amounts appear automatically from cache / RPC.</div>`
-  :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance — refreshing in background.</div>`
+  :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance. Refreshing in the background.</div>`
   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
    ?`<div class="ban live" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
    :'')));
  return `${liveBanner(e)}${wrkNote}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'price unread')):'*'}</div>
-<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On-chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'*'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect + sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'*')):'*'}</div>
+<div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'*'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect and sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${amt(s.sav)} ${X.u}</div><div class="mu">Reserved on your custody wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
 <div class="row"><button class="btn" onclick="mv('s2t')">Move to Trading</button><button class="btn" onclick="wd()">Withdraw</button></div></div></div>
 <div class="card"><div class="row sp"><h3>Copy Trading ${st}</h3><button class="sw ${s.bot=='ON'?'on':''}" aria-label="Bot on/off" onclick="bot('${e}',S['${e}'].bot=='ON'?'PAUSED':'ON')"></button></div>
 <p class="mu" style="max-width:80ch">${strat(e)}</p><div class="row"><button class="btn" onclick="bot('${e}','PAUSED')">Pause Bot</button><button class="btn" onclick="bot('${e}','ON')">Resume Bot</button><button class="btn red" onclick="killSwitch('${e}')">Kill Switch</button><button class="btn" onclick="settings('${e}')">Settings</button></div>
-<p class="mu">Pause = no new buys (this mode). Kill Switch = stop this mode and sell all open positions back to custody.</p></div>
-<div class="card"><h3>Execution Metrics</h3>${L?`<div class="kp"><div class="k"><small>Detected</small><b>${L.det} ms</b></div><div class="k"><small>Submitted</small><b>${L.sub} ms</b></div><div class="k"><small>Confirmation</small><b>${L.conf.toFixed(1)} s</b></div><div class="k"><small>Slippage</small><b>${L.slip.toFixed(2)}%</b></div><div class="k"><small>Total (≤2 s)</small><b class="${L.tot<=2000?'g':'wn'}">${(L.tot/1e3).toFixed(2)} s ${L.tot<=2000?'✓':'⚠ slow'}</b></div></div>`:'<p class="mu">Metrics appear after the first confirmed COPYRA fill. Until then the engine has never broadcast.</p>'}
-<p class="mu">Timings are measured from confirmed trades, never invented.${e=='evm'?' Gas is sponsored by COPYRA when execution is live.':''}</p></div>
-${e=='evm'?`<div class="card"><h3>Chains &amp; Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'—'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
+<p class="mu">Pause stops new buys in this mode. Kill Switch stops this mode and sells all open positions back to custody.</p></div>
+<div class="card"><h3>Execution Metrics</h3>${L?`<div class="kp"><div class="k"><small>Detected</small><b>${L.det} ms</b></div><div class="k"><small>Submitted</small><b>${L.sub} ms</b></div><div class="k"><small>Confirmation</small><b>${L.conf.toFixed(1)} s</b></div><div class="k"><small>Slippage</small><b>${L.slip.toFixed(2)}%</b></div><div class="k"><small>Total (≤2 s)</small><b class="${L.tot<=2000?'g':'wn'}">${(L.tot/1e3).toFixed(2)} s ${L.tot<=2000?'✓':'⚠ slow'}</b></div></div>`:'<p class="mu">Metrics appear after the first confirmed COPYRA fill.</p>'}
+<p class="mu">Timings are measured from confirmed trades.${e=='evm'?' Gas is sponsored by COPYRA when execution is live.':''}</p></div>
+${e=='evm'?`<div class="card"><h3>Chains and Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'*'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
 <div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>
-<div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on-chain.</p>'}</div></div>
-${(()=>{const pg=pageSlice(s.act,actPage[e]||1);return`<div class="card"><h3>Recent Activity</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. Deposit, withdraw, or add a trader — on-chain activity appears here.</p>'}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
-<details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b> — ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, MC/liq window, first-buy mode, etc.).</p>'}</div></details>
+<div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.</p>'}</div></div>
+${(()=>{const pg=pageSlice(s.act,actPage[e]||1);return`<div class="card"><h3>Recent Activity</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. Deposit, withdraw, or add a trader. On chain activity appears here.</p>'}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
+<details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b>. ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, market cap or liquidity window, first buy mode, and similar checks).</p>'}</div></details>
 ${howItWorksHtml()}`}
 const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
-const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
+const filteredHist=()=>allHist().filter(h=>histPnL==='profit'?h.usd>0:histPnL==='loss'?h.usd<0:true);
+const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';histPage=1;draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
 function monitor(){const tot=e=>UI[e].usd?(cashOf(e)+invOf(e)+S[e].sav)/UI[e].k*UI[e].usd:0,H=allHist(),today=H.filter(h=>Date.now()-h.t<864e5).reduce((a,h)=>a+h.usd,0);
- const heads=(LIVE?.status?.chains||[]).map(c=>`${c.code} ${c.head||'—'}`).slice(0,4).join(' · ');
+ const heads=(LIVE?.status?.chains||[]).map(c=>`${c.code} ${c.head||'*'}`).slice(0,4).join(' · ');
  const pnlLive=LIVE?.pnl;
  return `${liveBanner('sol')}<div class="kp"><div class="k"><small>Total portfolio</small><b>$${(tot('sol')+tot('evm')).toLocaleString(undefined,{maximumFractionDigits:0})}</b></div><div class="k"><small>Solana</small><b>$${tot('sol').toFixed(0)}</b></div><div class="k"><small>EVM</small><b>$${tot('evm').toFixed(0)}</b></div><div class="k"><small>Open positions</small><b>${S.sol.pos.length} SOL · ${S.evm.pos.length} EVM</b></div><div class="k"><small>Realized (session)</small><b class="${pnlC(today)}">${sg(today)}</b></div>${pnlLive?`<div class="k"><small>Unrealized (RPC marks)</small><b class="${pnlC(Number(pnlLive.unrealizedQuote||0))}">${sg(Number(pnlLive.unrealizedQuote||0))}</b></div>`:''}</div>
 <p class="mu">Balances and positions are your signed-in custody wallet on live RPC. ${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>w.status).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
 <div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}</div>
 <div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON')">Resume all engines</button></div>
 <div class="card"><h3>Open positions (all chains)</h3><div class="tw"><table><tr><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Invested</th><th>P&amp;L</th><th>MC</th></tr>${['sol','evm'].flatMap(e=>S[e].pos.map(p=>`<tr><td>${bd(e)}</td><td><b>${p.sym}</b></td><td>${CH[p.ch]||p.ch}</td><td>${p.tr.n}</td><td>${UI[e].usd?usd(e,p.inv*p.rem):f(e,p.inv*p.rem)}</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>$${(p.mc/1e6).toFixed(1)}M</td></tr>`)).join('')||'<tr><td class="mu">None</td></tr>'}</table></div></div>
-${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On-chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
+${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
 function board(){const rows=['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].tr.map(t=>({e,t,...stats(S[e].hist.filter(h=>h.trId==t.id||h.tr==t.n))}))).sort((a,b)=>(b.n>0)-(a.n>0)||(b.score??-1e9)-(a.score??-1e9));
- return segF()+`<p class="mu" style="margin:0 0 12px">Leaderboard ranks <b>your</b> copy traders from closed on-chain exits in this account — wins, losses, and net USD P&amp;L. Other wallets never see this list.</p><div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'—'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'—'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'—'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet. Add a wallet on Trading — stats appear after confirmed exits.</td></tr>'}</table></div>`}
-function pnlv(){const H=allHist(),s=stats(H),W=[...H].reverse();let c=0;const pts=W.map(h=>c+=h.usd),mx=Math.max(0,...pts),mn=Math.min(0,...pts),rg=mx-mn||1;
+ return segF()+`<p class="mu" style="margin:0 0 12px">Leaderboard ranks <b>your</b> copy traders from closed on chain exits in this account. Wins, losses, and net USD P&amp;L. Other wallets never see this list.</p><div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'*'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'*'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'*'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet. Add a wallet on Trading. Stats appear after confirmed exits.</td></tr>'}</table></div>`}
+function pnlv(){const H=filteredHist(),all=allHist(),s=stats(all),W=[...H].reverse();let c=0;const pts=W.map(h=>c+=h.usd),mx=Math.max(0,...pts),mn=Math.min(0,...pts),rg=mx-mn||1;
  const path=pts.length>1?pts.map((v,i)=>`${i?'L':'M'}${(i/(pts.length-1)*600).toFixed(1)},${(100-(v-mn)/rg*90-5).toFixed(1)}`).join(''):'';
- const nm={STOP_LOSS:'STOP LOSS',TAKE_PROFIT:'TAKE PROFIT',TRAILING_STOP:'TRAILING STOP'};
- return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'—'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'—'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'—'}</b></div></div>
-<div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed COPYRA trades.</p>'}</div>
-${(()=>{const pg=pageSlice(H,histPage||1);return`<div class="card"><div class="row sp"><h3>Trade history</h3><button class="btn sm" onclick="csv()">Copy CSV</button></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${pg.rows.map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (½)':''}</td><td>${h.size.toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||'<tr><td class="mu">No exits yet. COPYRA has not closed a position on-chain.</td></tr>'}</table></div>${pagerHtml('hist',pg.page,pg.pages,'setHistPage(__P__)')}</div>`})()}`}
+ const nm={STOP_LOSS:'STOP LOSS',TAKE_PROFIT:'TAKE PROFIT',TRAILING_STOP:'TRAILING STOP','KILL SWITCH':'KILL SWITCH'};
+ const filt=[['all','All'],['profit','Profit'],['loss','Loss']];
+ return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'*'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'*'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'*'}</b></div></div>
+<div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed trades.</p>'}</div>
+${(()=>{const pg=pageSlice(H,histPage||1);return`<div class="card"><div class="row sp" style="gap:10px;flex-wrap:wrap"><h3 style="margin:0">Trade history</h3><div class="row" style="margin-left:auto;gap:8px;flex-wrap:wrap"><select id="histPnL" aria-label="Filter by profit or loss" style="width:auto;min-width:140px" onchange="histPnL=this.value;histPage=1;draw()">${filt.map(([v,l])=>`<option value="${v}" ${histPnL===v?'selected':''}>${l} trades</option>`).join('')}</select><button class="btn sm" onclick="csv()">Copy CSV</button></div></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${pg.rows.map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (half)':''}</td><td>${Number(h.size||0).toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||`<tr><td class="mu" colspan="9">${histPnL==='profit'?'No profit trades in this view.':histPnL==='loss'?'No loss trades in this view.':'No exits yet. Closed positions appear here.'}</td></tr>`}</table></div>${pagerHtml('hist',pg.page,pg.pages,'setHistPage(__P__)')}</div>`})()}`}
 function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
  {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
@@ -563,8 +572,8 @@ async function bot(e,v){
 }
 function killSwitch(e,fromBot){
   const label=e==='sol'?'SOL':'EVM';
-  md(`<h3>Kill Switch — ${label} mode</h3>
-<p class="mu">Stops <b>only ${label} mode</b> (the other mode keeps running). Market-sells <b>all open ${label} positions</b> back to your custody trading balance. This broadcasts real on-chain sells.</p>
+  md(`<h3>Kill Switch: ${label} mode</h3>
+<p class="mu">Stops <b>only ${label} mode</b> (the other mode keeps running). Sells <b>all open ${label} positions</b> back to your custody trading balance. This broadcasts real on chain sells.</p>
 <div class="row"><button class="btn red" id="ks-go">Kill Switch</button><button class="btn" onclick="cl()">Cancel</button></div>`);
   $('#ks-go').onclick=async()=>{
    const btn=$('#ks-go');btn.disabled=true;btn.textContent='Selling…';
@@ -580,16 +589,16 @@ function killSwitch(e,fromBot){
 function addT(){const e=M;md(`<h3>Add trader (${e.toUpperCase()})</h3><label>Trader name</label><input id="an" maxlength=40><label>Wallet address</label><input id="aa"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Add &amp; start copying</button><button class="btn" onclick="cl()">Cancel</button></div>`);
  $('#ok').onclick=async()=>{const n=$('#an').value.trim(),a=$('#aa').value.trim(),er=!n?'Enter a name.':(e=='sol'?!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a):!/^0x[0-9a-fA-F]{40}$/.test(a))?`Not a valid ${e=='sol'?'Solana':'EVM'} wallet address.`:'';
   if(er)return $('#ae').textContent=er;
-  try{await api('POST','/api/traders',{chain:e==='sol'?'SOLANA':(LIVE?.status?.chains||[]).find(c=>c.kind==='evm'&&c.canExecute)?.chain||'BASE',address:a,label:n});cl();toast(n+' added — worker will subscribe within 15s');await refresh()}catch(err){$('#ae').textContent=err.message||'Could not add trader.';if(/already copying this account/i.test(err.message||''))toast('You are already copying this account.')}}}
+  try{await api('POST','/api/traders',{chain:e==='sol'?'SOLANA':(LIVE?.status?.chains||[]).find(c=>c.kind==='evm'&&c.canExecute)?.chain||'BASE',address:a,label:n});cl();toast(n+' added. The worker will subscribe within 15s.');await refresh()}catch(err){$('#ae').textContent=err.message||'Could not add trader.';if(/already copying this account/i.test(err.message||''))toast('You are already copying this account.')}}}
 const tg=async(id,on)=>{try{await api('PATCH','/api/traders/'+id,{enabled:!!on});await refresh()}catch(err){toast(err.message)}};
 const rm=(id,n)=>md(`<h3>Remove trader?</h3><p class="mu">Open positions stay monitored; no new trades will be copied from ${n}.</p><div class="row"><button class="btn red" onclick="api('DELETE','/api/traders/${id}').then(()=>{cl();refresh()}).catch(e=>toast(e.message))">Remove</button><button class="btn" onclick="cl()">Cancel</button></div>`);
 function dep(){const e=M,X=UI[e],addr=S[e].wa,a=wallet[e];
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  const EVM_DEP={
-  ethereum:{chain:'ETHEREUM',label:'Ethereum',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
-  base:{chain:'BASE',label:'Base',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
-  arb:{chain:'ARBITRUM',label:'Arbitrum',gas:'ETH',hint:'Native Circle USDC (6 decimals) — gas in ETH'},
-  bnb:{chain:'BSC',label:'BNB Chain',gas:'BNB',hint:'Binance-Peg USDC (18 decimals) — gas in BNB'},
+  ethereum:{chain:'ETHEREUM',label:'Ethereum',gas:'ETH',hint:'Native Circle USDC (6 decimals). Gas paid in ETH'},
+  base:{chain:'BASE',label:'Base',gas:'ETH',hint:'Native Circle USDC (6 decimals). Gas paid in ETH'},
+  arb:{chain:'ARBITRUM',label:'Arbitrum',gas:'ETH',hint:'Native Circle USDC (6 decimals). Gas paid in ETH'},
+  bnb:{chain:'BSC',label:'BNB Chain',gas:'BNB',hint:'Binance pegged USDC (18 decimals). Gas paid in BNB'},
  };
  const defaultDepCh=e==='evm'?bestEvmChKey('total'):'solana';
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultDepCh,'total'):'';
@@ -603,7 +612,7 @@ ${e==='evm'?`<label>Network</label><select id="dc">${chainOpts}</select>
 <p class="rd" id="ae"></p>
 <div class="row" style="margin-top:12px">
 ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:a?'':'<button class="btn pri" onclick="cl();conn()">Connect Wallet first</button>'}
-<button class="btn" onclick="cl();refresh();toast('Refreshing on-chain balance')">Refresh balance</button>
+<button class="btn" onclick="cl();refresh();toast('Refreshing on chain balance')">Refresh balance</button>
 <button class="btn" onclick="cl()">Close</button></div>`);
  const syncChainHelp=()=>{
   if(e!=='evm')return;
@@ -620,7 +629,7 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
   try{
    if(!window.CopyraWallet?.ready)throw new Error('Connect a wallet first (Reown / WalletConnect).');
    const st=window.CopyraWallet.getAccountStatus?.();
-   if(e==='evm'&&st?.evm?.isConnecting)throw new Error('Wallet still connecting — wait a moment, then try again.');
+   if(e==='evm'&&st?.evm?.isConnecting)throw new Error('Wallet still connecting. wait a moment, then try again.');
    if(e==='evm'&&st?.evm?.isDisconnected&&!window.CopyraWallet.getAddress('evm'))throw new Error('EVM wallet disconnected. Tap Connect Wallet.');
    const pick=$('#dc')?.value||defaultDepCh;
    const chainName=e==='sol'?'SOLANA':(EVM_DEP[pick]?.chain||bestEvmChain('total'));
@@ -629,12 +638,12 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
     $('#ae').textContent='Sign the transfer in your wallet…';
     const signed=await window.CopyraWallet.signSolanaTransaction(built.transactionBase64);
     const res=await api('POST','/api/funds/deposit/broadcast',{signedTransaction:signed,lastValidBlockHeight:built.lastValidBlockHeight,lamports:built.lamports},{mode:'sol'});
-    if(!res.executed)throw new Error(res.error||'Deposit not confirmed on-chain yet. Check '+res.explorerUrl);
+    if(!res.executed)throw new Error(res.error||'Deposit not confirmed on chain yet. Check '+res.explorerUrl);
     cl();toast('Deposit confirmed'); await refresh();
    }else{
     const net=EVM_DEP[pick]?.label||'selected network';
     $('#ae').textContent=`Switching wallet to ${net}, then confirm USDC transfer…`;
-    if(!built.data||!built.tokenAddress)throw new Error('Deposit build missing USDC transfer data. Redeploy may still be rolling out — hard-refresh after deploy.');
+    if(!built.data||!built.tokenAddress)throw new Error('Deposit build missing USDC transfer data. Redeploy may still be rolling out. Hard refresh after deploy.');
     const hash=await window.CopyraWallet.sendEvmErc20({tokenAddress:built.tokenAddress,data:built.data,chainId:built.chainId});
     const depChain=({8453:'BASE',42161:'ARBITRUM',56:'BSC',1:'ETHEREUM'}[built.chainId]||'BSC');
     const res=await api('POST','/api/funds/deposit/record-evm',{chain:depChain,txHash:hash,amount},{mode:'evm'});
@@ -644,7 +653,7 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
      await ensureEvmCustodyGas(depChain,$('#ae'));
      cl();toast('USDC deposited + custody gas funded on '+net); await refresh();
     }catch(gasErr){
-     cl();toast('USDC deposited on '+net+' — fund custody gas before withdraw'); await refresh();
+     cl();toast('USDC deposited on '+net+'. Fund custody gas before withdraw.'); await refresh();
      console.warn(gasErr);
     }
    }
@@ -657,7 +666,7 @@ function feeReserveQuote(e,chKey){
   const raw=Number(S.evm.gasResByCh?.[chKey]||0);
   return raw>0?Number(f('evm',raw)):0.15;
 }
-/** prefer: 'trading' | 'savings' | 'total' | 'withdraw' — never default to empty Ethereum. */
+/** prefer: 'trading' | 'savings' | 'total' | 'withdraw'. never default to empty Ethereum. */
 function bestEvmChain(prefer='total'){
   let best=null,bestAmt=-1;
   for(const ch of EVM_CH_KEYS){
@@ -695,7 +704,7 @@ function evmChainOptsHtml(defaultCh,prefer='total'){
     const sav=Number(f('evm',S.evm.savByCh?.[c]||0));
     const total=trade+sav;
     const mark=total>0?'':' · empty';
-    return `<option value="${c}" ${c===sel?'selected':''}>${CH[c]} — ${total.toFixed(2)} USDC (T ${trade.toFixed(2)} · S ${sav.toFixed(2)})${mark}</option>`;
+    return `<option value="${c}" ${c===sel?'selected':''}>${CH[c]}. ${total.toFixed(2)} USDC (T ${trade.toFixed(2)} · S ${sav.toFixed(2)})${mark}</option>`;
   }).join('');
 }
 /** After USDC deposit/withdraw prep: top up custody native gas from the connected wallet. */
@@ -729,7 +738,7 @@ function amtFieldHtml(e,X,maxQuote,inputId,presets,chKey){
 <input type="range" class="amt-sl" id="${inputId}_sl" min="0" max="1000" value="0" ${max<=0?'disabled':''}>
 <div class="amt-meta"><span>Available <b id="${inputId}_avail">${max.toFixed(UI[e].d)}</b> ${X.u}</span><span>${feeLabel}</span></div>
 ${presets&&presets.length?`<div class="row" style="gap:6px;margin:4px 0 8px;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>`:''}
-<p class="mu" id="${inputId}_net">You can move/withdraw up to <b>${max.toFixed(UI[e].d)} ${X.u}</b>${e==='sol'?' after the on-chain fee reserve':''}.</p>`;
+<p class="mu" id="${inputId}_net">You can move/withdraw up to <b>${max.toFixed(UI[e].d)} ${X.u}</b>${e==='sol'?' after the on chain fee reserve':''}.</p>`;
 }
 function bindAmtField(e,inputId,maxQuote){
  const max=Math.max(0,Number(maxQuote)||0);
@@ -760,7 +769,7 @@ function mv(dir){const e=M,X=UI[e],d=dir==='s2t'?'s2t':'t2s';
   if(d==='s2t')return Number(f(e,S.evm.savByCh?.[chKey]||0));
   return Number(f(e,S.evm.cash[chKey]||0));
  };
- // Open on the funded network for this bucket — never empty Ethereum by default.
+ // Open on the funded network for this bucket. never empty Ethereum by default.
  const defaultCh=e==='sol'?'solana':bestEvmChKey(prefer);
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultCh,prefer):'';
  const startMax=maxForChain(defaultCh);
@@ -797,7 +806,7 @@ ${e==='evm'?`<label>Network</label><select id="mvch">${chainOpts}</select>`:''}
 }
 function wd(){const e=M,X=UI[e],a=wallet[e];
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,5,10];
- if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on-chain from your custody wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
+ if(!a)return md(`<h3>Withdraw</h3><p class="mu">Connect a ${e==='sol'?'Solana':'EVM'} wallet first. Withdrawals send on chain from your custody wallet to your connected address.</p><button class="btn pri" onclick="cl();conn()">Connect Wallet</button>`);
  // Default = funded chain across all EVM networks (gas-ready preferred via backend on submit).
  const defaultCh=e==='sol'?'solana':bestEvmChKey('withdraw');
  // Trading withdraw uses full withdrawable (includes USDC gas reserve); Move cannot spend that reserve.
@@ -808,8 +817,8 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
  const bucketOpts=(ch,selected)=>{
   const t=tradeOn(ch),s=savOn(ch);
   const sel=selected||(s>t&&s>0?'savings':(t>0?'trading':(s>0?'savings':'trading')));
-  return `<option value="trading" ${sel==='trading'?'selected':''}>Trading — ${t.toFixed(UI[e].d)} ${X.u}</option>
-<option value="savings" ${sel==='savings'?'selected':''}>Savings — ${s.toFixed(UI[e].d)} ${X.u}</option>`;
+  return `<option value="trading" ${sel==='trading'?'selected':''}>Trading. ${t.toFixed(UI[e].d)} ${X.u}</option>
+<option value="savings" ${sel==='savings'?'selected':''}>Savings. ${s.toFixed(UI[e].d)} ${X.u}</option>`;
  };
  const maxFrom=()=>{
   const ch=$('#wc')?.value||defaultCh;
@@ -817,7 +826,7 @@ function wd(){const e=M,X=UI[e],a=wallet[e];
   return bucket==='savings'?savOn(ch):tradeOn(ch);
  };
  md(`<h3>Withdraw to connected wallet</h3>
-<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Scans <b>all EVM networks</b> for balance. ${e==='evm'?'If custody lacks gas on the selected chain, we top up from your wallet — or switch to another funded chain that already has gas.':''}</p>
+<p class="mu">Destination: <b style="color:var(--tx)">${a}</b>. Scans <b>all EVM networks</b> for balance. ${e==='evm'?'If custody lacks gas on the selected chain, we top up from your wallet, or switch to another funded chain that already has gas.':''}</p>
 ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
 <label>From</label><select id="wb">${bucketOpts(defaultCh,defaultBucket)}</select>
 <div id="wd-amt">${amtFieldHtml(e,X,maxFrom(),'wa',presets,defaultCh)}</div>
@@ -856,7 +865,7 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
    const ready=(err.gasReadyChains||[]).filter(Boolean);
    if(ready.length){
     const alt=ready[0];
-    $('#ae').textContent=`${chain} needs gas — switching withdraw to ${alt} (already funded)…`;
+    $('#ae').textContent=`${chain} needs gas. switching withdraw to ${alt} (already funded)…`;
     if($('#wc')){$('#wc').value=chainKeyOf(alt);rebind()}
     return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain:alt},{mode:e});
    }
@@ -887,7 +896,7 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
       $('#ae').textContent=`Using ${chain} (balance + custody gas ready)…`;
      }else if(funded.length){
       chain=funded[0].chain;
-      $('#ae').textContent=`Using ${chain} — funding custody gas first…`;
+      $('#ae').textContent=`Using ${chain}. Funding custody gas first…`;
       await ensureEvmCustodyGas(chain,$('#ae'));
      }else{
       await ensureEvmCustodyGas(chain,$('#ae'));
@@ -907,12 +916,12 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
   }catch(err){$('#ae').textContent=err.message; $('#ok').disabled=false}
  }
 }
-const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['buyMode','Buy mode',6],['tpMode','Take-profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity',4],['minMc','Min market cap',5],['maxMc','Max market cap',5],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma-separated)',3]];
+const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['buyMode','Buy mode',6],['tpMode','Take profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity',4],['minMc','Min market cap',5],['maxMc','Max market cap',5],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma separated)',3]];
 function unitSel(id,cur){return `<select id="${id}" style="width:auto;min-width:4.5rem"><option value="K" ${cur==='K'?'selected':''}>K (thousands)</option><option value="M" ${cur==='M'?'selected':''}>M (millions)</option></select>`}
 function settings(e){const s=S[e].set;
  const fieldHtml=([k,l,t])=>{
   if(t===2)return `<label>${l}</label><select id="s_${k}"><option ${s[k]=='MANUAL'?'selected':''}>MANUAL</option><option ${s[k]=='TRAILING'?'selected':''}>TRAILING</option></select>`;
-  if(t===6){const m=s.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';return `<label>${l}</label><select id="s_${k}"><option value="FIRST_ONLY" ${m==='FIRST_ONLY'?'selected':''}>First buy only</option><option value="EVERY_BUY" ${m==='EVERY_BUY'?'selected':''}>Every buy</option></select><p class="mu" style="margin:4px 0 0">First buy only: copy only that watched wallet’s first buy of a token — their second buy of the same token is skipped. Every buy: copy additional buys of the same token too (scale into the open position).</p>`;}
+  if(t===6){const m=s.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';return `<label>${l}</label><select id="s_${k}"><option value="FIRST_ONLY" ${m==='FIRST_ONLY'?'selected':''}>First buy only</option><option value="EVERY_BUY" ${m==='EVERY_BUY'?'selected':''}>Every buy</option></select><p class="mu" style="margin:4px 0 0">First buy only: copy only that watched wallet’s first buy of a token. Their second buy of the same token is skipped. Every buy: copy additional buys of the same token too (scale into the open position).</p>`;}
   if(t===3)return `<label>${l}</label><input id="s_${k}" value="${s[k]??''}">`;
   if(t===4)return `<label>${l}</label><div class="row" style="gap:8px;align-items:center"><input id="s_${k}" type="number" step="any" value="${s[k]}" style="flex:1">${unitSel('s_liqUnit',s.liqUnit||'K')}</div><p class="mu" style="margin:4px 0 0">Example: 50 + K = $50,000 liquidity floor. Worker uses the saved USD amount.</p>`;
   if(t===5){const u=k==='maxMc'?(s.maxMcUnit||s.minMcUnit||'K'):(s.minMcUnit||s.mcUnit||'K');const id=k==='maxMc'?'s_maxMcUnit':'s_minMcUnit';
@@ -938,12 +947,12 @@ function settings(e){const s=S[e].set;
     minTradeUsd:e==='sol'&&UI.sol.usd?n.min*UI.sol.usd:n.min,maxSlippageBps:Math.round(n.slip*100),maxPriceImpactPct:n.impact,minLiquidityUsd:minLiqUsd,
     takeProfitPct:n.tp,stopLossPct:n.sl,trailingTriggerPct:n.trTp,trailingPartialSellPct:n.trFrac,trailingDropPct:n.trTrail,ui
    });
-   dr.classList.remove('o');toast(`Settings saved — ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)}–${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
+   dr.classList.remove('o');toast(`Settings saved. ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
   }catch(err){$('#se').textContent=err.message}}}
-function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd',...allHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,h.size.toFixed(2),h.usd.toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
+function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd,pnl_pct',...filteredHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,Number(h.size||0).toFixed(2),Number(h.usd||0).toFixed(2),Number(h.pct||0).toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
 $('#mc').onclick=()=>{
   M=M=='sol'?'evm':'sol';T='trading';
-  // Mode switch is display-only — never logout or wipe the other account.
+  // Mode switch is display-only. never logout or wipe the other account.
   try{window.CopyraWallet?.setMode?.(M)}catch{}
   draw();
   // Refresh with the active mode header so the correct session is preferred for /me.
@@ -957,7 +966,7 @@ const kind=a=>/^0x[0-9a-fA-F]{40}$/.test(a)?'evm':(a.length>=32&&a.length<=44&&b
 async function waitWallet(ms=20000){
   if(window.CopyraWallet)return window.CopyraWallet;
   return await new Promise((resolve,reject)=>{
-    const t=setTimeout(()=>reject(new Error('Wallet module timed out. Confirm VITE_REOWN_PROJECT_ID is set on the API, then hard-refresh.')),ms);
+    const t=setTimeout(()=>reject(new Error('Wallet module timed out. Confirm VITE_REOWN_PROJECT_ID is set on the API, then hard refresh.')),ms);
     const done=()=>{clearTimeout(t);window.removeEventListener('copyra-wallet-ready',done);resolve(window.CopyraWallet)};
     window.addEventListener('copyra-wallet-ready',done);
   });
@@ -980,23 +989,23 @@ async function sessionSign(e, connected){
     signature=await window.CopyraWallet.signMessage(issued.message,issued.address,e);
   }catch(err){
     const msg=(err&&err.message)?String(err.message):'Signature rejected';
-    if(/reject|denied|cancel|user/i.test(msg))throw new Error('Sign-in cancelled in the wallet. Tap Connect Wallet to try again.');
+    if(/reject|denied|cancel|user/i.test(msg))throw new Error('Sign in cancelled in the wallet. Tap Connect Wallet to try again.');
     throw err;
   }
   try{
     await api('POST','/api/auth/verify',{address:issued.address,chain:issued.chain,message:issued.message,signature},{mode:e});
   }catch(err){
-    throw new Error((err&&err.message)||'Sign-in failed. If you switched accounts or chains, reconnect and sign again.');
+    throw new Error((err&&err.message)||'Sign in failed. If you switched accounts or chains, reconnect and sign again.');
   }
   return issued.address;
 }
 async function finishConnect(e,N,connected){
-  $('#ws')&&($('#ws').textContent='Approve the sign-in message in your wallet…');
-  // Sign-in writes only this mode's session cookie — the other mode stays signed in.
+  $('#ws')&&($('#ws').textContent='Approve the sign in message in your wallet…');
+  // Sign in writes only this mode's session cookie. The other mode stays signed in.
   const addr=await sessionSign(e,connected);
   wallet[e]=addr;
   try{localStorage.setItem('cpy_wallet_'+e,addr);localStorage.setItem('cpy_wallet_'+e+'_sticky','1')}catch{}
-  cl();toast(N+' account signed in — balances load for this wallet only');
+  cl();toast(N+' account signed in. balances load for this wallet only');
   await refresh();
   draw();
 }
@@ -1026,18 +1035,18 @@ async function disconnectMode(e){
   wallet[e]=null;
   try{localStorage.removeItem('cpy_wallet_'+e);localStorage.removeItem('cpy_wallet_'+e+'_sticky')}catch{}
   try{await window.CopyraWallet?.disconnect?.(e)}catch{}
-  // Revoke ONLY this mode's session — the other mode keeps its account + funds.
+  // Revoke ONLY this mode's session. the other mode keeps its account + funds.
   try{await api('POST','/api/auth/logout',{mode:e}, {mode:e})}catch{}
   // Clear cached balances for this mode only.
   S[e]=empty(e);
   try{if(typeof user!=='undefined'&&user&&user.wallets){user.wallets[e]=null}}catch{}
   cl();
-  toast((e==='sol'?'Solana':'EVM')+' disconnected — other mode unchanged');
+  toast((e==='sol'?'Solana':'EVM')+' disconnected. other mode unchanged');
   draw();
   const cn=$('#cn');
   if(cn&&!wallet[M]){cn.textContent='Connect Wallet';cn.title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
 }
-// Re-attach sticky EVM wallet on AppKit reconnect — never auto-disconnect SOL.
+// Re-attach sticky EVM wallet on AppKit reconnect. never auto-disconnect SOL.
 window.addEventListener('copyra-wallet-account',(ev)=>{
   try{
     const detail=ev.detail||{};
@@ -1051,14 +1060,14 @@ window.addEventListener('copyra-wallet-account',(ev)=>{
   }catch{}
 });
 function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
- // Always show Open wallet list — including when already connected (same address ok).
+ // Always show Open wallet list. including when already connected (same address ok).
  md(`<h3>${a0?'Reconnect ':'Connect '}${N} wallet</h3>
-${a0?`<p class="mu">Connected Wallet: <b style="color:var(--tx)">${a0}</b>. You can open the list again anytime — same address is fine.</p>`:''}
-<p class="mu">Tap the WalletConnect button (or <b>Open full wallet list</b>) to show every wallet — MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, All Wallets…</p>
+${a0?`<p class="mu">Connected Wallet: <b style="color:var(--tx)">${a0}</b>. You can open the list again anytime. The same address is fine.</p>`:''}
+<p class="mu">Tap the WalletConnect button (or <b>Open full wallet list</b>) to show every wallet: MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, and All Wallets.</p>
 <div id="akhost" style="width:100%;margin:14px 0;min-height:48px"></div>
 <button class="btn pri" id="bw" style="width:100%">Open full wallet list</button>
 ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconnect</button>`:''}
-<p class="mu" id="ws">Ready — tap Connect to open the list instantly.</p>
+<p class="mu" id="ws">Ready. Tap Connect to open the wallet list.</p>
 <p class="rd" id="ae"></p>
 <div class="row"><button class="btn" onclick="cl()">Cancel</button></div>`);
  // Transparent backdrop so AppKit is clickable on desktop.
@@ -1067,7 +1076,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
  let waiting=false;
  const runAfterPick=async(connected)=>{
   waiting=false;
-  $('#ws').textContent='Connected Wallet: '+connected.address+' — approve sign-in…';
+  $('#ws').textContent='Connected Wallet: '+connected.address+'. Approve sign in…';
   await finishConnect(e,N,connected);
  };
  const onFail=(err)=>{
@@ -1085,7 +1094,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
  (async()=>{
   try{
     const w=await waitWallet();
-    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID, redeploy, then hard-refresh.');
+    if(!w?.ready||!w.projectIdConfigured)throw new Error(w?.error||'WalletConnect project id missing. Set VITE_REOWN_PROJECT_ID, redeploy, then hard refresh.');
     try{w.setMode?.(e)}catch{}
     const host=$('#akhost');
     // Formula: mount official <appkit-button> / <w3m-button> (modern w3m-core-button).
@@ -1093,7 +1102,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
     const openNow=()=>{
       $('#ae').textContent='';
       $('#ws').textContent='Opening wallet list…';
-      // Desktop: open MUST run inside this click (user gesture) — before any await.
+      // Desktop: open MUST run inside this click (user gesture). before any await.
       try{w.openModal(e)}catch{}
       awaitPick();
     };
@@ -1110,7 +1119,7 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
 }
 window.addEventListener('copyra-wallet-ready',()=>{
   try{window.CopyraWallet?.setMode?.(M)}catch{}
-  // AppKit finished boot — re-hydrate sticky wallets without forcing disconnect.
+  // AppKit finished boot. re-hydrate sticky wallets without forcing disconnect.
   try{restoreWallets()}catch{}
 });
 let cnWait=false;
@@ -1127,7 +1136,7 @@ function beginConnectFromClick(){
   cnWait=true;
   w.waitForConnection(e).then(async(connected)=>{
     cnWait=false;
-    toast('Approve the sign-in in your wallet…');
+    toast('Approve the sign in message in your wallet…');
     await finishConnect(e,N,connected);
   }).catch((err)=>{
     cnWait=false;
@@ -1140,15 +1149,15 @@ $('#cn-wrap')?.addEventListener('click',()=>{beginConnectFromClick()},{capture:t
 $('#cn').onclick=()=>{beginConnectFromClick()};
 
 $('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="sysHealth()">System health</button>';
-const wd2=()=>{nav.classList.remove('o');const a=wallet[M];md(`<h3>Security (2FA)</h3><p class="mu">Wallet sign-in proves you control the key for this mode (${M.toUpperCase()}). Sessions last 7 days. Withdrawals use your signed-in custody wallet — COPYRA never asks for a seed phrase.</p><p class="mu">${a?'Signed in: <b style="color:var(--tx)">'+a.slice(0,6)+'…'+a.slice(-4)+'</b>':'Not signed in — connect a wallet to open your private account.'}</p><div class="row"><button class="btn" onclick="cl();CPY.go('acct')">Account &amp; 2FA</button><button class="btn" onclick="cl();CPY.go('dev')">Devices</button><button class="btn" onclick="cl()">Close</button></div>`)};
+const wd2=()=>{nav.classList.remove('o');const a=wallet[M];md(`<h3>Security (2FA)</h3><p class="mu">Wallet sign in proves you control the key for this mode (${M.toUpperCase()}). Sessions last 7 days. Withdrawals use your signed in custody wallet. COPYRA never asks for a seed phrase.</p><p class="mu">${a?'Signed in: <b style="color:var(--tx)">'+a.slice(0,6)+'…'+a.slice(-4)+'</b>':'Not signed in. Connect a wallet to open your private account.'}</p><div class="row"><button class="btn" onclick="cl();CPY.go('acct')">Account &amp; 2FA</button><button class="btn" onclick="cl();CPY.go('dev')">Devices</button><button class="btn" onclick="cl()">Close</button></div>`)};
 const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){refresh();toast('Refreshing live status…');return}
- const chains=(st.chains||[]).map(c=>`${c.label}: ${c.error||('head '+(c.head||'—')+(c.latencyMs!=null?' · '+c.latencyMs+'ms':''))+(c.canExecute?'':' · monitor only')}`).join('<br>');
+ const chains=(st.chains||[]).map(c=>`${c.label}: ${c.error||('head '+(c.head||'*')+(c.latencyMs!=null?' · '+c.latencyMs+'ms':''))+(c.canExecute?'':' · monitor only')}`).join('<br>');
  const workers=(st.workers||[]).map(w=>`${w.name||w.component||'worker'}: ${w.status}`).join(', ')||'none';
- md(`<h3>System health</h3><p class="mu">Live from <code>/api/status</code> — chain RPC heads, worker heartbeat, and trading guards.</p>
+ md(`<h3>System health</h3><p class="mu">Live from <code>/api/status</code>. Chain RPC heads, worker heartbeat, and trading guards.</p>
 <p><b>Trading</b><br>Env guard: ${st.trading?.envGuard?'on':'off'} · Settings: ${st.trading?.settingsEnabled?'enabled':'off'} · Emergency: ${st.trading?.emergencyStop?'ENGAGED':'clear'}${st.trading?.blockedReason?'<br>'+st.trading.blockedReason:''}</p>
 <p><b>Workers</b><br>${workers}</p>
 <p><b>Telegram</b><br>${st.telegram?.canPostToChat?'@'+(st.telegram.botUsername||'bot')+' can post':'unreachable'}${st.telegram?.error?' · '+st.telegram.error:''}</p>
-<p><b>Chains</b><br>${chains||'—'}</p>
+<p><b>Chains</b><br>${chains||'*'}</p>
 <div class="row"><button class="btn pri" onclick="cl();refresh();toast('Refreshed')">Refresh</button><button class="btn" onclick="cl()">Close</button></div>`)};
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
@@ -1191,7 +1200,7 @@ const B32='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',unb32=s=>new Uint8Array([...s].map(
 const mkSecret=()=>{let b='',o='';for(const x of crypto.getRandomValues(new Uint8Array(20)))b+=x.toString(2).padStart(8,'0');for(let i=0;i<b.length;i+=5)o+=B32[parseInt(b.slice(i,i+5),2)];return o};
 async function totp(s,t){const k=await crypto.subtle.importKey('raw',unb32(s),{name:'HMAC',hash:'SHA-1'},false,['sign']),c=new DataView(new ArrayBuffer(8));c.setBigUint64(0,BigInt(Math.floor(t/3e4)));const h=new Uint8Array(await crypto.subtle.sign('HMAC',k,c.buffer)),o=h[19]&15;return String((((h[o]&127)<<24)|(h[o+1]<<16)|(h[o+2]<<8)|h[o+3])%1e6).padStart(6,'0')}
 const okT=async(s,c)=>{for(const d of[-1,0,1])if(await totp(s,Date.now()+d*3e4)==c)return 1;return 0};
-// ---------- API adapter: remote (COPYRA_API set) or local simulation with identical request/response shapes ----------
+// ---------- API adapter: remote (COPYRA_API set) or local fallback with identical request/response shapes ----------
 const db=()=>st.get('cpy_db',{}),sv=d=>st.set('cpy_db',d),pub=u=>({id:u.id,email:u.email||null,wallets:u.w,twofa:!!u.tfOn,refCode:u.ref.code}),sh=a=>a?a.slice(0,4)+'…'+a.slice(-4):'user';
 const who=(d,t)=>{const u=d[t];if(!u)throw E('Session expired',401);if(u.dev[DID]&&u.dev[DID].rev)throw E('This device was signed out',401);u.dev[DID]=u.dev[DID]||{name:dn(),first:Date.now()};u.dev[DID].last=Date.now();return u};
 function mk(d,o,ref){const id='u_'+rnd(),by=ref&&Object.values(d).find(x=>x.ref.code==ref);const u={id,w:{},created:Date.now(),dev:{[DID]:{name:dn(),first:Date.now(),last:Date.now()}},pk:[],ref:{code:rnd().slice(0,8).toUpperCase(),by:by?by.ref.code:null,vol:0,fee:0,gen:0,claimed:0,sim:[]},state:null,...o};d[id]=u;return u}
@@ -1242,28 +1251,28 @@ function auth(tab='up'){md(`<div class="seg" style="margin-top:0"><button class=
 <label>Email</label><input id="ae1" type="email" autocomplete="email" autocapitalize="off"><label>Password${tab=='up'?' (8+ characters)':''}</label><input id="ap" type="password" autocomplete="${tab=='up'?'new':'current'}-password"><div id="a2" style="display:none"><label>2FA code (6 digits)</label><input id="ac" maxlength="6" inputmode="numeric" autocomplete="one-time-code"></div><p class="rd" id="ae"></p>
 <button class="btn pri" id="ago" style="width:100%">${tab=='up'?'Create account':'Sign in'}</button><div class="mu" style="text-align:center;margin:14px 0 8px">or continue with</div>
 <div class="row"><button class="btn" id="aws">Solana wallet</button><button class="btn" id="awe">EVM wallet</button><button class="btn" id="apk">Passkey</button></div>
-<p class="mu" style="font-size:13px">Email accounts are protected by 2FA. Wallet accounts sign in with a wallet signature, with no 2FA needed. The same wallet always opens the same account, on any device.${LS?'':' (This browser cannot persist the account layer; sign-in lasts this session only.)'}</p><button class="btn" style="width:100%" onclick="cl();CPY.skip()">Continue without an account</button>`);
+<p class="mu" style="font-size:13px">Email accounts are protected by 2FA. Wallet accounts sign in with a wallet signature, with no 2FA needed. The same wallet always opens the same account, on any device.${LS?'':' (This browser cannot persist the account layer; sign in lasts this session only.)'}</p><button class="btn" style="width:100%" onclick="cl();CPY.skip()">Continue without an account</button>`);
  $('#aws').onclick=()=>wLogin('sol');$('#awe').onclick=()=>wLogin('evm');$('#apk').onclick=pkLogin;
  $('#ago').onclick=async()=>{const b={email:$('#ae1').value,password:$('#ap').value,code:$('#ac').value.trim(),ref:pref()};try{const r=await call(tab=='up'?'register':'login',b);if(r.need2fa){$('#a2').style.display='block';$('#ac').focus();return er('Enter the 6-digit code from your authenticator app.')}await onAuth(r,tab=='up')}catch(e){fail(e)}}}
 async function pkLogin(){const ids=st.get('cpy_pk',[]);if(!ids.length)return er('No passkey saved on this device yet. Sign in once, then add a passkey in Devices & passkeys.');
- let id=null;try{const real=ids.filter(x=>!x.sim);if(!navigator.credentials||!real.length)throw 0;const c=await navigator.credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),allowCredentials:real.map(x=>({type:'public-key',id:Uint8Array.from(atob(x.id),c=>c.charCodeAt(0))})),userVerification:'preferred',timeout:60000}});id=b64(c.rawId)}catch{const s=ids.find(x=>x.sim);if(s&&!BASE){id=s.id;toast('Using simulated passkey (WebAuthn is blocked in this preview)')}}
+ let id=null;try{const real=ids.filter(x=>!x.sim);if(!navigator.credentials||!real.length)throw 0;const c=await navigator.credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),allowCredentials:real.map(x=>({type:'public-key',id:Uint8Array.from(atob(x.id),c=>c.charCodeAt(0))})),userVerification:'preferred',timeout:60000}});id=b64(c.rawId)}catch{const s=ids.find(x=>x.sim);if(s&&!BASE){id=s.id;toast('Using a local passkey fallback. WebAuthn is unavailable in this browser.')}}
  if(!id)return er('Passkey was cancelled or is unavailable.');try{await onAuth(await call('passkey/login',{id}),false)}catch(e){fail(e)}}
 async function addPk(){let id,sim=0;try{if(!navigator.credentials||!navigator.credentials.create)throw 0;const c=await navigator.credentials.create({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rp:{name:'COPYRA'},user:{id:te.encode(user.id),name:user.email||user.id,displayName:user.email||'COPYRA user'},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],authenticatorSelection:{residentKey:'preferred',userVerification:'preferred'},timeout:60000}});id=b64(c.rawId)}catch{if(BASE)return toast('Passkey cancelled or not supported on this device');id='sim_'+rnd();sim=1}
- try{await call('passkeys/add',{id,name:dn(),sim});st.set('cpy_pk',[...st.get('cpy_pk',[]),{id,sim}]);toast(sim?'Simulated passkey added (WebAuthn is blocked in this preview)':'Passkey added');dev()}catch(e){toast(e.message)}}
+ try{await call('passkeys/add',{id,name:dn(),sim});st.set('cpy_pk',[...st.get('cpy_pk',[]),{id,sim}]);toast(sim?'Local passkey saved. WebAuthn is unavailable in this browser.':'Passkey added');dev()}catch(e){toast(e.message)}}
 const gate=f=>user?f():auth('in');
 const ago=t=>{const m=(Date.now()-t)/6e4;return m<2?'now':m<60?(m|0)+' min ago':m<1440?(m/60|0)+' h ago':(m/1440|0)+' d ago'};
 function acct(){gate(()=>{const u=user,w=u.wallets||{};md(`<div class="row sp"><h3 style="margin:0">Account</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu">${u.email||'Wallet account'} · ID ${u.id.slice(2,10)}</p>
-<h3 style="margin-top:14px">Sign-in methods</h3><div class="dv"><span>Email</span>${u.email?'<span class="pill g">Linked</span>':'<button class="btn sm" onclick="CPY.addEmail()">Add email</button>'}</div>
+<h3 style="margin-top:14px">Sign in methods</h3><div class="dv"><span>Email</span>${u.email?'<span class="pill g">Linked</span>':'<button class="btn sm" onclick="CPY.addEmail()">Add email</button>'}</div>
 ${['sol','evm'].map(k=>`<div class="dv"><span>${k=='sol'?'Solana':'EVM'} wallet<br><span class="mu">${w[k]?w[k].slice(0,6)+'…'+w[k].slice(-4):'Not linked'}</span></span>${w[k]?'<span class="pill g">Linked</span>':`<button class="btn sm" onclick="CPY.link('${k}')">Link</button>`}</div>`).join('')}
 <p class="mu" style="font-size:13px">Linking an email and wallets to one account lets either method open the same balances and settings.</p>
-<h3>Two-factor authentication</h3>${u.email?`<div class="dv"><span>Authenticator app</span>${u.twofa?'<span class="pill g">On</span>':'<span class="pill">Off</span>'}</div><button class="btn" onclick="CPY.${u.twofa?'tfOff':'tfOn'}()" style="margin-top:8px">${u.twofa?'Turn off 2FA':'Turn on 2FA'}</button>`:'<p class="mu">Not needed: wallet accounts sign in with a wallet signature. Add an email above to use email sign-in with 2FA.</p>'}
+<h3>Two-factor authentication</h3>${u.email?`<div class="dv"><span>Authenticator app</span>${u.twofa?'<span class="pill g">On</span>':'<span class="pill">Off</span>'}</div><button class="btn" onclick="CPY.${u.twofa?'tfOff':'tfOn'}()" style="margin-top:8px">${u.twofa?'Turn off 2FA':'Turn on 2FA'}</button>`:'<p class="mu">Not needed: wallet accounts sign in with a wallet signature. Add an email above to use email sign in with 2FA.</p>'}
 <div class="row" style="margin-top:18px"><button class="btn" onclick="CPY.go('dev')">Devices &amp; passkeys</button><button class="btn red" onclick="CPY.out()">Sign out</button></div>`)})}
 function addEmail(){md(`<h3>Add email</h3><label>Email</label><input id="ae1" type="email"><label>Password (8+ characters)</label><input id="ap" type="password" autocomplete="new-password"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Add email</button><button class="btn" onclick="CPY.go('acct')">Back</button></div>`);$('#ok').onclick=async()=>{try{user=(await call('link/email',{email:$('#ae1').value,password:$('#ap').value})).user;toast('Email linked');acct()}catch(e){fail(e)}}}
 async function tfOn(){try{const r=await call('2fa/setup');md(`<h3>Turn on 2FA</h3><p class="mu">Add this key to Google Authenticator, Authy or 1Password (choose “enter a setup key”), then enter the 6-digit code.</p><div class="cd">${r.secret}</div><p class="mu" style="font-size:13px"><a href="${r.uri}" style="color:var(--ac)">Open in authenticator app</a></p><label>6-digit code</label><input id="ac" maxlength="6" inputmode="numeric"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Enable 2FA</button><button class="btn" onclick="CPY.go('acct')">Cancel</button></div>`);$('#ok').onclick=async()=>{try{await call('2fa/enable',{code:$('#ac').value.trim()});user.twofa=true;toast('2FA enabled');acct()}catch(e){fail(e)}}}catch(e){toast(e.message)}}
 function tfOff(){md(`<h3>Turn off 2FA</h3><label>Current 6-digit code</label><input id="ac" maxlength="6" inputmode="numeric"><p class="rd" id="ae"></p><div class="row"><button class="btn red" id="ok">Turn off</button><button class="btn" onclick="CPY.go('acct')">Cancel</button></div>`);$('#ok').onclick=async()=>{try{await call('2fa/disable',{code:$('#ac').value.trim()});user.twofa=false;toast('2FA turned off');acct()}catch(e){fail(e)}}}
 async function dev(){gate(async()=>{try{const r=await call('devices',{},'GET');md(`<div class="row sp"><h3 style="margin:0">Devices &amp; passkeys</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu" style="font-size:13px">Devices that have accessed your account. Sign out any you don't recognize.${user.email?' New devices are flagged and need your 2FA code.':''}</p>
 ${r.devices.map(d=>`<div class="dv"><span><b>${d.name}</b> ${d.current?'<span class="pill g">This device</span>':''}<br><span class="mu">Last active ${ago(d.last)} · first seen ${new Date(d.first).toLocaleDateString()}</span></span>${d.current?'':`<button class="btn sm" onclick="CPY.rev('${d.id}')">Sign out</button>`}</div>`).join('')}
-<h3 style="margin-top:16px">Passkeys</h3>${r.passkeys.map(p=>`<div class="dv"><span>${p.name}${p.sim?' <span class="pill">simulated</span>':''}<br><span class="mu">Added ${ago(p.at)}</span></span></div>`).join('')||'<p class="mu">No passkeys yet. A passkey lets you sign in with Face ID, Touch ID or a security key.</p>'}
+<h3 style="margin-top:16px">Passkeys</h3>${r.passkeys.map(p=>`<div class="dv"><span>${p.name}${p.sim?' <span class="pill">local</span>':''}<br><span class="mu">Added ${ago(p.at)}</span></span></div>`).join('')||'<p class="mu">No passkeys yet. A passkey lets you sign in with Face ID, Touch ID or a security key.</p>'}
 <button class="btn pri" style="margin-top:10px;width:100%" onclick="CPY.addPk()">Add passkey on this device</button>`)}catch(e){toast(e.message)}})}
 async function ref(){gate(async()=>{try{const r=await call('referral',{},'GET'),tot=r.refs.reduce((a,x)=>a+x.earn,0),vol=r.refs.reduce((a,x)=>a+x.vol,0),enc=encodeURIComponent,tx=enc('Copy top Solana and EVM traders automatically with COPYRA. Join with my link:');window.__rl=r.link;
  md(`<div class="row sp"><h3 style="margin:0">Referrals</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu">Invite friends and earn <b style="color:var(--tx)">10% of the fees from their trades</b> during their first 30 days.</p>
@@ -1273,7 +1282,7 @@ async function ref(){gate(async()=>{try{const r=await call('referral',{},'GET'),
 <button class="btn pri" style="width:100%" ${r.claimable>0?'':'disabled style="width:100%;opacity:.5"'} onclick="CPY.claim()">Claim $${r.claimable.toFixed(2)} to my ${M=='sol'?'SOL':'EVM'} trading balance</button>
 <div class="tw" style="margin-top:14px"><table><tr><th>Friend</th><th>Joined</th><th>Window</th><th>Volume</th><th>You earned</th></tr>${r.refs.map(x=>`<tr><td>${x.n}</td><td>${new Date(x.joined).toLocaleDateString()}</td><td>${x.daysLeft?x.daysLeft+' d left':'<span class="mu">ended</span>'}</td><td>$${x.vol.toFixed(0)}</td><td class="g">$${x.earn.toFixed(2)}</td></tr>`).join('')||'<tr><td class="mu" colspan=5>No referrals yet. Share your link to get started.</td></tr>'}</table></div>
 `)}catch(e){toast(e.message)}})}
-const info=k=>md(k=='sec'?`<h3>How we protect you</h3><p class="mu">Passwords are stored only as salted hashes. Email accounts use 2FA. Every device is listed and can be signed out. Passkeys let you skip passwords. Wallet sign-in uses a signature, and COPYRA never asks for your seed phrase or private key.</p><button class="btn" onclick="cl()">Close</button>`:`<h3>Risk disclosure</h3><p class="mu">Copy trading digital assets carries a high risk of loss. You can lose some or all of your capital. Copied traders' past results do not predict future results. Only trade with funds you can afford to lose. COPYRA does not provide financial advice.</p><button class="btn" onclick="cl()">Close</button>`);
+const info=k=>md(k=='sec'?`<h3>How we protect you</h3><p class="mu">Passwords are stored only as salted hashes. Email accounts use 2FA. Every device is listed and can be signed out. Passkeys let you skip passwords. Wallet sign in uses a signature, and COPYRA never asks for your seed phrase or private key.</p><button class="btn" onclick="cl()">Close</button>`:`<h3>Risk disclosure</h3><p class="mu">Copy trading digital assets carries a high risk of loss. You can lose some or all of your capital. Copied traders' past results do not predict future results. Only trade with funds you can afford to lose. COPYRA does not provide financial advice.</p><button class="btn" onclick="cl()">Close</button>`);
 const navUp=()=>{const b=$('#cpso');if(b)b.textContent=user?'Sign out':'Sign in / Create account'};
 window.CPY={auth,skip:()=>st.set('cpy_seen',1),addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:async id=>{try{await call('devices/revoke',{id});toast('Device signed out');dev()}catch(e){toast(e.message)}},
  copy:()=>navigator.clipboard?navigator.clipboard.writeText(window.__rl).then(()=>toast('Referral link copied'),()=>toast('Press and hold the link to copy')):toast('Press and hold the link to copy'),

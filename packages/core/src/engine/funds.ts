@@ -497,7 +497,7 @@ export async function buildSolanaDepositTransaction(input: {
     toAddress,
     lamports: lamports.toString(),
     lastValidBlockHeight: latest.lastValidBlockHeight,
-    explorerHint: 'After broadcast, confirmation is read from Solana RPC — never invented.',
+    explorerHint: 'After broadcast, confirmation is read from Solana RPC.',
   };
 }
 
@@ -793,7 +793,7 @@ export async function withdrawToWallet(input: {
     confirmedAt = confirmation.status === TxStatus.CONFIRMED ? confirmation.confirmedAt : null;
   } else {
     if (!config.stableAsset) {
-      throw new Error(`No USDC contract configured for ${input.chain} — cannot withdraw.`);
+      throw new Error(`No USDC contract configured for ${input.chain}. Cannot withdraw.`);
     }
     // Custody must hold native gas — USDC cannot pay the network fee.
     const gasPrep = await prepareEvmWithdrawGas({ chain: input.chain, userId: input.userId });

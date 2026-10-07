@@ -154,6 +154,6 @@ describe('renderSkip / renderFailure', () => {
       attempts: 1,
     });
     expect(text).toContain('BUY FAILED · BASE');
-    expect(text).toContain('No transaction was broadcast — no funds moved.');
+    expect(text).toContain('No transaction was broadcast. No funds moved.');
   });
 });

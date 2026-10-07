@@ -431,7 +431,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       multiUserCustody: sol.multiUserCustody,
       buckets: {
         trading: 'Available trading balance after savings reservation and fee buffer (RPC).',
-        savings: 'Reserved ledger bucket on your custody wallet — move between buckets in the dashboard; withdraw sends on-chain to your connected wallet.',
+        savings: 'Reserved ledger bucket on your custody wallet. Move between buckets in the dashboard; withdraw sends on chain to your connected wallet.',
       },
       sol,
       evm,

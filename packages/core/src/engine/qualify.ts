@@ -143,7 +143,7 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
     return {
       qualified: false,
       reason: SkipReason.NO_QUOTE_CURRENCY_SPENT,
-      detail: 'Spend leg amount is zero — no value was exchanged (airdrop-like).',
+      detail: 'Spend leg amount is zero. No value was exchanged (likely an airdrop).',
     };
   }
   if (BigInt(decoded.tokenOut.amountRaw) <= 0n) {

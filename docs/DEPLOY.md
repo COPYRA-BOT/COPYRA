@@ -84,7 +84,7 @@ Required secrets: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, bot keys, RPC U
 
 ### Balances
 
-Trading / Savings buckets are **live RPC reads of the signed-in account’s custody wallet**. They are not sticky, cached, or invented in the browser. Deposit via the dashboard Deposit button so funds land on that custody address (not the shared bot signer).
+Trading / Savings buckets are **live RPC reads of the signed-in account’s custody wallet**. They are not sticky browser guesses. Deposit via the dashboard Deposit button so funds land on that custody address (not the shared bot signer).
 
 ### Smoke after deploy
 

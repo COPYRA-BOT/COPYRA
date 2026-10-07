@@ -226,7 +226,7 @@ export async function killSwitchSellAll(input: {
           fresh,
           1,
           TradeReason.EMERGENCY_STOP,
-          `Kill switch (${input.mode}) — sell all open positions to custody`,
+          `Kill switch (${input.mode}): sell all open positions to custody`,
           mark,
           settings.pnlResetAt,
         );
