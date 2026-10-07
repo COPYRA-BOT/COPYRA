@@ -213,7 +213,8 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     return;
   }
 
-  const [token, market, firstBuy, open, config, openPositionCount] = await Promise.all([
+  const [token, market, firstBuy, open, config, openPositionCount, accountAlreadyTraded] =
+    await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain, address: tokenAddress } },
       create: {
@@ -242,6 +243,16 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         userId: trader.userId,
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
       },
+    }),
+    // First-buy is per account — another wallet's history must not skip this user.
+    prisma.signal.findFirst({
+      where: {
+        userId: trader.userId,
+        chain,
+        tokenAddress,
+        status: { in: ['EXECUTED', 'EXECUTING', 'QUALIFIED'] },
+      },
+      select: { id: true },
     }),
   ]);
   if (!market.missing) {
@@ -278,7 +289,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     },
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
-    isFirstBuy: firstBuy === null,
+    isFirstBuy: accountAlreadyTraded === null,
     chainCanExecute: chainConfig(chain).canExecute,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
     spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isEvmQuoteAsset(chain, decoded.tokenIn.address)),

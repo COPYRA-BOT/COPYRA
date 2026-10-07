@@ -25,16 +25,33 @@ const CLASSIFICATION_SKIP: Partial<Record<TxClassification, SkipReason>> = {
 };
 
 /**
- * Market-cap tier from spec §7. The bands are half-open on the upper edge, so a
- * token at exactly $3M lands in tier 1 and at $3,000,001 in tier 2. Returns
- * null outside the overall $1M–$20M window.
+ * Classic spec §7 band edges as fractions of the configured [min, max] window.
+ * For the default $1M–$20M window these map to $1–3M / $3–7M / $7–12M / $12–20M.
+ * When the operator saves a different window (e.g. $50K–$20M), the same relative
+ * bands stretch to fill that window so tokens inside the saved min/max always
+ * receive a sizing tier — they are never rejected for "outside hard-coded tiers".
  */
-export function marketCapTier(marketCapUsd: number): MarketCapTier | null {
-  if (marketCapUsd >= 1_000_000 && marketCapUsd <= 3_000_000) return 1;
-  if (marketCapUsd > 3_000_000 && marketCapUsd <= 7_000_000) return 2;
-  if (marketCapUsd > 7_000_000 && marketCapUsd <= 12_000_000) return 3;
-  if (marketCapUsd > 12_000_000 && marketCapUsd <= 20_000_000) return 4;
-  return null;
+const TIER_RELATIVE_EDGES = [0, 2 / 19, 6 / 19, 11 / 19, 1] as const;
+
+/**
+ * Market-cap sizing tier within the operator's saved [minMarketCapUsd, maxMarketCapUsd]
+ * window. Returns null only when market cap is outside that window (or the window
+ * is invalid). Callers that already enforced min/max should always get a tier.
+ */
+export function marketCapTier(
+  marketCapUsd: number,
+  minMarketCapUsd = 1_000_000,
+  maxMarketCapUsd = 20_000_000,
+): MarketCapTier | null {
+  if (!(maxMarketCapUsd > minMarketCapUsd)) return null;
+  if (marketCapUsd < minMarketCapUsd || marketCapUsd > maxMarketCapUsd) return null;
+
+  const span = maxMarketCapUsd - minMarketCapUsd;
+  const rel = (marketCapUsd - minMarketCapUsd) / span;
+  if (rel <= TIER_RELATIVE_EDGES[1]) return 1;
+  if (rel <= TIER_RELATIVE_EDGES[2]) return 2;
+  if (rel <= TIER_RELATIVE_EDGES[3]) return 3;
+  return 4;
 }
 
 /**
@@ -180,32 +197,36 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
     };
   }
 
-  // --- market-cap window (spec §4) ----------------------------------------
+  // --- market-cap window from saved strategy settings (spec §4) -----------
+  // The dashboard PATCH /api/settings row is the single source of truth the
+  // worker reads — never a hard-coded $1M–$20M gate on top of the saved window.
   if (market.marketCapUsd > config.maxMarketCapUsd) {
     return {
       qualified: false,
       reason: SkipReason.MARKET_CAP_TOO_HIGH,
-      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} exceeds the $${Math.round(
+      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} exceeds the saved $${Math.round(
         config.maxMarketCapUsd,
-      ).toLocaleString()} limit.`,
+      ).toLocaleString()} maximum.`,
     };
   }
   if (market.marketCapUsd < config.minMarketCapUsd) {
     return {
       qualified: false,
       reason: SkipReason.MARKET_CAP_TOO_LOW,
-      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} is below the $${Math.round(
+      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} is below the saved $${Math.round(
         config.minMarketCapUsd,
-      ).toLocaleString()} floor.`,
+      ).toLocaleString()} minimum.`,
     };
   }
 
-  const tier = marketCapTier(market.marketCapUsd);
+  const tier = marketCapTier(market.marketCapUsd, config.minMarketCapUsd, config.maxMarketCapUsd);
   if (tier === null) {
+    // Window invalid (max <= min) — refuse rather than size with a guess.
     return {
       qualified: false,
       reason: SkipReason.MARKET_CAP_TOO_HIGH,
-      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} falls outside all configured sizing tiers.`,
+      detail:
+        'Saved market-cap window is invalid (min must be below max). Update settings and save again.',
     };
   }
 

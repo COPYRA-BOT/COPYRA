@@ -169,7 +169,8 @@ async function handleSignature(traderId: string, signature: string, slot: number
   }
 
   // Parallelize market + DB lookups — sequential awaits were eating the 1s budget.
-  const [token, market, firstBuy, open, config, openPositionCount] = await Promise.all([
+  const [token, market, firstBuy, open, config, openPositionCount, accountAlreadyTraded] =
+    await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
       create: {
@@ -200,6 +201,16 @@ async function handleSignature(traderId: string, signature: string, slot: number
         userId: trader.userId,
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
       },
+    }),
+    // First-buy is per account — another wallet's history must not skip this user.
+    prisma.signal.findFirst({
+      where: {
+        userId: trader.userId,
+        chain: Chain.SOLANA,
+        tokenAddress,
+        status: { in: ['EXECUTED', 'EXECUTING', 'QUALIFIED'] },
+      },
+      select: { id: true },
     }),
   ]);
   if (!market.missing) {
@@ -236,7 +247,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
     },
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
-    isFirstBuy: firstBuy === null,
+    isFirstBuy: accountAlreadyTraded === null,
     chainCanExecute: true,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
     spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isSolanaQuoteAsset(decoded.tokenIn.address)),

@@ -204,7 +204,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.patch('/api/settings', async (request) => {
+  app.patch('/api/settings', async (request, reply) => {
     const body = z
       .object({
         tradingEnabled: z.boolean().optional(),
@@ -229,10 +229,21 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })
       .parse(request.body);
 
+    if (
+      body.minMarketCapUsd !== undefined &&
+      body.maxMarketCapUsd !== undefined &&
+      !(body.minMarketCapUsd < body.maxMarketCapUsd)
+    ) {
+      return reply.code(400).send({
+        error: 'Min market cap must be below max market cap.',
+      });
+    }
+
     const updated = await prisma.strategySettings.update({
       where: { id: 1 },
       data: { ...body, ui: body.ui as Prisma.InputJsonValue | undefined, updatedBy: 'dashboard' },
     });
+    // Worker calls getStrategyConfig() on every signal — saved row is live immediately.
     return jsonSafe({ row: updated, effective: await getStrategyConfig() });
   });
 
