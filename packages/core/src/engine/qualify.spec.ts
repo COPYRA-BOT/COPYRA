@@ -176,13 +176,16 @@ describe('qualifySignal', () => {
     if (!result.qualified) expect(result.reason).toBe(SkipReason.INSUFFICIENT_LIQUIDITY);
   });
 
-  it('enforces first-buy-only: a later buy of the same token is skipped', () => {
+  it('enforces first-buy-only: the trader’s later buy of the same token is skipped', () => {
     const result = qualifySignal(qualifyInput({ isFirstBuy: false }));
     expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.NOT_FIRST_BUY);
+    if (!result.qualified) {
+      expect(result.reason).toBe(SkipReason.NOT_FIRST_BUY);
+      expect(result.detail).toMatch(/watched trader already bought/i);
+    }
   });
 
-  it('allows every buy when firstBuyOnly is off (still blocks open position)', () => {
+  it('allows every buy — including a second buy while a position is already open (scale-in)', () => {
     const again = qualifySignal(
       qualifyInput({
         isFirstBuy: false,
@@ -197,11 +200,10 @@ describe('qualifySignal', () => {
         portfolio: portfolio({ existingPositionForToken: true }),
       }),
     );
-    expect(open.qualified).toBe(false);
-    if (!open.qualified) expect(open.reason).toBe(SkipReason.POSITION_ALREADY_OPEN);
+    expect(open.qualified).toBe(true);
   });
 
-  it('enforces one-token-one-position when a COPYRA position is already open', () => {
+  it('enforces one-token-one-position under first-buy-only when a position is already open', () => {
     const result = qualifySignal(qualifyInput({ portfolio: portfolio({ existingPositionForToken: true }) }));
     expect(result.qualified).toBe(false);
     if (!result.qualified) expect(result.reason).toBe(SkipReason.POSITION_ALREADY_OPEN);

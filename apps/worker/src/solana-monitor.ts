@@ -13,6 +13,7 @@ import {
   solanaConnection,
   solanaPool,
   telegram,
+  traderHasPriorBuyOfToken,
   renderSkip,
   renderDetection,
 } from '@copyra/core';
@@ -278,7 +279,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   }
 
   // Parallelize market + DB lookups — sequential awaits were eating the 1s budget.
-  const [token, market, firstBuy, open, config, openPositionCount, accountAlreadyTraded] =
+  const [token, market, firstBuy, open, config, openPositionCount, traderAlreadyBought] =
     await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
@@ -311,15 +312,12 @@ async function handleSignature(traderId: string, signature: string, slot: number
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
       },
     }),
-    // First-buy is per account — another wallet's history must not skip this user.
-    prisma.signal.findFirst({
-      where: {
-        userId: trader.userId,
-        chain: Chain.SOLANA,
-        tokenAddress,
-        status: { in: ['EXECUTED', 'EXECUTING', 'QUALIFIED'] },
-      },
-      select: { id: true },
+    // First-buy-only = this watched trader's first BUY of the token (not our book).
+    traderHasPriorBuyOfToken({
+      traderId: trader.id,
+      chain: Chain.SOLANA,
+      tokenAddress,
+      excludeTxHash: signature,
     }),
   ]);
   if (!market.missing) {
@@ -356,7 +354,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
     },
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
-    isFirstBuy: accountAlreadyTraded === null,
+    isFirstBuy: !traderAlreadyBought,
     chainCanExecute: true,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
     spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isSolanaQuoteAsset(decoded.tokenIn.address)),

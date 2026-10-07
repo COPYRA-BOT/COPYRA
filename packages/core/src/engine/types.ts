@@ -63,7 +63,11 @@ export interface StrategyConfig {
   trailingPartialSellPct: number;
   trailingDropPct: number;
   followTraderSells: boolean;
-  /** When true, only the first qualifying buy of a token is copied per account. */
+  /**
+   * When true, only the watched trader's first buy of a token is copied;
+   * their later buys of the same token are skipped. When false (Every buy),
+   * additional buys of the same token may be copied (including scale-in).
+   */
   firstBuyOnly: boolean;
   enabledChains: Chain[];
 }
@@ -91,7 +95,10 @@ export interface QualificationInput {
   portfolio: PortfolioState;
   traderEnabled: boolean;
   tokenBlacklisted: boolean;
-  /** Has any monitored trader's buy of this token already been recorded? */
+  /**
+   * True when this is the watched trader's first observed BUY of this token
+   * (no earlier BUY detection for the same trader + token).
+   */
   isFirstBuy: boolean;
   chainCanExecute: boolean;
   /** How many monitored traders have bought this token, including this one. */

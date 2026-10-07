@@ -798,9 +798,9 @@ model StrategySettings {
   trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
   trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
   followTraderSells  Boolean @default(true)
-  /// When true (default), only the first qualifying buy of a token is copied
-  /// for that account. When false, every qualifying buy may open a new position
-  /// after the previous one is closed (still one open position per token).
+  /// When true (default), only the watched trader's first buy of a token is
+  /// copied; their later buys of the same token are skipped. When false
+  /// (Every buy), additional buys of the same token may be copied / scaled in.
   firstBuyOnly       Boolean @default(true)
 
   /// Chains the engine is allowed to execute on. Monitor-only chains are

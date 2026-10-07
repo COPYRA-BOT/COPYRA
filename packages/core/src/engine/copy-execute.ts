@@ -158,7 +158,10 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
     where: { chain_tokenAddress: { chain: input.chain, tokenAddress: input.tokenAddress } },
   });
 
-  if (open) {
+  // First-buy-only: never open/scale a second book entry in the same token.
+  // Every-buy: scale into the existing open position instead of skipping.
+  const scaleIn = Boolean(open) && !config.firstBuyOnly;
+  if (open && config.firstBuyOnly) {
     const signal = await prisma.signal.create({
       data: {
         userId: ownerUserId,
@@ -170,7 +173,7 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
         sourceTxHash: input.sourceTxHash,
         status: SignalStatus.SKIPPED,
         skipReason: SkipReason.POSITION_ALREADY_OPEN,
-        skipDetail: 'This account already has an open COPYRA position in this token.',
+        skipDetail: 'This account already has an open COPYRA position in this token (first-buy-only).',
         signalStrength: input.signalStrength,
         marketCapUsdAtSignal: input.market.marketCapUsd,
         liquidityUsdAtSignal: input.market.liquidityUsd,
@@ -303,26 +306,29 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
       ? lamportsFromSol(sizing.sizeQuote)
       : BigInt(Math.floor(sizing.sizeQuote * 10 ** chainMeta.nativeDecimals)).toString();
 
-  const position = await prisma.position.create({
-    data: {
-      userId: ownerUserId,
-      chain: input.chain,
-      tokenId: input.token.id,
-      tokenAddress: input.tokenAddress,
-      tokenSymbol: input.market.symbol ?? input.token.symbol,
-      status: PositionStatus.PENDING_OPEN,
-      quoteAsset: chainMeta.quoteAsset,
-      quoteAssetSymbol: chainMeta.quoteAssetSymbol,
-      exitStrategy: config.exitStrategy,
-      requestedQuoteRaw: requestedRaw,
-      entryMarketCapUsd: input.market.marketCapUsd,
-      entryLiquidityUsd: input.market.liquidityUsd,
-      stopLossPriceUsd: levels.stopLossPriceUsd,
-      takeProfitPriceUsd: levels.takeProfitPriceUsd,
-      correlatedTraders: firstBuy ? firstBuy.correlatedBuys + 1 : 1,
-      signalStrength: input.signalStrength,
-    },
-  });
+  const position =
+    scaleIn && open
+      ? open
+      : await prisma.position.create({
+          data: {
+            userId: ownerUserId,
+            chain: input.chain,
+            tokenId: input.token.id,
+            tokenAddress: input.tokenAddress,
+            tokenSymbol: input.market.symbol ?? input.token.symbol,
+            status: PositionStatus.PENDING_OPEN,
+            quoteAsset: chainMeta.quoteAsset,
+            quoteAssetSymbol: chainMeta.quoteAssetSymbol,
+            exitStrategy: config.exitStrategy,
+            requestedQuoteRaw: requestedRaw,
+            entryMarketCapUsd: input.market.marketCapUsd,
+            entryLiquidityUsd: input.market.liquidityUsd,
+            stopLossPriceUsd: levels.stopLossPriceUsd,
+            takeProfitPriceUsd: levels.takeProfitPriceUsd,
+            correlatedTraders: firstBuy ? firstBuy.correlatedBuys + 1 : 1,
+            signalStrength: input.signalStrength,
+          },
+        });
 
   const idempotencyKey = `copy:${ownerUserId}:${input.chain}:${input.sourceTxHash}:${input.trader.id}`;
   const trade = await prisma.trade.create({
@@ -441,10 +447,13 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
 
   if (outcome.status !== TxStatus.CONFIRMED) {
     const keepPending = outcome.status === TxStatus.UNKNOWN || outcome.status === TxStatus.BROADCAST;
-    await prisma.position.update({
-      where: { id: position.id },
-      data: { status: keepPending ? PositionStatus.PENDING_OPEN : PositionStatus.OPEN_FAILED },
-    });
+    // Scale-in failures must not kill an already-open position.
+    if (!scaleIn) {
+      await prisma.position.update({
+        where: { id: position.id },
+        data: { status: keepPending ? PositionStatus.PENDING_OPEN : PositionStatus.OPEN_FAILED },
+      });
+    }
     telegram.send(
       renderFailure({
         chain: input.chain,
@@ -478,31 +487,72 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   const decimals = input.decoded.tokenOut?.decimals ?? input.token.decimals ?? 0;
   const tokensReceived = outcome.actualAmountRaw ? wholeUnits(outcome.actualAmountRaw, decimals) : 0;
   const spentQuote = sizing.sizeQuote;
-  const entryPriceUsd =
+  const thisFillPriceUsd =
     tokensReceived > 0 && portfolio.balance.quotePriceUsd > 0
       ? (spentQuote * portfolio.balance.quotePriceUsd) / tokensReceived
       : input.market.priceUsd;
 
-  await prisma.position.update({
-    where: { id: position.id },
-    data: {
-      status: PositionStatus.OPEN,
-      openedAt: outcome.telemetry.at('confirmed') ?? new Date(),
-      actualQuoteRaw: requestedRaw,
-      tokenAmountRaw: outcome.actualAmountRaw,
-      remainingTokenRaw: outcome.actualAmountRaw,
-      entryPriceUsd,
-      entryQuotePriceUsd: portfolio.balance.quotePriceUsd,
-      entryValueUsd: sizing.sizeUsd,
-      entrySlippagePct: outcome.realizedSlippagePct,
-      entryPriceImpactPct: outcome.priceImpactPct,
-      lastPriceUsd: entryPriceUsd,
-      lastPriceAt: new Date(),
-      feesQuote: outcome.networkFeeRaw
-        ? wholeUnits(outcome.networkFeeRaw, chainMeta.nativeDecimals)
-        : 0,
-    },
-  });
+  let entryPriceUsd = thisFillPriceUsd;
+  if (scaleIn) {
+    const prevRemaining = BigInt(position.remainingTokenRaw ?? position.tokenAmountRaw ?? '0');
+    const added = BigInt(outcome.actualAmountRaw ?? '0');
+    const newRemaining = prevRemaining + added;
+    const prevQuoteRaw = BigInt(position.actualQuoteRaw ?? '0');
+    const newQuoteRaw = prevQuoteRaw + BigInt(requestedRaw);
+    const prevTokens = wholeUnits(prevRemaining.toString(), decimals);
+    const prevEntry = Number(position.entryPriceUsd ?? 0);
+    const prevValue = Number(position.entryValueUsd ?? 0);
+    if (prevTokens + tokensReceived > 0) {
+      entryPriceUsd =
+        (prevEntry * prevTokens + thisFillPriceUsd * tokensReceived) / (prevTokens + tokensReceived);
+    }
+    const scaledLevels = computeExitLevels(entryPriceUsd, config);
+    const feeAdd = outcome.networkFeeRaw
+      ? wholeUnits(outcome.networkFeeRaw, chainMeta.nativeDecimals)
+      : 0;
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        status: PositionStatus.OPEN,
+        actualQuoteRaw: newQuoteRaw.toString(),
+        tokenAmountRaw: (
+          BigInt(position.tokenAmountRaw ?? '0') + added
+        ).toString(),
+        remainingTokenRaw: newRemaining.toString(),
+        entryPriceUsd,
+        entryQuotePriceUsd: portfolio.balance.quotePriceUsd,
+        entryValueUsd: prevValue + sizing.sizeUsd,
+        entrySlippagePct: outcome.realizedSlippagePct,
+        entryPriceImpactPct: outcome.priceImpactPct,
+        stopLossPriceUsd: scaledLevels.stopLossPriceUsd,
+        takeProfitPriceUsd: scaledLevels.takeProfitPriceUsd,
+        lastPriceUsd: thisFillPriceUsd,
+        lastPriceAt: new Date(),
+        feesQuote: { increment: feeAdd },
+      },
+    });
+  } else {
+    await prisma.position.update({
+      where: { id: position.id },
+      data: {
+        status: PositionStatus.OPEN,
+        openedAt: outcome.telemetry.at('confirmed') ?? new Date(),
+        actualQuoteRaw: requestedRaw,
+        tokenAmountRaw: outcome.actualAmountRaw,
+        remainingTokenRaw: outcome.actualAmountRaw,
+        entryPriceUsd,
+        entryQuotePriceUsd: portfolio.balance.quotePriceUsd,
+        entryValueUsd: sizing.sizeUsd,
+        entrySlippagePct: outcome.realizedSlippagePct,
+        entryPriceImpactPct: outcome.priceImpactPct,
+        lastPriceUsd: entryPriceUsd,
+        lastPriceAt: new Date(),
+        feesQuote: outcome.networkFeeRaw
+          ? wholeUnits(outcome.networkFeeRaw, chainMeta.nativeDecimals)
+          : 0,
+      },
+    });
+  }
 
   const mark = await getMarketSnapshot(input.chain, input.tokenAddress).catch(() => input.market);
   const pnl = await getPnlSummary(settings.pnlResetAt, ownerUserId);

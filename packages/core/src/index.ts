@@ -53,6 +53,7 @@ export * from './engine/exit-execute.js';
 export * from './engine/reconcile.js';
 export * from './engine/funds.js';
 export * from './engine/owner-wallet.js';
+export * from './engine/trader-buys.js';
 export { assertAdminWallet, isAdminWallet } from './engine/owner-wallet.js';
 
 // Market data

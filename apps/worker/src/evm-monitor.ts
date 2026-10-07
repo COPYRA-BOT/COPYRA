@@ -14,6 +14,7 @@ import {
   renderSkip,
   sleep,
   telegram,
+  traderHasPriorBuyOfToken,
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { getAddress } from 'viem';
@@ -232,7 +233,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     return;
   }
 
-  const [token, market, firstBuy, open, config, openPositionCount, accountAlreadyTraded] =
+  const [token, market, firstBuy, open, config, openPositionCount, traderAlreadyBought] =
     await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain, address: tokenAddress } },
@@ -263,15 +264,12 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
       },
     }),
-    // First-buy is per account — another wallet's history must not skip this user.
-    prisma.signal.findFirst({
-      where: {
-        userId: trader.userId,
-        chain,
-        tokenAddress,
-        status: { in: ['EXECUTED', 'EXECUTING', 'QUALIFIED'] },
-      },
-      select: { id: true },
+    // First-buy-only = this watched trader's first BUY of the token (not our book).
+    traderHasPriorBuyOfToken({
+      traderId: trader.id,
+      chain,
+      tokenAddress,
+      excludeTxHash: hash,
     }),
   ]);
   if (!market.missing) {
@@ -308,7 +306,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     },
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
-    isFirstBuy: accountAlreadyTraded === null,
+    isFirstBuy: !traderAlreadyBought,
     chainCanExecute: chainConfig(chain).canExecute,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
     spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isEvmQuoteAsset(chain, decoded.tokenIn.address)),

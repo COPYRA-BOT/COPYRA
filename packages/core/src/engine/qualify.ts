@@ -248,22 +248,24 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
     };
   }
 
-  // --- one-position-per-token (always) + optional first-buy-only ----------
-  if (portfolio.existingPositionForToken) {
-    return {
-      qualified: false,
-      reason: SkipReason.POSITION_ALREADY_OPEN,
-      detail: 'A COPYRA position in this token is already open. One token = one position.',
-    };
-  }
-  // Saved strategy setting: firstBuyOnly (default) vs every qualifying buy.
+  // --- buy mode: first buy of the watched trader vs every buy -------------
+  // First buy only → copy only that trader's first BUY of this token.
   if (config.firstBuyOnly && !input.isFirstBuy) {
     return {
       qualified: false,
       reason: SkipReason.NOT_FIRST_BUY,
       detail:
-        'First-buy-only mode is on: this account already copied this token. ' +
-        'Switch settings to “Every buy” to allow re-entry after the position closes.',
+        'First-buy-only mode: this watched trader already bought this token earlier. ' +
+        'Only their first buy is copied. Switch to “Every buy” to copy additional buys of the same token.',
+    };
+  }
+  // First-buy-only also refuses a second open book entry. Every-buy may scale
+  // into an existing open position in the same token.
+  if (portfolio.existingPositionForToken && config.firstBuyOnly) {
+    return {
+      qualified: false,
+      reason: SkipReason.POSITION_ALREADY_OPEN,
+      detail: 'A COPYRA position in this token is already open. First-buy-only keeps one position per token.',
     };
   }
 
