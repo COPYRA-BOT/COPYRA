@@ -46,11 +46,13 @@ services:
     instance_size_slug: basic-xxs
     health_check:
       http_path: /health
-      initial_delay_seconds: 12
+      # basic-xxs needs a long head start (API listen + prisma) or DO marks Degraded
+      # with "Waiting for service" while the new instance is still booting.
+      initial_delay_seconds: 60
       period_seconds: 5
-      timeout_seconds: 3
+      timeout_seconds: 5
       success_threshold: 1
-      failure_threshold: 6
+      failure_threshold: 12
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
