@@ -18,11 +18,28 @@ const WATCHDOG_SILENCE_MS = 3 * 60_000;
 const WATCHDOG_CHECK_MS = 30_000;
 
 async function heartbeat(status: string, detail: Record<string, unknown> = {}): Promise<void> {
-  await prisma.workerHeartbeat.upsert({
-    where: { name: 'copyra-worker' },
-    create: { name: 'copyra-worker', status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
-    update: { status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
-  });
+  // Short retries — a frozen beatAt makes ops-watch page "worker down" even when
+  // monitors are alive (pool blips during Solana catch-up).
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await prisma.workerHeartbeat.upsert({
+        where: { name: 'copyra-worker' },
+        create: {
+          name: 'copyra-worker',
+          status,
+          detail: detail as Prisma.InputJsonValue,
+          beatAt: new Date(),
+        },
+        update: { status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
+      });
+      return;
+    } catch (error) {
+      lastErr = error;
+      await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function fatalExit(kind: string, detail: string, code = 1): Promise<never> {

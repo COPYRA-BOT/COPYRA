@@ -3,6 +3,8 @@
 #
 # Domain TLS is managed only by DigitalOcean App Platform (no external CDN).
 # Point copyra.fun DNS at the records DigitalOcean shows under Networking → Domains.
+# CRITICAL: Cloudflare must be DNS-only (grey cloud). Orange-cloud proxy → 504s when
+# the single basic-xs container (API+worker) is busy; see docs/DEPLOY.md.
 
 name: copyra
 region: nyc

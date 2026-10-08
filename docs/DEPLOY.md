@@ -5,13 +5,21 @@ Platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
-## Domain (DigitalOcean only)
+## Domain (DigitalOcean only) — #1 cause of “site down” / 504
 
-TLS and the custom domain are managed **only** by App Platform. Do not put an external CDN/proxy in front of `copyra.fun`.
+TLS and the custom domain must be managed **only** by App Platform.  
+**Do not orange-cloud / proxy `copyra.fun` through Cloudflare** (or any CDN).  
+Proxied Cloudflare sits in front of a single `basic-xs` container (API + 24/7 worker). When the worker does Solana catch-up or a deploy rolls, origin response time spikes past Cloudflare’s proxy timeout → **HTTP 504 / Degraded**, even though the App Platform health check may still pass on the DO hostname.
 
-1. In **DigitalOcean → copyra → Networking → Domains**, keep `copyra.fun` (and `www`) attached (declared in `.do/app.yaml`).
-2. At your DNS host, use the **A / CNAME records DigitalOcean shows** for that domain (not a proxy to `*.ondigitalocean.app` through a third-party CDN).
-3. Wait for App Platform to issue the certificate. Status should be **Healthy**; `https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`.
+### Fix Cloudflare (manual — required if DNS is at CF)
+
+1. Cloudflare → **DNS** → records for `copyra.fun` and `www`.
+2. Set the proxy status to **DNS only** (grey cloud), **not** Proxied (orange cloud).
+3. Use the **A / CNAME values DigitalOcean shows** under App → Networking → Domains (not a CNAME to a CF-proxied host).
+4. Confirm response headers: `server` should **not** be `cloudflare`. Prefer `https://copyra-nl7kz.ondigitalocean.app/health` as a bypass check while DNS propagates.
+5. App Platform status **Healthy**; `https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`.
+
+If you keep Cloudflare for DNS only, leave SSL/TLS mode compatible with DO (Full is fine with grey cloud).
 
 ---
 

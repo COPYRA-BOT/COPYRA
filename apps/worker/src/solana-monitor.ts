@@ -74,6 +74,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
   let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
   let syncing = false;
+  /** Only one catch-up pass at a time — stacked ticks starved Prisma/API → site 504s. */
+  let catchingUp = false;
   let lastForceResub = 0;
   const bootAt = Date.now();
   /** Keep the wide recovery window for a few minutes after boot / forced resub. */
@@ -151,40 +153,51 @@ export async function startSolanaMonitor(): Promise<() => void> {
       solanaMonitorStats.maxAgeMs = maxAgeMs;
       log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
 
-      // Catch-up OUTSIDE the subscription critical path, with a hard per-trader
-      // timeout. A hung getParsedTransaction used to hold `syncing` forever and
-      // permanently disable both catch-up and resubscribe. Batch to avoid RPC storms.
+      // Catch-up OUTSIDE the subscription critical path. Never stack passes —
+      // overlapping catch-ups exhausted the Prisma pool (api+worker share the
+      // host), froze heartbeats, and made Cloudflare return 504 on copyra.fun.
       const catchUpTraders = traders;
-      void (async () => {
-        let catchUpOk = 0;
-        let catchUpErr = 0;
-        // batchSize 2 — each catch-up issues several Prisma queries; stay under pool=3.
-        const batchSize = 2;
-        for (let i = 0; i < catchUpTraders.length; i += batchSize) {
-          const batch = catchUpTraders.slice(i, i + batchSize);
-          await Promise.all(
-            batch.map(async (trader) => {
-              try {
-                await Promise.race([
-                  catchUpTrader(trader.id, trader.address, maxAgeMs),
-                  sleep(8_000).then(() => {
-                    throw new Error('catch-up timed out after 8s');
-                  }),
-                ]);
-                catchUpOk += 1;
-              } catch (error) {
-                catchUpErr += 1;
-                log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
-              }
-            }),
-          );
-        }
-        solanaMonitorStats.catchUpOk = catchUpOk;
-        solanaMonitorStats.catchUpErr = catchUpErr;
-        solanaMonitorStats.catchUpAt = new Date().toISOString();
-        touchSolanaSync();
-        log.info({ catchUpOk, catchUpErr, maxAgeMs }, 'Solana catch-up tick finished');
-      })();
+      if (catchingUp) {
+        log.debug({ watching: subscriptions.size }, 'Solana catch-up already running — skip stack');
+      } else {
+        catchingUp = true;
+        void (async () => {
+          let catchUpOk = 0;
+          let catchUpErr = 0;
+          // Serial (1) — leave pool slots for heartbeat, exits, and API.
+          const batchSize = 1;
+          try {
+            for (let i = 0; i < catchUpTraders.length; i += batchSize) {
+              const batch = catchUpTraders.slice(i, i + batchSize);
+              await Promise.all(
+                batch.map(async (trader) => {
+                  try {
+                    await Promise.race([
+                      catchUpTrader(trader.id, trader.address, maxAgeMs),
+                      sleep(6_000).then(() => {
+                        throw new Error('catch-up timed out after 6s');
+                      }),
+                    ]);
+                    catchUpOk += 1;
+                  } catch (error) {
+                    catchUpErr += 1;
+                    log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+                  }
+                }),
+              );
+              // Yield so exit ticks + heartbeat upserts can use the pool.
+              if (i + batchSize < catchUpTraders.length) await sleep(200);
+            }
+          } finally {
+            solanaMonitorStats.catchUpOk = catchUpOk;
+            solanaMonitorStats.catchUpErr = catchUpErr;
+            solanaMonitorStats.catchUpAt = new Date().toISOString();
+            catchingUp = false;
+            touchSolanaSync();
+            log.info({ catchUpOk, catchUpErr, maxAgeMs }, 'Solana catch-up tick finished');
+          }
+        })();
+      }
       touchSolanaSync();
     } finally {
       syncing = false;
