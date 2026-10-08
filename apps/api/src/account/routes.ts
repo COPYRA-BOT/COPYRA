@@ -167,8 +167,10 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
     if (!session) return;
     const user = await prisma.user.findUniqueOrThrow({ where: { id: session.user.id } });
     const verify = await telegram.verify();
+    const linked = Boolean(user.telegramChatId);
     return jsonSafe({
-      linked: Boolean(user.telegramChatId),
+      linked,
+      connected: linked,
       chatIdMasked: user.telegramChatId
         ? `${user.telegramChatId.slice(0, 3)}…${user.telegramChatId.slice(-3)}`
         : null,
@@ -194,7 +196,7 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
         data: { telegramChatId: null, telegramLinkedAt: null },
       });
       await audit('telegram_disconnect', { userId: session.user.id, request });
-      return jsonSafe({ ok: true, linked: false });
+      return jsonSafe({ ok: true, linked: false, connected: false });
     }
 
     const chatId = normalizeTelegramChatId(String(body.chatId ?? ''));
@@ -207,13 +209,14 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       return reply.code(503).send({ error: 'Telegram bot is not configured on the server.' });
     }
 
+    // Persist first so the next BUY/SELL confirmed alert resolves this chat.
     await prisma.user.update({
       where: { id: session.user.id },
       data: { telegramChatId: chatId, telegramLinkedAt: new Date() },
     });
 
     const probeOk = await telegram.sendNow(
-      `✅ <b>COPYRA linked</b>\nThis chat will receive <b>BUY</b> and <b>SELL</b> alerts for your account only.\nOpen the bot and tap <b>Start</b> if this is your first message.`,
+      `✅ <b>COPYRA connected</b>\nThis chat will receive <b>BUY</b> and <b>SELL</b> alerts for your wallet only.\nOpen the bot and tap <b>Start</b> if this is your first message.`,
       { kind: 'telegram-link', userId: session.user.id },
     );
     await audit('telegram_link', { userId: session.user.id, request });
@@ -221,11 +224,12 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
     return jsonSafe({
       ok: true,
       linked: true,
+      connected: true,
       chatIdMasked: `${chatId.slice(0, 3)}…${chatId.slice(-3)}`,
       probeOk,
       hint: probeOk
         ? null
-        : 'Saved. If you got no Telegram message, open the bot and tap Start, then save again.',
+        : 'Connected. If you got no Telegram message, open the bot and tap Start, then Connect again.',
     });
   });
 

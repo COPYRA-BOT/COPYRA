@@ -984,7 +984,14 @@ function settings(e){const s=S[e].set;
   return `<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label><input id="s_${k}" type="number" step="any" value="${s[k]}">`;
  };
  const botUser=LIVE?.status?.telegram?.botUsername||'copyrafun_bot';
- $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" style="margin:6px 0 0">1) Open <a href="https://t.me/${botUser}" target="_blank" rel="noopener">@${botUser}</a> and tap <b>Start</b>. 2) Get your numeric chat ID from <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>. 3) Save — this ${e.toUpperCase()} account only gets <b>BUY</b> and <b>SELL</b> alerts (no skips / ops).</p><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Save Telegram</button><button class="btn sm" id="tgDisconnect" type="button">Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
+ let tgLinked=false;
+ const tgGuideHtml=`<ol class="tg-guide" style="margin:10px 0 0;padding-left:1.25rem;color:var(--tx);line-height:1.55">
+<li style="margin:0 0 6px">Open <a href="https://t.me/${botUser}" target="_blank" rel="noopener"><b>@${botUser}</b></a> and tap <b>Start</b>.</li>
+<li style="margin:0 0 6px">Open <a href="https://t.me/userinfobot" target="_blank" rel="noopener"><b>@userinfobot</b></a> to get your numeric Telegram Chat ID.</li>
+<li style="margin:0 0 6px">Enter your Chat ID below to receive alerts for this wallet.</li>
+<li style="margin:0">Click <b>Connect</b> to complete the setup.</li>
+</ol>`;
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><div id="tgGuide">${tgGuideHtml}</div><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Connect</button><button class="btn sm" id="tgDisconnect" type="button" hidden>Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
  dr.classList.add('o');
  $('#drClose')&&($('#drClose').onclick=()=>dr.classList.remove('o'));
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
@@ -1006,6 +1013,35 @@ function settings(e){const s=S[e].set;
    });
    dr.classList.remove('o');toast(`Settings saved. ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
   }catch(err){$('#se').textContent=err.message}};
+ // Paint Connect / Connected + Disconnect from link state (BUY/SELL alerts only).
+ const paintTg=(linked,masked)=>{
+  tgLinked=!!linked;
+  const st=$('#tgStatus');
+  const save=$('#tgSave');
+  const disc=$('#tgDisconnect');
+  const top=$('#tgConnect');
+  const box=$('#tgBox');
+  const open=box&&box.classList.contains('open');
+  if(st){
+   st.textContent=tgLinked
+    ?(`Connected${masked?' · '+masked:''}. BUY and SELL alerts on for this ${e.toUpperCase()} wallet.`)
+    :`Enter your Chat ID, then Connect — BUY and SELL alerts for this ${e.toUpperCase()} wallet.`;
+  }
+  if(save){
+   save.textContent=tgLinked?'Connected':'Connect';
+   save.disabled=!!tgLinked;
+   save.setAttribute('aria-disabled',tgLinked?'true':'false');
+   save.style.opacity=tgLinked?'0.92':'1';
+   save.style.cursor=tgLinked?'default':'pointer';
+  }
+  if(disc){
+   if(tgLinked)disc.removeAttribute('hidden');
+   else disc.setAttribute('hidden','');
+  }
+  if(top&&!open){
+   top.textContent=tgLinked?'Connected':'Connect Telegram BOT';
+  }
+ };
  // Per-account Telegram BUY/SELL alerts for this mode's signed-in user.
  const loadTg=async()=>{
   const st=$('#tgStatus');
@@ -1013,13 +1049,15 @@ function settings(e){const s=S[e].set;
   st.textContent='Loading…';
   try{
    const t=await api('GET','/api/account/telegram',undefined,{mode:e});
-   st.textContent=t.linked
-    ?(`Linked${t.chatIdMasked?' · '+t.chatIdMasked:''}. BUY/SELL alerts on for ${e.toUpperCase()}.`)
-    :`Not linked yet for ${e.toUpperCase()}. Paste your chat ID below.`;
+   paintTg(t.linked,t.chatIdMasked);
    const inp=$('#tgChat');
-   if(inp&&!inp.value&&t.linked)inp.placeholder=t.chatIdMasked||'e.g. 123456789';
+   if(inp){
+    if(t.linked){inp.value='';inp.placeholder=t.chatIdMasked||'e.g. 123456789';inp.disabled=true}
+    else{inp.disabled=false;inp.placeholder='e.g. 123456789'}
+   }
   }catch(err){
-   st.textContent=err.message||`Sign in on ${e.toUpperCase()} to link Telegram.`;
+   paintTg(false,null);
+   if(st)st.textContent=err.message||`Sign in on ${e.toUpperCase()} to link Telegram.`;
   }
  };
  const setTgOpen=(opening)=>{
@@ -1031,11 +1069,11 @@ function settings(e){const s=S[e].set;
   else box.setAttribute('hidden','');
   box.style.display=opening?'block':'none';
   btn.setAttribute('aria-expanded',opening?'true':'false');
-  btn.textContent=opening?'Hide Telegram setup':'Connect Telegram BOT';
+  btn.textContent=opening?'Hide Telegram setup':(tgLinked?'Connected':'Connect Telegram BOT');
   if(opening){
    void loadTg();
    const inp=$('#tgChat');
-   if(inp)setTimeout(()=>inp.focus(),50);
+   if(inp&&!inp.disabled)setTimeout(()=>inp.focus(),50);
    setTimeout(()=>box.scrollIntoView({behavior:'smooth',block:'nearest'}),80);
   }
  };
@@ -1044,11 +1082,17 @@ function settings(e){const s=S[e].set;
   if(!box)return;
   setTgOpen(!box.classList.contains('open'));
  };
- // Bind with addEventListener so the expand/save flow always fires.
  const tgBtn=$('#tgConnect');
  if(tgBtn){
   tgBtn.addEventListener('click',(ev)=>{ev.preventDefault();ev.stopPropagation();openTgBox()});
  }
+ // Prefetch link state so the top button shows Connected when already linked.
+ void api('GET','/api/account/telegram',undefined,{mode:e}).then(t=>{
+  tgLinked=!!t.linked;
+  const top=$('#tgConnect');
+  const box=$('#tgBox');
+  if(top&&box&&!box.classList.contains('open'))top.textContent=tgLinked?'Connected':'Connect Telegram BOT';
+ }).catch(()=>{});
  const tgBox=$('#tgBox');
  if(tgBox){
   tgBox.addEventListener('click',(ev)=>ev.stopPropagation());
@@ -1057,17 +1101,21 @@ function settings(e){const s=S[e].set;
  if(tgSave){
   tgSave.addEventListener('click',async(ev)=>{
    ev.preventDefault();ev.stopPropagation();
+   if(tgLinked)return;
    const errEl=$('#tgErr');
    if(errEl)errEl.textContent='';
    const chatId=(($('#tgChat')&&$('#tgChat').value)||'').trim();
    if(!chatId){if(errEl)errEl.textContent='Enter your Telegram chat ID (digits only).';return}
    if(!/^-?\d{5,20}$/.test(chatId)){if(errEl)errEl.textContent='Chat ID must be digits only (e.g. 123456789).';return}
+   tgSave.disabled=true;tgSave.textContent='Connecting…';
    try{
     const res=await api('PATCH','/api/account/telegram',{chatId},{mode:e});
-    toast(res.probeOk?'Telegram linked — check your chat for a confirmation, then BUY/SELL alerts.':(res.hint||'Telegram chat saved.'));
-    if($('#tgChat'))$('#tgChat').value='';
+    toast(res.probeOk?'Connected — check Telegram, then BUY/SELL alerts will arrive here.':(res.hint||'Chat ID saved. Alerts will start on the next BUY/SELL.'));
     await loadTg();
-   }catch(err){if(errEl)errEl.textContent=err.message}
+   }catch(err){
+    if(errEl)errEl.textContent=err.message;
+    paintTg(false,null);
+   }
   });
  }
  const tgDisc=$('#tgDisconnect');
@@ -1078,8 +1126,9 @@ function settings(e){const s=S[e].set;
    if(errEl)errEl.textContent='';
    try{
     await api('PATCH','/api/account/telegram',{disconnect:true},{mode:e});
-    toast('Telegram disconnected for this account.');
-    if($('#tgChat'))$('#tgChat').value='';
+    toast('Telegram disconnected for this wallet.');
+    const inp=$('#tgChat');
+    if(inp){inp.value='';inp.disabled=false;inp.placeholder='e.g. 123456789'}
     await loadTg();
    }catch(err){if(errEl)errEl.textContent=err.message}
   });
