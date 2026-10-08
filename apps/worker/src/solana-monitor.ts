@@ -27,8 +27,10 @@ const TX_FETCH_ATTEMPTS = 4;
 const TX_FETCH_BASE_DELAY_MS = 40;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
 const CATCHUP_LIMIT = 20;
-/** Ignore catch-up signatures older than this (avoids 15–20s “Detected in” spam). */
-const CATCHUP_MAX_AGE_MS = 45_000;
+/** Steady-state catch-up window (avoids stale “Detected in” spam). */
+const CATCHUP_MAX_AGE_MS = 90_000;
+/** First sync after boot / forced WS resub — recover activity missed during a stall. */
+const CATCHUP_RECOVERY_AGE_MS = 15 * 60_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -57,6 +59,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
   const subscriptions = new Map<string, number>();
   let syncing = false;
   let lastForceResub = 0;
+  /** Wider catch-up after boot / forced resub so a stalled worker recovers missed buys. */
+  let recoveryCatchUp = true;
 
   const dropAll = async () => {
     for (const [traderId, sub] of subscriptions) {
@@ -78,6 +82,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
         await dropAll();
         connection = solanaSubscriptionConnection(true);
         lastForceResub = Date.now();
+        recoveryCatchUp = true;
         log.info({}, 'Forced Solana log resubscribe (fresh WS)');
       }
 
@@ -120,18 +125,20 @@ export async function startSolanaMonitor(): Promise<() => void> {
         log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
       }
 
+      const maxAgeMs = recoveryCatchUp ? CATCHUP_RECOVERY_AGE_MS : CATCHUP_MAX_AGE_MS;
       // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
       await Promise.all(
         traders.map(async (trader) => {
           try {
-            await catchUpTrader(trader.id, trader.address);
+            await catchUpTrader(trader.id, trader.address, maxAgeMs);
           } catch (error) {
             log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
           }
         }),
       );
+      recoveryCatchUp = false;
 
-      log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
+      log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
     } finally {
       syncing = false;
     }
@@ -154,7 +161,11 @@ export async function startSolanaMonitor(): Promise<() => void> {
  * Re-scan recent signatures for a trader. Replays anything not yet finalized,
  * including rows previously marked `tx-not-found`.
  */
-async function catchUpTrader(traderId: string, address: string): Promise<void> {
+async function catchUpTrader(
+  traderId: string,
+  address: string,
+  maxAgeMs: number = CATCHUP_MAX_AGE_MS,
+): Promise<void> {
   let pubkey: PublicKey;
   try {
     pubkey = new PublicKey(address);
@@ -172,7 +183,7 @@ async function catchUpTrader(traderId: string, address: string): Promise<void> {
   for (const entry of entries) {
     if (entry.err) continue;
     // Skip stale history — live onLogs already covers the hot path.
-    if (entry.blockTime && now - entry.blockTime * 1000 > CATCHUP_MAX_AGE_MS) continue;
+    if (entry.blockTime && now - entry.blockTime * 1000 > maxAgeMs) continue;
     const signature = entry.signature;
     const existing = await prisma.processedSignature.findUnique({
       where: { chain_signature_traderId: { chain: Chain.SOLANA, signature, traderId } },
