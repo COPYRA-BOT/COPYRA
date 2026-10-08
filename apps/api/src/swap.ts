@@ -14,10 +14,11 @@ import { readSession } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
 async function requireSession(request: FastifyRequest, reply: FastifyReply) {
-  const session = await readSession(request);
+  // Swaps are Solana-only — always bind to the SOL mode session.
+  const session = await readSession(request, 'sol');
   if (!session) {
     reply.code(401).send({
-      error: 'Connect a wallet and sign in first. COPYRA never asks for your private key.',
+      error: 'Connect your Solana wallet and sign in first.',
     });
     return null;
   }
@@ -116,7 +117,8 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
 
     const trade = await prisma.trade.create({
       data: {
-        idempotencyKey: `user-swap:${session.user.address}:${signature}`,
+        userId: session.user.id,
+        idempotencyKey: `user-swap:${session.user.id}:${signature}`,
         chain: Chain.SOLANA,
         side: TradeSide.BUY,
         reason: TradeReason.MANUAL,
@@ -155,7 +157,7 @@ export async function registerSwapRoutes(app: FastifyInstance): Promise<void> {
       note:
         confirmation.status === TxStatus.CONFIRMED
           ? 'Confirmed on-chain via getSignatureStatuses.'
-          : 'Not confirmed. The explorer link is the only proof path — this response is not a fill.',
+          : 'Not confirmed. The explorer link is the only proof path. This response is not a fill.',
     });
   });
 

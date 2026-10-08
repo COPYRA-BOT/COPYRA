@@ -2,7 +2,7 @@
   "name": "copyra",
   "version": "1.0.0",
   "private": true,
-  "description": "COPYRA — real on-chain copy-trading for Solana and EVM",
+  "description": "COPYRA: real on chain copy trading for Solana and EVM",
   "license": "UNLICENSED",
   "engines": {
     "node": ">=20.11"
@@ -34,7 +34,10 @@
     "audit:secrets": "node scripts/audit-secrets.mjs",
     "audit:all": "npm run audit:mocks && npm run audit:secrets",
     "verify:providers": "node --experimental-strip-types scripts/verify-providers.mts",
-    "ci": "npm run audit:all && npm run format:check && npm run lint && npm run typecheck && npm run test"
+    "ci": "npm run audit:all && npm run format:check && npm run lint && npm run typecheck && npm run test",
+    "deploy:verify": "node scripts/deploy-verify.mjs",
+    "deploy:links": "node scripts/print-deploy-links.mjs",
+    "verify:live": "node scripts/verify-live.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

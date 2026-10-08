@@ -170,6 +170,6 @@ export function buildLatencyReport(
     note:
       confirmSamples.length > 0
         ? `Measured from ${confirmSamples.length} confirmed on-chain transaction(s).`
-        : 'No confirmed transactions yet — no latency claim can be made.',
+        : 'No confirmed transactions yet. No latency claim can be made.',
   };
 }

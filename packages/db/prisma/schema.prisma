@@ -153,6 +153,12 @@ enum SkipReason {
   RPC_UNAVAILABLE
 }
 
+/// Per-user custody key family (one Solana wallet + one EVM address for all EVM chains).
+enum CustodyFamily {
+  SOLANA
+  EVM
+}
+
 enum BalanceBucket {
   TRADING
   SAVINGS
@@ -183,22 +189,174 @@ enum DriftResolution {
 }
 
 // ============================================================================
-// Auth — wallet-based (SIWE / Sign-In-With-Solana). No passwords, no keys.
+// Auth — wallet SIWE/SIWS, email+password, Google OIDC. Keys never leave the server.
 // ============================================================================
+
+enum ReferralLedgerKind {
+  ACCRUAL
+  CLAIM
+  ADJUSTMENT
+}
 
 model User {
   id         String   @id @default(cuid())
-  /// Lowercased EVM address, or base58 Solana pubkey.
+  /// Login wallet when present. Email/Google-only accounts use sentinel `acct_<id>` until a wallet is linked.
   address    String   @unique
   chain      Chain
   label      String?
+  email           String?   @unique
+  emailVerifiedAt DateTime?
+  passwordHash    String?
+  /// Google OIDC subject — identity key (not email alone).
+  googleSub       String?   @unique
+  googleEmail     String?
+  googleName      String?
+  /// Unguessable referral code for PUBLIC_URL/?ref=CODE
+  referralCode    String    @unique
+  referredById    String?
+  referredBy      User?     @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals       User[]    @relation("UserReferrals")
+  totpSecretEnc   String?
+  totpEnabled     Boolean   @default(false)
+  totpEnabledAt   DateTime?
   isAdmin    Boolean  @default(false)
+  /// When set, deposits and withdrawals are blocked for this user.
+  custodyPausedAt DateTime?
   createdAt  DateTime @default(now())
   lastSeenAt DateTime @default(now())
 
-  sessions Session[]
+  sessions        Session[]
+  custodyWallets  UserCustodyWallet[]
+  walletLinks     UserWalletLink[]
+  passkeys        WebAuthnCredential[]
+  recoveryCodes   RecoveryCode[]
+  referralLedger  ReferralLedgerEntry[] @relation("ReferralBeneficiary")
+  referralSources ReferralLedgerEntry[] @relation("ReferralSource")
+  auditLogs       AccountAuditLog[]
+  transfers       Transfer[]
+  custodyDeposits CustodyDeposit[]
+  traders         Trader[]
+  signals         Signal[]
+  positions       Position[]
+  trades          Trade[]
+  notifications   NotificationLog[]
 
+  @@index([referredById])
   @@map("users")
+}
+
+/// Linked login wallets (Solana / EVM). Distinct from custody deposit addresses.
+model UserWalletLink {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family    CustodyFamily
+  address   String
+  linkedAt  DateTime      @default(now())
+
+  @@unique([userId, family])
+  @@unique([family, address])
+  @@index([userId])
+  @@map("user_wallet_links")
+}
+
+model WebAuthnCredential {
+  id         String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey  String
+  counter    BigInt   @default(0)
+  deviceType String?
+  backedUp   Boolean  @default(false)
+  transports String?
+  name       String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("webauthn_credentials")
+}
+
+model RecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("recovery_codes")
+}
+
+/// Double-entry referral ledger. Accruals require real platform-fee collection (see docs/ACCOUNTS_FEES_STOP.md).
+model ReferralLedgerEntry {
+  id                String             @id @default(cuid())
+  beneficiaryUserId String
+  beneficiary       User               @relation("ReferralBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
+  sourceUserId      String?
+  source            User?              @relation("ReferralSource", fields: [sourceUserId], references: [id], onDelete: SetNull)
+  tradeId           String?
+  txHash            String?
+  chain             Chain
+  amountRaw         String
+  assetSymbol       String
+  kind              ReferralLedgerKind
+  idempotencyKey    String             @unique
+  createdAt         DateTime           @default(now())
+
+  @@index([beneficiaryUserId, kind])
+  @@index([sourceUserId])
+  @@map("referral_ledger_entries")
+}
+
+model AccountAuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  detail    Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("account_audit_logs")
+}
+
+/// Server-derived deposit/trading wallet. Private key material is AES-GCM encrypted at rest.
+model UserCustodyWallet {
+  id                   String        @id @default(cuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family               CustodyFamily
+  address              String
+  encryptedKeyMaterial String
+  keyVersion           Int           @default(1)
+  createdAt            DateTime      @default(now())
+
+  @@unique([userId, family])
+  @@unique([family, address])
+  @@index([userId])
+  @@map("user_custody_wallets")
+}
+
+/// On-chain deposit attribution — one row per confirmed tx hash (replay-safe).
+model CustodyDeposit {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain        Chain
+  txHash       String
+  amountRaw    String
+  assetAddress String   @default("native")
+  status       TxStatus
+  creditedAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  @@unique([chain, txHash])
+  @@index([userId, createdAt])
+  @@map("custody_deposits")
 }
 
 /// Single-use nonce for signature login. Consumed on verify to stop replay.
@@ -236,6 +394,9 @@ model Session {
 
 model Trader {
   id        String   @id @default(cuid())
+  /// Owning dashboard account — traders are never shared across wallets.
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain     Chain
   address   String
   label     String
@@ -254,8 +415,10 @@ model Trader {
   detections DetectedTransaction[]
   signals    Signal[]
 
-  @@unique([chain, address])
+  /// Same watched address may exist for different users; never twice for one user.
+  @@unique([userId, chain, address])
   @@index([enabled])
+  @@index([userId, enabled])
   @@map("traders")
 }
 
@@ -372,14 +535,17 @@ model DetectedTransaction {
 }
 
 /// Hard idempotency barrier. A signature recorded here is never processed
-/// twice, even across process restarts or a WebSocket replay storm.
+/// twice for the same trader row, even across restarts or replay storms.
+/// Keyed by traderId so two accounts watching the same wallet each get a copy.
 model ProcessedSignature {
   chain       Chain
   signature   String
+  traderId    String
   processedAt DateTime @default(now())
   outcome     String
 
-  @@id([chain, signature])
+  @@id([chain, signature, traderId])
+  @@index([traderId])
   @@map("processed_signatures")
 }
 
@@ -389,6 +555,9 @@ model ProcessedSignature {
 
 model Signal {
   id       String @id @default(cuid())
+  /// Owning account (copied from trader at create time).
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain    Chain
   traderId String
   trader   Trader @relation(fields: [traderId], references: [id], onDelete: Cascade)
@@ -447,6 +616,7 @@ model Signal {
   @@unique([chain, sourceTxHash, traderId])
   @@index([status, createdAt])
   @@index([chain, tokenAddress])
+  @@index([userId, createdAt])
   @@map("signals")
 }
 
@@ -456,6 +626,9 @@ model Signal {
 
 model Position {
   id      String @id @default(cuid())
+  /// Owning account — open-position uniqueness is per user, not global.
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   chain   Chain
   tokenId String
   token   Token  @relation(fields: [tokenId], references: [id])
@@ -523,6 +696,8 @@ model Position {
 
   @@index([status, chain])
   @@index([chain, tokenAddress, status])
+  @@index([userId, status])
+  @@index([userId, chain, tokenAddress, status])
   @@map("positions")
 }
 
@@ -532,6 +707,9 @@ model Position {
 
 model Trade {
   id         String   @id @default(cuid())
+  /// Owning account — fills are never visible across wallets.
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// Caller-supplied idempotency key. A retry with the same key never produces
   /// a second broadcast.
   idempotencyKey String @unique
@@ -626,6 +804,7 @@ model Trade {
   @@index([status, createdAt])
   @@index([positionId])
   @@index([chain, txHash])
+  @@index([userId, createdAt])
   @@map("trades")
 }
 
@@ -659,6 +838,8 @@ model WalletBalance {
 model Transfer {
   id       String   @id @default(cuid())
   chain    Chain
+  userId   String?
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   fromBucket BalanceBucket
   toBucket   BalanceBucket
   assetAddress String
@@ -672,6 +853,7 @@ model Transfer {
   confirmedAt DateTime?
 
   @@index([status])
+  @@index([userId])
   @@map("transfers")
 }
 
@@ -723,6 +905,10 @@ model StrategySettings {
   trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
   trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
   followTraderSells  Boolean @default(true)
+  /// When true (default), only the watched trader's first buy of a token is
+  /// copied; their later buys of the same token are skipped. When false
+  /// (Every buy), additional buys of the same token may be copied / scaled in.
+  firstBuyOnly       Boolean @default(true)
 
   /// Chains the engine is allowed to execute on. Monitor-only chains are
   /// rejected by the executor regardless of what is listed here.
@@ -806,6 +992,9 @@ model DriftFlag {
 
 model NotificationLog {
   id        String   @id @default(cuid())
+  /// Owning account when the event is user-scoped; null = system-wide (hidden from dashboards).
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
   channel   String
   kind      String
   /// Rendered message, retained so the exact text sent can be audited.
@@ -817,5 +1006,6 @@ model NotificationLog {
   createdAt DateTime @default(now())
 
   @@index([kind, createdAt])
+  @@index([userId, createdAt])
   @@map("notification_logs")
 }

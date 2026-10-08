@@ -4,6 +4,10 @@ import { componentLogger } from '../obs/logger.js';
 
 const log = componentLogger('redis');
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 let client: Redis | undefined;
 
 export function redis(): Redis {
@@ -79,10 +83,73 @@ export async function withLock<T>(
 /**
  * Returns true the first time a key is seen within the window. Used as the hot
  * path duplicate-signal guard before any RPC work is done.
+ *
+ * On Redis timeout/error: return true so the caller falls through to Postgres
+ * unique constraints. Never hang the Solana/EVM monitor on a stuck Redis socket.
  */
 export async function markSeenOnce(key: string, ttlSeconds: number): Promise<boolean> {
-  const result = await redis().set(`seen:${key}`, '1', 'EX', ttlSeconds, 'NX');
-  return result === 'OK';
+  try {
+    const result = await Promise.race([
+      redis().set(`seen:${key}`, '1', 'EX', ttlSeconds, 'NX'),
+      sleep(2_000).then(() => '__timeout__' as const),
+    ]);
+    if (result === '__timeout__') {
+      log.warn({ key }, 'markSeenOnce timed out — continuing with DB dedup');
+      return true;
+    }
+    return result === 'OK';
+  } catch (error) {
+    log.warn({ key, err: error }, 'markSeenOnce failed — continuing with DB dedup');
+    return true;
+  }
+}
+
+/** Clears a seen mark so a deferred signature can be retried (e.g. tx-not-found). */
+export async function clearSeen(key: string): Promise<void> {
+  try {
+    await Promise.race([redis().del(`seen:${key}`), sleep(2_000)]);
+  } catch (error) {
+    log.warn({ key, err: error }, 'clearSeen failed');
+  }
+}
+
+/** Wallet SIWE/SIWS nonces — 5 minutes (one-time consume). */
+const AUTH_NONCE_TTL_SEC = 300;
+
+/** One-time SIWE/SIWS nonce in Redis (GETDEL on consume). */
+export async function storeAuthNonce(
+  address: string,
+  chain: string,
+  nonce: string,
+  ttlSec = AUTH_NONCE_TTL_SEC,
+): Promise<{ expiresAt: Date }> {
+  const key = `auth:nonce:${chain}:${address}`;
+  const expiresAt = new Date(Date.now() + ttlSec * 1000);
+  await redis().set(key, nonce, 'EX', ttlSec);
+  return { expiresAt };
+}
+
+/**
+ * Atomically read + delete the nonce for address/chain.
+ * Returns the nonce string if present and unexpired, else null.
+ */
+export async function consumeAuthNonce(address: string, chain: string): Promise<string | null> {
+  const key = `auth:nonce:${chain}:${address}`;
+  const client = redis();
+  // GETDEL is Redis 6.2+; fallback to GET + DEL pipeline when unavailable.
+  try {
+    const value = (await client.call('GETDEL', key)) as string | null;
+    return value || null;
+  } catch {
+    const value = await client.get(key);
+    if (!value) return null;
+    await client.del(key);
+    return value;
+  }
+}
+
+export async function peekAuthNonce(address: string, chain: string): Promise<string | null> {
+  return redis().get(`auth:nonce:${chain}:${address}`);
 }
 
 export async function closeRedis(): Promise<void> {

@@ -1,6 +1,7 @@
 // Configuration
 export * from './config/env.js';
 export * from './config/chains.js';
+export * from './config/public-origin.js';
 
 // Observability
 export * from './obs/logger.js';
@@ -16,6 +17,20 @@ export {
   SolanaSigner,
   EvmSigner,
 } from './security/signer.js';
+export {
+  multiUserCustodyEnabled,
+  provisionUserCustody,
+  userCustodyAddress,
+  deriveSolanaKeypair,
+  deriveEvmAccount,
+  encryptKeyMaterial,
+  decryptKeyMaterial,
+} from './security/user-custody.js';
+export {
+  assertAddressNotSanctioned,
+  assertCustodyOperationsAllowed,
+  reconcileUserCustody,
+} from './security/custody-safety.js';
 
 // Utilities
 export * from './util/retry.js';
@@ -36,6 +51,10 @@ export * from './engine/execution-gate.js';
 export * from './engine/copy-execute.js';
 export * from './engine/exit-execute.js';
 export * from './engine/reconcile.js';
+export * from './engine/funds.js';
+export * from './engine/owner-wallet.js';
+export * from './engine/trader-buys.js';
+export { assertAdminWallet, isAdminWallet } from './engine/owner-wallet.js';
 
 // Market data
 export * from './market/index.js';

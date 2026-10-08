@@ -11,6 +11,7 @@ import { assertExecutable, chainConfig, explorerTxUrl } from '../config/chains.j
 import type { TelemetryTracker } from '../engine/telemetry.js';
 import { componentLogger } from '../obs/logger.js';
 import { evmSigner, NoSignerError } from '../security/signer.js';
+import { multiUserCustodyEnabled, userEvmAccount } from '../security/user-custody.js';
 import { sleep } from '../util/retry.js';
 import { evmPool, viemChain } from './clients.js';
 import { computeEvmTokenDeltas } from './decoder.js';
@@ -39,6 +40,8 @@ export interface EvmSwapRequest {
   maxAttempts: number;
   telemetry: TelemetryTracker;
   idempotencyKey: string;
+  /** When set with multi-user custody, spend/sign from that account's custody wallet. */
+  userId?: string;
 }
 
 /**
@@ -64,7 +67,8 @@ export async function confirmEvmTransaction(
 }> {
   const config = chainConfig(chain);
   const deadline = Date.now() + timeoutMs;
-  let interval = Math.max(300, Math.min(2_000, config.blockTimeMs));
+  // Fast receipt polls — Base/Arb often land under 1s; start tight, then ease.
+  let interval = Math.max(50, Math.min(200, Math.floor(config.blockTimeMs / 6) || 80));
 
   while (Date.now() < deadline) {
     const result = await evmPool(chain)
@@ -82,6 +86,11 @@ export async function confirmEvmTransaction(
         };
       }
 
+      // requiredConfirmations is 1 on all venues — receipt success is enough.
+      if (requiredConfirmations <= 1) {
+        return { status: TxStatus.CONFIRMED, receipt, confirmations: 1, error: null };
+      }
+
       const headResult = await evmPool(chain)
         .call('getBlockNumber', (client) => client.getBlockNumber())
         .catch(() => null);
@@ -92,13 +101,12 @@ export async function confirmEvmTransaction(
       if (confirmations >= requiredConfirmations) {
         return { status: TxStatus.CONFIRMED, receipt, confirmations, error: null };
       }
-      // Landed but not yet deep enough.
       await sleep(interval);
       continue;
     }
 
     await sleep(interval);
-    interval = Math.min(3_000, Math.round(interval * 1.2));
+    interval = Math.min(500, Math.round(interval * 1.25));
   }
 
   return {
@@ -126,13 +134,13 @@ async function ensureAllowance(
   router: string,
   amountRaw: bigint,
   confirmTimeoutMs: number,
+  account: Awaited<ReturnType<typeof userEvmAccount>>,
 ): Promise<{ approvalHash: string | null }> {
   if (isNativeSentinel(token)) return { approvalHash: null };
 
   const current = await getErc20Allowance(chain, token, owner, router);
   if (current >= amountRaw) return { approvalHash: null };
 
-  const account = evmSigner.requireAccount();
   const wallet = createWalletClient({
     account,
     chain: viemChain(chain),
@@ -220,12 +228,29 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
     ...extra,
   });
 
-  if (!evmSigner.available) {
+  const useUserCustody = Boolean(request.userId && multiUserCustodyEnabled());
+  if (!useUserCustody && !evmSigner.available) {
     record(0, 'sign', 'error', 'No EVM signing key configured');
     return failure('NO_SIGNER', new NoSignerError('evm').message);
   }
-  const account = evmSigner.requireAccount();
-  const sender = evmSigner.requireAddress();
+  let account: ReturnType<typeof evmSigner.requireAccount>;
+  let sender: `0x${string}`;
+  try {
+    if (useUserCustody) {
+      account = await userEvmAccount(request.userId as string);
+      sender = account.address;
+    } else {
+      account = evmSigner.requireAccount();
+      sender = evmSigner.requireAddress();
+    }
+  } catch (error) {
+    record(0, 'sign', 'error', describe(error));
+    return failure('NO_SIGNER', describe(error));
+  }
+  log.info(
+    { wallet: sender, userId: request.userId ?? null, custody: useUserCustody, chain },
+    'EVM swap will spend from trading wallet',
+  );
 
   let lastError: unknown;
 
@@ -250,7 +275,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       lastError = error;
       record(attempt, 'quote', 'error', describe(error));
       if (attempt === request.maxAttempts) return failure('QUOTE_FAILED', describe(error));
-      await sleep(250 * attempt);
+      await sleep(40 * attempt);
       continue;
     }
 
@@ -300,6 +325,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
         built.routerAddress,
         BigInt(request.amountInRaw),
         request.confirmTimeoutMs,
+        account,
       );
       if (approvalHash) record(attempt, 'approve', 'ok', `hash=${approvalHash}`, approvalHash);
     } catch (error) {

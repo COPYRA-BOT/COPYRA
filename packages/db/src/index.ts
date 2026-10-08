@@ -8,8 +8,38 @@ declare global {
   var __copyraPrisma: PrismaClient | undefined;
 }
 
+/**
+ * Cap pool size per process. App Platform runs API + worker as two Node
+ * processes against a small managed Postgres; Prisma's default
+ * (num_cpus*2+1 each) exhausts DO connection slots and surfaces as
+ * intermittent /api/funds 504s and "remaining connection slots are reserved".
+ * Keep this very low (default 2) — DO basic plans often allow ~22 total.
+ */
+function datasourceUrl(): string | undefined {
+  const raw = process.env.DATABASE_URL?.trim();
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    if (!url.searchParams.has('connection_limit')) {
+      url.searchParams.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT?.trim() || '2');
+    }
+    if (!url.searchParams.has('pool_timeout')) {
+      url.searchParams.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT?.trim() || '10');
+    }
+    // Prefer connection reuse; avoid opening extra sockets on small DO DBs.
+    if (!url.searchParams.has('connect_timeout')) {
+      url.searchParams.set('connect_timeout', '10');
+    }
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}
+
 function create(): PrismaClient {
+  const url = datasourceUrl();
   return new PrismaClient({
+    datasources: url ? { db: { url } } : undefined,
     log:
       process.env.PRISMA_LOG === 'query'
         ? ['query', 'warn', 'error']
@@ -18,14 +48,29 @@ function create(): PrismaClient {
 }
 
 /**
- * Shared client. Reused across hot reloads so a dev restart does not exhaust
- * the Postgres connection pool.
+ * Shared client. Reused across hot reloads and production so a process never
+ * opens more than one Prisma pool against managed Postgres.
  */
 export const prisma: PrismaClient = globalThis.__copyraPrisma ?? create();
+globalThis.__copyraPrisma = prisma;
 
-if (process.env.NODE_ENV !== 'production') {
-  globalThis.__copyraPrisma = prisma;
+async function disconnectPrisma(): Promise<void> {
+  try {
+    await prisma.$disconnect();
+  } catch {
+    /* ignore */
+  }
 }
+process.once('beforeExit', () => {
+  void disconnectPrisma();
+});
+process.once('SIGINT', () => {
+  void disconnectPrisma();
+});
+process.once('SIGTERM', () => {
+  void disconnectPrisma();
+});
+
 
 export type Decimal = Prisma.Decimal;
 export const Decimal = Prisma.Decimal;

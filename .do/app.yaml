@@ -1,11 +1,8 @@
-# DigitalOcean App Platform — COPYRA
+# DigitalOcean App Platform — COPYRA (single image: API + dashboard + worker)
+# Push to GitHub main → autodeploy. See docs/DEPLOY.md and docs/live-urls.json.
 #
-# Source Directory MUST be blank / repository root.
-# Dockerfile path: Dockerfile
-# Branch: dev
-#
-# Do not put secrets in this file. Set them in the App Platform
-# "App-Level Environment Variables" / encrypted vars UI.
+# Domain TLS is managed only by DigitalOcean App Platform (no external CDN).
+# Point copyra.fun DNS at the records DigitalOcean shows under Networking → Domains.
 
 name: copyra
 region: nyc
@@ -13,7 +10,30 @@ features:
   - buildpack-stack=ubuntu-22
 alerts:
   - rule: DEPLOYMENT_FAILED
-  - rule: DOMAIN_FAILED
+
+domains:
+  - domain: copyra.fun
+    type: PRIMARY
+  - domain: www.copyra.fun
+    type: ALIAS
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /health
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /
+      component:
+        name: api
 
 services:
   - name: api
@@ -23,54 +43,52 @@ services:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    http_port: 41717
+    http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
     health_check:
       http_path: /health
-    run_command: npm run start -w @copyra/api
+      # basic-xxs needs a long head start (API listen + prisma) or DO marks Degraded
+      # with "Waiting for service" while the new instance is still booting.
+      initial_delay_seconds: 60
+      period_seconds: 5
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 12
+    run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
         value: production
       - key: API_HOST
         value: "0.0.0.0"
+      - key: PORT
+        value: "8080"
       - key: API_PORT
-        value: "41717"
-      # Set the rest as SECRET in the DO UI — never commit real values:
-      # DATABASE_URL, REDIS_URL, SESSION_SECRET, SOLANA_RPC_URL, SOLANA_WS_URL,
-      # SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY, EVM_*_RPC_URL, EVM_*_WS_URL,
-      # TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SENTRY_DSN, PUBLIC_API_URL,
-      # PUBLIC_WEB_URL, CORS_ORIGINS, TRADING_ENABLED, VITE_REOWN_PROJECT_ID,
-      # NEXT_PUBLIC_REOWN_PROJECT_ID
-      # Bot keys only if you intend to trade:
-      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY
-
-  - name: web
-    dockerfile_path: Dockerfile
-    source_dir: /
-    github:
-      repo: COPYRA-BOT/COPYRA
-      branch: main
-      deploy_on_push: true
-    http_port: 43127
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    run_command: npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127
-    envs:
-      - key: NODE_ENV
-        value: production
-
-workers:
-  - name: worker
-    dockerfile_path: Dockerfile
-    source_dir: /
-    github:
-      repo: COPYRA-BOT/COPYRA
-      branch: main
-      deploy_on_push: true
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    run_command: npm run start -w @copyra/worker
-    envs:
-      - key: NODE_ENV
-        value: production
+        value: "8080"
+      - key: RUN_WORKER
+        value: "true"
+      - key: PUBLIC_WEB_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_API_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_PLATFORM_URL
+        value: "https://copyra-nl7kz.ondigitalocean.app"
+      - key: CORS_ORIGINS
+        value: "https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app"
+      - key: TRADING_ENABLED
+        value: "true"
+      - key: SOL_TRADING_ENABLED
+        value: "true"
+      - key: EVM_TRADING_ENABLED
+        value: "true"
+      - key: MULTI_USER_CUSTODY
+        value: "true"
+      # Encrypted App-Level secrets scoped to ALL components — never commit:
+      # DATABASE_URL, REDIS_URL, SESSION_SECRET,
+      # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,
+      # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
+      # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+      # VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_REOWN_PROJECT_ID / REOWN_PROJECT_ID
+      # (public WalletConnect id — set App-Level RUN_AND_BUILD_TIME so the
+      # dashboard can open the full Reown Connect Wallet modal),
+      # Bot keys alone are not enough — RPC URLs must be on the api component too.

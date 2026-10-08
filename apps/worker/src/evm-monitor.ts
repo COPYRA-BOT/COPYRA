@@ -1,5 +1,6 @@
 import {
   chainConfig,
+  clearSeen,
   componentLogger,
   decodeEvmTransaction,
   evmPool,
@@ -11,14 +12,20 @@ import {
   qualifySignal,
   renderDetection,
   renderSkip,
+  sleep,
   telegram,
+  traderHasPriorBuyOfToken,
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { getAddress } from 'viem';
+import { touchEvmProcessed, touchEvmTick } from './activity.js';
 
 const log = componentLogger('evm-monitor');
 
-const POLL_CHAINS: Chain[] = [Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+/** All executable EVM venues COPYRA can copy-trade on. */
+const POLL_CHAINS: Chain[] = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+/** Fast poll so detect→qualify stays on the sub-second path with WS-class RPCs. */
+const EVM_POLL_MS = 250;
 
 interface AssetTransfer {
   hash: string;
@@ -37,33 +44,45 @@ interface AssetTransfer {
 export async function startEvmMonitor(): Promise<() => void> {
   const cursors = new Map<string, string>();
   let stopped = false;
+  /** Never overlap ticks — stacked 250ms polls were hanging the whole worker. */
+  let ticking = false;
 
   const tick = async () => {
-    const settings = await getStrategyConfig();
-    const chains = POLL_CHAINS.filter((chain) => {
-      const config = chainConfig(chain);
-      return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
-    });
-    if (chains.length === 0) return;
+    if (stopped || ticking) return;
+    ticking = true;
+    try {
+      const settings = await getStrategyConfig();
+      const chains = POLL_CHAINS.filter((chain) => {
+        const config = chainConfig(chain);
+        return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
+      });
+      if (chains.length === 0) return;
 
-    const traders = await prisma.trader.findMany({
-      where: { chain: { in: chains }, enabled: true },
-    });
+      const traders = await prisma.trader.findMany({
+        where: { chain: { in: chains }, enabled: true },
+      });
 
-    for (const trader of traders) {
-      if (stopped) return;
-      try {
-        await pollTrader(trader.chain, trader.id, trader.address, cursors);
-      } catch (error) {
-        log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
-      }
+      // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
+      await Promise.all(
+        traders.map(async (trader) => {
+          if (stopped) return;
+          try {
+            await pollTrader(trader.chain, trader.id, trader.address, cursors);
+          } catch (error) {
+            log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
+          }
+        }),
+      );
+      touchEvmTick();
+    } finally {
+      ticking = false;
     }
   };
 
   await tick();
   const timer = setInterval(() => {
     void tick();
-  }, 4_000);
+  }, EVM_POLL_MS);
 
   return () => {
     stopped = true;
@@ -91,6 +110,7 @@ async function pollTrader(
   const cursor = cursors.get(key);
   if (cursor) params.fromBlock = cursor;
 
+  // Hard timeout — a hung Alchemy socket previously stalled every subsequent tick.
   const response = await fetch(config.rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -100,6 +120,7 @@ async function pollTrader(
       method: 'alchemy_getAssetTransfers',
       params: [params],
     }),
+    signal: AbortSignal.timeout(8_000),
   });
   if (!response.ok) {
     throw new Error(`alchemy_getAssetTransfers HTTP ${response.status}`);
@@ -122,24 +143,42 @@ async function pollTrader(
   cursors.set(key, maxBlock);
 }
 
+async function fetchEvmReceipt(chain: Chain, hash: string) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
+      client.getTransactionReceipt({ hash: hash as `0x${string}` }),
+    );
+    if (receiptResult.value) return receiptResult.value;
+    if (attempt === 5) break;
+    await sleep(40 * attempt);
+  }
+  return null;
+}
+
 async function handleEvmHash(chain: Chain, traderId: string, hash: string): Promise<void> {
   const first = await markSeenOnce(`evm:${hash}:${traderId}`, 86_400);
   if (!first) return;
   const existing = await prisma.processedSignature.findUnique({
-    where: { chain_signature: { chain, signature: hash } },
+    where: { chain_signature_traderId: { chain, signature: hash, traderId } },
   });
-  if (existing) return;
+  if (existing && existing.outcome !== 'receipt-not-found') return;
+  if (existing?.outcome === 'receipt-not-found') {
+    await prisma.processedSignature.delete({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+    });
+  }
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
+  touchEvmProcessed();
 
-  const receiptResult = await evmPool(chain).call('getTransactionReceipt', (client) =>
-    client.getTransactionReceipt({ hash: hash as `0x${string}` }),
-  );
-  const receipt = receiptResult.value;
+  const receipt = await fetchEvmReceipt(chain, hash);
   if (!receipt) {
-    await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: 'receipt-not-found' },
+    await clearSeen(`evm:${hash}:${traderId}`);
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+      create: { chain, signature: hash, traderId, outcome: 'receipt-not-found' },
+      update: { outcome: 'receipt-not-found', processedAt: new Date() },
     });
     return;
   }
@@ -185,68 +224,96 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     data: { lastActivityAt: new Date(), lastSignature: hash },
   });
 
-  telegram.send(
-    renderDetection({
-      chain,
-      traderLabel: trader.label,
-      traderAddress: trader.address,
-      classification: decoded.classification,
-      tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
-      tokenAddress: decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null,
-      sourceTxHash: hash,
-      detectLatencyMs: null,
-    }),
-    { kind: 'detection' },
-  );
+  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address ?? null;
+  const silent =
+    decoded.classification === TxClassification.UNKNOWN ||
+    decoded.classification === TxClassification.TRANSFER_IN ||
+    decoded.classification === TxClassification.TRANSFER_OUT ||
+    decoded.classification === TxClassification.APPROVAL ||
+    !tokenAddress;
+  if (!silent) {
+    telegram.send(
+      renderDetection({
+        chain,
+        traderLabel: trader.label,
+        traderAddress: trader.address,
+        classification: decoded.classification,
+        tokenSymbol: decoded.tokenOut?.symbol ?? decoded.tokenIn?.symbol ?? null,
+        tokenAddress,
+        sourceTxHash: hash,
+        detectLatencyMs: null,
+      }),
+      { kind: 'detection', userId: trader.userId },
+    );
+  }
 
-  const tokenAddress = decoded.tokenOut?.address ?? decoded.tokenIn?.address;
-  if (!tokenAddress) {
-    await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: decoded.classification },
+  if (!tokenAddress || decoded.classification !== TxClassification.BUY) {
+    await prisma.processedSignature.upsert({
+      where: { chain_signature_traderId: { chain, signature: hash, traderId } },
+      create: { chain, signature: hash, traderId, outcome: decoded.classification },
+      update: { outcome: decoded.classification, processedAt: new Date() },
     });
     return;
   }
 
-  const token = await prisma.token.upsert({
-    where: { chain_address: { chain, address: tokenAddress } },
-    create: {
-      chain,
-      address: tokenAddress,
-      symbol: decoded.tokenOut?.symbol ?? null,
-      decimals: decoded.tokenOut?.decimals ?? null,
-    },
-    update: { decimals: decoded.tokenOut?.decimals ?? undefined },
-  });
-
-  const market = await getMarketSnapshot(chain, tokenAddress);
-  if (!market.missing) {
-    await prisma.token.update({
-      where: { id: token.id },
-      data: {
-        symbol: market.symbol ?? token.symbol,
-        name: market.name ?? token.name,
-        priceUsd: market.priceUsd,
-        marketCapUsd: market.marketCapUsd,
-        fdvUsd: market.fdvUsd,
-        liquidityUsd: market.liquidityUsd,
-        volume24hUsd: market.volume24hUsd,
-        marketSource: market.source,
-        marketUpdatedAt: market.fetchedAt,
+  const [token, market, firstBuy, open, config, openPositionCount, traderAlreadyBought] =
+    await Promise.all([
+    prisma.token.upsert({
+      where: { chain_address: { chain, address: tokenAddress } },
+      create: {
+        chain,
+        address: tokenAddress,
+        symbol: decoded.tokenOut?.symbol ?? null,
+        decimals: decoded.tokenOut?.decimals ?? null,
       },
-    });
-  }
-
-  const firstBuy = await prisma.tokenFirstBuy.findUnique({
-    where: { chain_tokenAddress: { chain, tokenAddress } },
-  });
-  const open = await prisma.position.findFirst({
-    where: {
+      update: { decimals: decoded.tokenOut?.decimals ?? undefined },
+    }),
+    getMarketSnapshot(chain, tokenAddress),
+    prisma.tokenFirstBuy.findUnique({
+      where: { chain_tokenAddress: { chain, tokenAddress } },
+    }),
+    prisma.position.findFirst({
+      where: {
+        userId: trader.userId,
+        chain,
+        tokenAddress,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
+      },
+    }),
+    getStrategyConfig(),
+    prisma.position.count({
+      where: {
+        userId: trader.userId,
+        status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] },
+      },
+    }),
+    // First-buy-only = this watched trader's first BUY of the token (not our book).
+    traderHasPriorBuyOfToken({
+      traderId: trader.id,
       chain,
       tokenAddress,
-      status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
-    },
-  });
-  const config = await getStrategyConfig();
+      excludeTxHash: hash,
+    }),
+  ]);
+  if (!market.missing) {
+    void prisma.token
+      .update({
+        where: { id: token.id },
+        data: {
+          symbol: market.symbol ?? token.symbol,
+          name: market.name ?? token.name,
+          priceUsd: market.priceUsd,
+          marketCapUsd: market.marketCapUsd,
+          fdvUsd: market.fdvUsd,
+          liquidityUsd: market.liquidityUsd,
+          volume24hUsd: market.volume24hUsd,
+          marketSource: market.source,
+          marketUpdatedAt: market.fetchedAt,
+        },
+      })
+      .catch(() => undefined);
+  }
+
   const qualification = qualifySignal({
     decoded,
     market,
@@ -255,16 +322,14 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
       tradingBalanceQuote: 0,
       quotePriceUsd: 0,
       deployedUsd: 0,
-      openPositionCount: await prisma.position.count({
-        where: { status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED'] } },
-      }),
+      openPositionCount,
       existingPositionForToken: open !== null,
       readAtBlock: null,
       readAt: new Date(),
     },
     traderEnabled: trader.enabled,
     tokenBlacklisted: token.blacklisted,
-    isFirstBuy: firstBuy === null,
+    isFirstBuy: !traderAlreadyBought,
     chainCanExecute: chainConfig(chain).canExecute,
     correlatedTraderCount: (firstBuy?.correlatedBuys ?? 0) + 1,
     spendLegIsQuoteAsset: Boolean(decoded.tokenIn && isEvmQuoteAsset(chain, decoded.tokenIn.address)),
@@ -273,6 +338,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   if (!qualification.qualified) {
     await prisma.signal.create({
       data: {
+        userId: trader.userId,
         chain,
         traderId: trader.id,
         tokenId: token.id,
@@ -302,10 +368,10 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         liquidityUsd: market.liquidityUsd,
         sourceTxHash: hash,
       }),
-      { kind: 'skip' },
+      { kind: 'skip', userId: trader.userId },
     );
     await prisma.processedSignature.create({
-      data: { chain, signature: hash, outcome: `skipped:${qualification.reason}` },
+      data: { chain, signature: hash, traderId, outcome: `skipped:${qualification.reason}` },
     });
     return;
   }
@@ -325,7 +391,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
   });
 
   await prisma.processedSignature.create({
-    data: { chain, signature: hash, outcome: result.status },
+    data: { chain, signature: hash, traderId, outcome: result.status },
   });
   log.info({ hash, trader: trader.label, token: tokenAddress, status: result.status }, 'Processed EVM trader transaction');
 }

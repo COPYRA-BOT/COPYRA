@@ -150,6 +150,23 @@ function leg(delta: MintDelta): DecodedLeg {
   };
 }
 
+function absDelta(d: MintDelta): bigint {
+  return d.deltaRaw < 0n ? -d.deltaRaw : d.deltaRaw;
+}
+
+function largestLeg(deltas: MintDelta[]): MintDelta | null {
+  if (deltas.length === 0) return null;
+  let best = deltas[0] as MintDelta;
+  for (const d of deltas) {
+    if (absDelta(d) > absDelta(best)) best = d;
+  }
+  return best;
+}
+
+function sumAbs(deltas: MintDelta[]): bigint {
+  return deltas.reduce((sum, d) => sum + absDelta(d), 0n);
+}
+
 /**
  * Dust threshold for native SOL, in lamports (0.000001 SOL).
  *
@@ -252,37 +269,65 @@ export function decodeSolanaTransaction(input: DecodeInput): DecodedTransaction 
     };
   }
 
+  // Net quote flow handles Pump.fun / Jupiter multi-leg shapes (wrap + tip +
+  // token + leftover WSOL) that used to fall through as UNKNOWN / no token leg.
+  const quoteSpent = spent.filter((d) => isSolanaQuoteAsset(d.mint));
+  const quoteReceived = received.filter((d) => isSolanaQuoteAsset(d.mint));
+  const tokenSpent = spent.filter((d) => !isSolanaQuoteAsset(d.mint));
+  const tokenReceived = received.filter((d) => !isSolanaQuoteAsset(d.mint));
+  const netQuoteOut = sumAbs(quoteSpent) - sumAbs(quoteReceived);
+  const netQuoteIn = sumAbs(quoteReceived) - sumAbs(quoteSpent);
+
+  // BUY: net quote spent + at least one non-quote token received.
+  if (tokenReceived.length >= 1 && netQuoteOut > SOL_DUST_LAMPORTS) {
+    const outLeg = largestLeg(tokenReceived) as MintDelta;
+    const inLeg =
+      largestLeg(quoteSpent) ??
+      ({
+        mint: WRAPPED_SOL_MINT_STR,
+        deltaRaw: -netQuoteOut,
+        decimals: 9,
+      } satisfies MintDelta);
+    return {
+      ...base,
+      classification: TxClassification.BUY,
+      tokenIn: leg(inLeg),
+      tokenOut: leg(outLeg),
+      classificationBasis:
+        `Wallet spent net ${netQuoteOut} quote units and received ${outLeg.deltaRaw} of ${outLeg.mint}` +
+        (venue ? ` via ${venue}.` : ' (venue unattributed).') +
+        (spent.length + received.length > 2 ? ` Multi-leg (${spent.length} out / ${received.length} in) collapsed by net quote flow.` : ''),
+    };
+  }
+
+  // SELL: net quote received + at least one non-quote token spent.
+  if (tokenSpent.length >= 1 && netQuoteIn > SOL_DUST_LAMPORTS) {
+    const inLeg = largestLeg(tokenSpent) as MintDelta;
+    const outLeg =
+      largestLeg(quoteReceived) ??
+      ({
+        mint: WRAPPED_SOL_MINT_STR,
+        deltaRaw: netQuoteIn,
+        decimals: 9,
+      } satisfies MintDelta);
+    return {
+      ...base,
+      classification: TxClassification.SELL,
+      tokenIn: leg(inLeg),
+      tokenOut: leg(outLeg),
+      classificationBasis:
+        `Wallet sold ${inLeg.mint} for net ${netQuoteIn} quote units` +
+        (venue ? ` via ${venue}.` : '.') +
+        (spent.length + received.length > 2 ? ` Multi-leg collapsed by net quote flow.` : ''),
+    };
+  }
+
   // --- swap shapes: exactly one leg in each direction ----------------------
   if (received.length === 1 && spent.length === 1) {
     const receivedLeg = received[0] as MintDelta;
     const spentLeg = spent[0] as MintDelta;
     const receivedIsQuote = isSolanaQuoteAsset(receivedLeg.mint);
     const spentIsQuote = isSolanaQuoteAsset(spentLeg.mint);
-
-    if (spentIsQuote && !receivedIsQuote) {
-      return {
-        ...base,
-        classification: TxClassification.BUY,
-        tokenIn: leg(spentLeg),
-        tokenOut: leg(receivedLeg),
-        classificationBasis:
-          `Wallet spent ${-spentLeg.deltaRaw} of ${spentLeg.mint} (quote asset) and received ` +
-          `${receivedLeg.deltaRaw} of ${receivedLeg.mint}` +
-          (venue ? ` via ${venue}.` : ' (venue unattributed).'),
-      };
-    }
-
-    if (receivedIsQuote && !spentIsQuote) {
-      return {
-        ...base,
-        classification: TxClassification.SELL,
-        tokenIn: leg(spentLeg),
-        tokenOut: leg(receivedLeg),
-        classificationBasis:
-          `Wallet sold ${spentLeg.mint} for ${receivedLeg.mint} (quote asset)` +
-          (venue ? ` via ${venue}.` : '.'),
-      };
-    }
 
     if (receivedIsQuote && spentIsQuote) {
       return {
@@ -294,9 +339,8 @@ export function decodeSolanaTransaction(input: DecodeInput): DecodedTransaction 
       };
     }
 
-    // token -> token. A buy of the received side, but no quote asset was spent.
-    // Reported as BUY so the qualifier can reject it with the precise
-    // NO_QUOTE_CURRENCY_SPENT reason rather than a vague "not a buy".
+    // token -> token. Reported as BUY so the qualifier can reject with
+    // NO_QUOTE_CURRENCY_SPENT rather than a vague "not a buy".
     return {
       ...base,
       classification: TxClassification.BUY,
@@ -314,7 +358,7 @@ export function decodeSolanaTransaction(input: DecodeInput): DecodedTransaction 
         ...base,
         classification: TxClassification.LP_REMOVE,
         tokenIn: null,
-        tokenOut: leg(received[0] as MintDelta),
+        tokenOut: leg(largestLeg(received) as MintDelta),
         classificationBasis: `Received ${received.length} assets with no spend — liquidity withdrawal or multi-asset claim.`,
       };
     }
@@ -337,7 +381,7 @@ export function decodeSolanaTransaction(input: DecodeInput): DecodedTransaction 
       return {
         ...base,
         classification: TxClassification.LP_ADD,
-        tokenIn: leg(spent[0] as MintDelta),
+        tokenIn: leg(largestLeg(spent) as MintDelta),
         tokenOut: null,
         classificationBasis: `Spent ${spent.length} assets with no receipt — liquidity deposit.`,
       };
@@ -352,28 +396,17 @@ export function decodeSolanaTransaction(input: DecodeInput): DecodedTransaction 
     };
   }
 
-  // --- multi-leg ------------------------------------------------------------
-  if (received.length > 1 && spent.length > 1) {
-    return {
-      ...base,
-      classification: TxClassification.LP_REMOVE,
-      tokenIn: leg(spent[0] as MintDelta),
-      tokenOut: leg(received[0] as MintDelta),
-      classificationBasis: 'Multiple assets in both directions — liquidity or migration activity.',
-    };
-  }
-
-  // One side has several legs: an aggregator split, or a migration. Pick the
-  // largest leg on each side but mark it UNKNOWN so it is never traded on.
   log.debug(
     { signature, received: received.length, spent: spent.length },
     'Multi-leg transaction not confidently classifiable',
   );
+  const spendLeg = largestLeg(spent);
+  const recvLeg = largestLeg(received);
   return {
     ...base,
     classification: TxClassification.UNKNOWN,
-    tokenIn: spent[0] ? leg(spent[0]) : null,
-    tokenOut: received[0] ? leg(received[0]) : null,
+    tokenIn: spendLeg ? leg(spendLeg) : null,
+    tokenOut: recvLeg ? leg(recvLeg) : null,
     classificationBasis:
       `Ambiguous shape: ${spent.length} spend leg(s), ${received.length} receive leg(s). ` +
       'Not traded on, because the direction cannot be proven from deltas alone.',

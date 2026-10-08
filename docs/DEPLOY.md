@@ -1,128 +1,96 @@
 # COPYRA deployment
 
-`copyra.fun` is the intended public domain. Deploy only after a dedicated funded bot wallet exists and a tiny mainnet fill has been confirmed on an explorer.
+Live site: **https://copyra.fun** (DigitalOcean App Platform custom domain)  
+Platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
-## Processes
+Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
-Run three services from the same image / repo:
+## Domain (DigitalOcean only)
 
-| Service | Command | Port | Role |
-|---|---|---|---|
-| api | `npm run start -w @copyra/api` | `41717` | Fastify HTTP + WS |
-| worker | `npm run start -w @copyra/worker` | none | monitors + exits |
-| web | `npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127` | `43127` | Vite-built `copyra.` UI |
+TLS and the custom domain are managed **only** by App Platform. Do not put an external CDN/proxy in front of `copyra.fun`.
 
-Build order inside Docker: `npm ci && npm run db:generate && npm run build`.
+1. In **DigitalOcean → copyra → Networking → Domains**, keep `copyra.fun` (and `www`) attached (declared in `.do/app.yaml`).
+2. At your DNS host, use the **A / CNAME records DigitalOcean shows** for that domain (not a proxy to `*.ondigitalocean.app` through a third-party CDN).
+3. Wait for App Platform to issue the certificate. Status should be **Healthy**; `https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`.
+
+---
+
+The Dockerfile is split into **independent BuildKit stages** so a backend-only change does not rebundle the Reown/Vite wallet app. First cold build is still longer; later pushes should reuse the cached `deps` + `build-web` (or `build-backend`) layers.
+
+**Before you push:** run `npm run deploy:verify` (lint, types, tests, production build). GitHub Actions runs the same check on `main`.
+
+**After deploy:** open the URLs in `docs/live-urls.json`.
+
+## Processes (one Docker build)
+
+| Process | How it runs on App Platform |
+|---|---|
+| API + dashboard | `scripts/start-production.sh` → Fastify on `:8080`, serves `apps/web/dist` |
+| Worker | Same container, background (`RUN_WORKER=true`) |
+
+Docker caches:
+1. `deps` — `npm ci` until lockfile / package.json change  
+2. `build-backend` — until `packages/`, `apps/api`, `apps/worker`, or `scripts/` change  
+3. `build-web` — until `apps/web/` or lockfile change  
+
+Runtime image is pruned (`npm prune --omit=dev`) so registry push is smaller/faster.
 
 ## DigitalOcean App Platform (exact settings)
 
-The production Dockerfile expects the **repository root** as the build context. That is what fixes `TS5083: Cannot read file '/app/tsconfig.base.json'`.
-
-In the App Platform component settings:
+The production Dockerfile expects the **repository root** as the build context.
 
 | Field | Value |
 |---|---|
 | Source | GitHub `COPYRA-BOT/COPYRA` |
-| Branch | `main` (or `dev` — same Dockerfile fix is on both) |
-| Autodeploy | On |
-| Source Directory | **leave blank** (repo root `/`) — do **not** set `apps/api`, `packages/db`, or any subdirectory |
+| Branch | **`main`** |
+| Autodeploy | **On** |
+| Source Directory | **leave blank** (repo root) |
 | Dockerfile path | `Dockerfile` |
-| Docker build context | Repository root (default when Source Directory is blank) |
+| Custom domain | **`copyra.fun`** (+ `www`) on App Platform |
+| Platform ingress | **`copyra-nl7kz.ondigitalocean.app`** |
 
-Create **three** components from the same Dockerfile / branch:
+### Components
 
 | Component | Type | HTTP port | Run command |
 |---|---|---|---|
-| `api` | Web service | `41717` | `npm run start -w @copyra/api` |
-| `web` | Web service | `43127` | `npm run preview -w @copyra/web -- --host 0.0.0.0 --port 43127` |
-| `worker` | Worker | none | `npm run start -w @copyra/worker` |
+| `api` | Web service | **`8080`** | `/app/scripts/start-production.sh` |
 
-Health check for `api`: `GET /health`.
+The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so **https://copyra.fun** is one same-origin app (session cookies + Reown SIWE/SIWS work). Set `PUBLIC_PLATFORM_URL` and `CORS_ORIGINS` to include your `*.ondigitalocean.app` host so the DO default URL behaves the same.
 
-A checked-in example lives at `.do/app.yaml` (no secrets). Prefer setting encrypted env vars in the DO UI.
+### API health checks
 
-### App-level environment variables (secrets in DO UI only)
+| Setting | Value |
+|---|---|
+| HTTP Port | **`8080`** |
+| Health Check Path | **`/health`** |
+| Initial Delay | **60s** (xxs boot) |
+| Period | **5s** |
+| Timeout | **5s** |
+| Success / Failure | **1 / 12** |
 
-Set these as **encrypted** App-Level or component env vars — never in git:
+### Environment
 
-```
-DATABASE_URL=
-REDIS_URL=
-SESSION_SECRET=
-PUBLIC_API_URL=
-PUBLIC_WEB_URL=
-CORS_ORIGINS=
-SOLANA_RPC_URL=
-SOLANA_WS_URL=
-SOLANA_RPC_FALLBACK_URLS=
-JUPITER_API_KEY=
-EVM_ETHEREUM_RPC_URL=
-EVM_ETHEREUM_WS_URL=
-EVM_BASE_RPC_URL=
-EVM_BASE_WS_URL=
-EVM_ARBITRUM_RPC_URL=
-EVM_ARBITRUM_WS_URL=
-EVM_BSC_RPC_URL=
-EVM_BSC_WS_URL=
-EVM_POLYGON_RPC_URL=
-EVM_POLYGON_WS_URL=
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-SENTRY_DSN=
-VITE_REOWN_PROJECT_ID=
-NEXT_PUBLIC_REOWN_PROJECT_ID=
-TRADING_ENABLED=false
-```
-
-Bot signing keys only when you intend to trade (encrypted, never `VITE_*`):
-
-```
-SOLANA_BOT_PRIVATE_KEY=
-EVM_BOT_PRIVATE_KEY=
-```
-
-Use the **public** Postgres hostname (without `private-`). Keep the App Platform egress / trusted sources list up to date.
-
-### Prove the image locally
-
-```bash
-git clone https://github.com/COPYRA-BOT/COPYRA.git /tmp/copyra-docker-proof
-cd /tmp/copyra-docker-proof
-git checkout dev
-# Confirm no secrets in the build context:
-test ! -f .env
-docker build -t copyra:proof .
-```
-
-The build must copy `tsconfig.base.json` into `/app`. Packages under `packages/*` and `apps/*` extend `../../tsconfig.base.json`.
-
-## Railway
-
-Create three services from this repo. Set the start command per service. Use a public Postgres URL (host **without** the `private-` prefix) unless the service is in that VPC. Redis is required.
-
-Point `copyra.fun` at the web service. Set:
+Set in the DO UI (App-Level, encrypted for secrets). Spec also ships non-secret defaults in `.do/app.yaml`.
 
 ```
 PUBLIC_WEB_URL=https://copyra.fun
-PUBLIC_API_URL=https://api.copyra.fun
-CORS_ORIGINS=https://copyra.fun
-VITE_REOWN_PROJECT_ID=
-NEXT_PUBLIC_REOWN_PROJECT_ID=
+PUBLIC_API_URL=https://copyra.fun
+CORS_ORIGINS=https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app
+MULTI_USER_CUSTODY=true
+TRADING_ENABLED=true
 ```
 
-Either put the API on the same origin (`/api` reverse proxy) or set `VITE_API_URL` and cookie `Secure`/`SameSite` correctly.
+Required secrets: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, bot keys, RPC URLs, Telegram, Reown project id. See `.do/app.yaml` comments.
 
-## Environment
+### Balances
 
-Copy `.env.example` for local work only. Never put `SOLANA_BOT_PRIVATE_KEY` or `EVM_BOT_PRIVATE_KEY` in `VITE_*` / `NEXT_PUBLIC_*`. Leave those keys empty for observe-only.
+Trading / Savings buckets are **live RPC reads of the signed-in account’s custody wallet**. They are not sticky browser guesses. Deposit via the dashboard Deposit button so funds land on that custody address (not the shared bot signer).
 
-Rotate every credential that was pasted into chat before a public deploy.
+### Smoke after deploy
 
-## Day 3–6 live checklist (operator)
+- `GET https://copyra.fun/` → dashboard HTML
+- `GET https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`
+- `GET https://copyra.fun/api/status` → live status JSON (should respond in a few seconds)
+- `GET https://copyra-nl7kz.ondigitalocean.app/health` → same JSON
 
-These are not done by code deploy alone:
-
-3. Solana: watch one real trader, tiny Jupiter copy, confirm on Solscan.
-4. Base: same with KyberSwap, confirm on Basescan. Then Arb/BNB.
-5. Wait for a real TP or SL and confirm the sell.
-6. Run 24/7 on small size; compare every trade, fee, and balance to explorers.
+In [WalletConnect Cloud](https://cloud.walletconnect.com/) allowlist **`https://copyra.fun`** (and `www` / App Platform hosts if you use them).

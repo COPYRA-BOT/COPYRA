@@ -9,6 +9,11 @@ import { env } from '../config/env.js';
 import { TelemetryTracker } from '../engine/telemetry.js';
 import { componentLogger } from '../obs/logger.js';
 import { NoSignerError, solanaSigner } from '../security/signer.js';
+import {
+  multiUserCustodyEnabled,
+  signUserSolanaTransaction,
+  userCustodyAddress,
+} from '../security/user-custody.js';
 import { withRetry, sleep } from '../util/retry.js';
 import { MAX_SUPPORTED_TX_VERSION, solanaPool, WRAPPED_SOL_MINT_STR } from './connection.js';
 import { computeBalanceDeltas } from './decoder.js';
@@ -34,6 +39,8 @@ export interface SwapRequest {
   telemetry: TelemetryTracker;
   /** Correlates retries so a repeat can never double-broadcast. */
   idempotencyKey: string;
+  /** When set with multi-user custody, spend/sign from that account's custody wallet. */
+  userId?: string;
 }
 
 export interface ExecutionOutcome {
@@ -120,7 +127,9 @@ export async function confirmSolanaTransaction(
   timeoutMs: number,
 ): Promise<ConfirmationResult> {
   const deadline = Date.now() + timeoutMs;
-  let pollIntervalMs = 400;
+  // Aggressive first polls — target confirm verdict under 1s on Helius/Alchemy.
+  let pollIntervalMs = 50;
+  let missPolls = 0;
 
   while (Date.now() < deadline) {
     const statusResult = await solanaPool()
@@ -135,6 +144,7 @@ export async function confirmSolanaTransaction(
     const status = statusResult?.value.value[0];
 
     if (status) {
+      missPolls = 0;
       if (status.err) {
         return {
           status: TxStatus.FAILED,
@@ -157,26 +167,29 @@ export async function confirmSolanaTransaction(
       }
       // 'processed' — seen by a validator but not yet confirmed. Keep waiting.
     } else {
-      // Not found yet. If the blockhash has expired it never will be.
-      const heightResult = await solanaPool()
-        .call('getBlockHeight', (client) => client.getBlockHeight())
-        .catch(() => null);
-      if (heightResult && heightResult.value > lastValidBlockHeight) {
-        return {
-          status: TxStatus.EXPIRED,
-          slot: null,
-          confirmationStatus: null,
-          confirmations: 0,
-          error:
-            `Blockhash expired: block height ${heightResult.value} passed lastValidBlockHeight ` +
-            `${lastValidBlockHeight} and the signature was never observed. The transaction cannot land.`,
-          confirmedAt: null,
-        };
+      missPolls += 1;
+      // Block-height expiry check every 3rd miss (not every poll) to cut RPC RTT.
+      if (missPolls % 3 === 0) {
+        const heightResult = await solanaPool()
+          .call('getBlockHeight', (client) => client.getBlockHeight())
+          .catch(() => null);
+        if (heightResult && heightResult.value > lastValidBlockHeight) {
+          return {
+            status: TxStatus.EXPIRED,
+            slot: null,
+            confirmationStatus: null,
+            confirmations: 0,
+            error:
+              `Blockhash expired: block height ${heightResult.value} passed lastValidBlockHeight ` +
+              `${lastValidBlockHeight} and the signature was never observed. The transaction cannot land.`,
+            confirmedAt: null,
+          };
+        }
       }
     }
 
     await sleep(pollIntervalMs);
-    pollIntervalMs = Math.min(1_500, Math.round(pollIntervalMs * 1.3));
+    pollIntervalMs = Math.min(400, Math.round(pollIntervalMs * 1.35));
   }
 
   // Timed out with no verdict. Deliberately UNKNOWN, not FAILED: the
@@ -282,7 +295,8 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     ...extra,
   });
 
-  if (!solanaSigner.available) {
+  const useUserCustody = Boolean(request.userId && multiUserCustodyEnabled());
+  if (!useUserCustody && !solanaSigner.available) {
     record(0, 'sign', 'error', 'No Solana signing key configured');
     return failure(
       TxStatus.FAILED,
@@ -290,7 +304,19 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       new NoSignerError('solana').message,
     );
   }
-  const walletAddress = solanaSigner.requireAddress();
+  let walletAddress: string;
+  try {
+    walletAddress = useUserCustody
+      ? await userCustodyAddress(request.userId as string, Chain.SOLANA)
+      : solanaSigner.requireAddress();
+  } catch (error) {
+    record(0, 'sign', 'error', describe(error));
+    return failure(TxStatus.FAILED, 'NO_SIGNER', describe(error));
+  }
+  log.info(
+    { wallet: walletAddress, userId: request.userId ?? null, custody: useUserCustody },
+    'Solana swap will spend from trading wallet',
+  );
 
   let lastError: unknown;
 
@@ -316,7 +342,7 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       if (attempt === request.maxAttempts) {
         return failure(TxStatus.FAILED, 'QUOTE_FAILED', describe(error));
       }
-      await sleep(200 * attempt);
+      await sleep(40 * attempt);
       continue;
     }
 
@@ -368,7 +394,9 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
         Buffer.from(built.swapTransaction, 'base64'),
       );
       blockhash = transaction.message.recentBlockhash;
-      signature = solanaSigner.sign(transaction);
+      signature = useUserCustody
+        ? await signUserSolanaTransaction(request.userId as string, transaction)
+        : solanaSigner.sign(transaction);
       telemetry.mark('signed');
       record(attempt, 'sign', 'ok', `signature=${signature}`, signature);
     } catch (error) {
@@ -379,19 +407,27 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       });
     }
 
-    // --- pre-flight against a real validator ------------------------------
-    // simulateTransaction is a genuine RPC call against live state, not a local
-    // approximation. It catches slippage-exceeded and missing-account failures
-    // before a fee is spent. copyra-audit-allow: real Solana RPC method name
-    const preflight = await solanaPool()
-      .call('simulateTransaction', (client) =>
-        // copyra-audit-allow: `simulateTransaction` is the Solana RPC method
-        client.simulateTransaction(transaction, { replaceRecentBlockhash: false, sigVerify: false }),
-      )
-      .catch((error: unknown) => {
-        log.warn({ err: error }, 'Pre-flight RPC call failed; proceeding to broadcast');
+    // --- pre-flight against a real validator (time-bounded) ---------------
+    // simulateTransaction is a genuine RPC call against live state. Cap wait so
+    // a slow RPC cannot push detect→broadcast past the 1s budget; on timeout we
+    // still broadcast with skipPreflight (real chain confirmation remains).
+    // copyra-audit-allow: real Solana RPC method name
+    const PREFLIGHT_BUDGET_MS = 220;
+    const preflight = await Promise.race([
+      solanaPool()
+        .call('simulateTransaction', (client) =>
+          // copyra-audit-allow: `simulateTransaction` is the Solana RPC method
+          client.simulateTransaction(transaction, { replaceRecentBlockhash: false, sigVerify: false }),
+        )
+        .catch((error: unknown) => {
+          log.warn({ err: error }, 'Pre-flight RPC call failed; proceeding to broadcast');
+          return null;
+        }),
+      sleep(PREFLIGHT_BUDGET_MS).then(() => {
+        log.warn({ budgetMs: PREFLIGHT_BUDGET_MS }, 'Pre-flight budget exceeded; proceeding to broadcast');
         return null;
-      });
+      }),
+    ]);
 
     if (preflight?.value.value.err) {
       const detail = JSON.stringify(preflight.value.value.err);
@@ -408,7 +444,12 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       }
       continue; // fresh quote + fresh blockhash
     }
-    record(attempt, 'preflight', 'ok', `units=${preflight?.value.value.unitsConsumed ?? 'n/a'}`);
+    record(
+      attempt,
+      'preflight',
+      'ok',
+      preflight ? `units=${preflight.value.value.unitsConsumed ?? 'n/a'}` : 'skipped-budget',
+    );
 
     // --- broadcast ---------------------------------------------------------
     let broadcastSignature: string;
@@ -618,18 +659,28 @@ export async function getSolanaBalances(address: string): Promise<{
  */
 export const SOL_FEE_BUFFER_LAMPORTS = 10_000_000n; // 0.01 SOL
 
+/**
+ * Hot-path SOL balance for copy sizing: native lamports only (no SPL scan).
+ * Token-account enumeration stays on getSolanaBalances for display/API.
+ */
 export async function getSpendableSol(address: string): Promise<{
   spendableSol: number;
   rawLamports: bigint;
   slot: bigint;
 }> {
-  const balances = await getSolanaBalances(address);
+  const { PublicKey } = await import('@solana/web3.js');
+  const pubkey = new PublicKey(address);
+  const [lamportsResult, slotResult] = await Promise.all([
+    solanaPool().call('getBalance', (client) => client.getBalance(pubkey, 'confirmed')),
+    solanaPool().call('getSlot', (client) => client.getSlot('confirmed')),
+  ]);
+  const rawLamports = BigInt(lamportsResult.value);
   const spendable =
-    balances.lamports > SOL_FEE_BUFFER_LAMPORTS ? balances.lamports - SOL_FEE_BUFFER_LAMPORTS : 0n;
+    rawLamports > SOL_FEE_BUFFER_LAMPORTS ? rawLamports - SOL_FEE_BUFFER_LAMPORTS : 0n;
   return {
     spendableSol: Number(spendable) / 1e9,
-    rawLamports: balances.lamports,
-    slot: balances.slot,
+    rawLamports,
+    slot: BigInt(slotResult.value),
   };
 }
 

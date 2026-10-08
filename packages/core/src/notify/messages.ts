@@ -20,8 +20,8 @@ import {
  *
  * The BUY and SELL layouts reproduce the spec's message structure line for
  * line. Values that have not been measured render as "not measured" rather than
- * as a plausible-looking number — a notification is a record of what actually
- * happened on-chain, so an invented figure here would be the worst place of all
+ * as a plausible-looking number. A notification is a record of what actually
+ * happened on chain, so fabricating a figure here would be the worst place of all
  * to put one.
  */
 
@@ -217,7 +217,7 @@ export function renderDetection(n: DetectionNotification): string {
   const config = chainConfig(n.chain);
   return [
     `👁 <b>TRADER ACTIVITY · ${config.code}</b>`,
-    `${escapeHtml(n.traderLabel)} (${shortAddress(n.traderAddress)}) — ${n.classification}`,
+    `${escapeHtml(n.traderLabel)} (${shortAddress(n.traderAddress)}). ${n.classification}`,
     n.tokenAddress
       ? `Token: $${escapeHtml(n.tokenSymbol ?? shortAddress(n.tokenAddress, 6, 4))}`
       : 'No token leg',
@@ -243,7 +243,7 @@ export function renderSubmitted(n: SubmissionNotification): string {
     `$${escapeHtml(n.tokenSymbol)} · ${formatNative(n.amountQuote, config.quoteAssetSymbol)}`,
     `Reason: ${REASON_LABEL[n.reason] ?? n.reason}`,
     `Broadcast after ${formatSpeed(n.broadcastLatencyMs)}`,
-    'Awaiting on-chain confirmation — this is <i>not</i> yet an executed trade.',
+    'Awaiting on chain confirmation. This is <i>not</i> yet an executed trade.',
     `🔗 <a href="${explorerTxUrl(n.chain, n.txHash)}">${config.explorerName}</a>`,
   ].join('\n');
 }
@@ -269,7 +269,7 @@ export function renderFailure(n: FailureNotification): string {
   if (n.txHash) {
     lines.push(`🔗 <a href="${explorerTxUrl(n.chain, n.txHash)}">${config.explorerName}</a>`);
   } else {
-    lines.push('No transaction was broadcast — no funds moved.');
+    lines.push('No transaction was broadcast. No funds moved.');
   }
   return lines.join('\n');
 }

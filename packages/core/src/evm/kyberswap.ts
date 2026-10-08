@@ -93,10 +93,10 @@ export async function getKyberRoute(params: RouteParams): Promise<KyberRouteResu
         data?: { routeSummary: KyberRouteSummary; routerAddress: string };
       }>(`${BASE_URL}/${slug}/api/v1/routes?${query.toString()}`, {
         headers: headers(),
-        timeoutMs: 6_000,
+        timeoutMs: 2_500,
         label: 'kyberswap/routes',
       }),
-    { attempts: 2, baseDelayMs: 150 },
+    { attempts: 2, baseDelayMs: 40 },
   );
 
   if (data.code !== 0 || !data.data?.routeSummary) {
@@ -172,7 +172,7 @@ export async function buildKyberSwap(params: BuildParams): Promise<KyberBuildRes
       deadline: params.deadline,
       source: env.KYBERSWAP_CLIENT_ID,
     }),
-    timeoutMs: 8_000,
+    timeoutMs: 2_500,
     label: 'kyberswap/route/build',
   });
 

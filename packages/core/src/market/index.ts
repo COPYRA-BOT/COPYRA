@@ -2,6 +2,7 @@ import { Chain } from '@copyra/db';
 import { chainConfig } from '../config/chains.js';
 import type { MarketSnapshot } from '../engine/types.js';
 import { componentLogger } from '../obs/logger.js';
+import { fetchJson } from '../util/retry.js';
 import { getJupiterPrices } from '../solana/jupiter.js';
 import { getDexscreenerMarket, getDexscreenerMarkets, type TokenMarketData } from './dexscreener.js';
 
@@ -25,13 +26,17 @@ export async function getMarketSnapshot(
   chain: Chain,
   tokenAddress: string,
 ): Promise<TokenMarketData> {
-  const dex = await getDexscreenerMarket(chain, tokenAddress);
-
-  if (chain !== Chain.SOLANA || dex.missing) return dex;
-
-  try {
-    const prices = await getJupiterPrices([tokenAddress]);
-    const jupiter = prices.get(tokenAddress);
+  // Overlap Dexscreener + Jupiter on Solana so qualify/mark stays on the hot path.
+  if (chain === Chain.SOLANA) {
+    const [dex, jupiterResult] = await Promise.all([
+      getDexscreenerMarket(chain, tokenAddress),
+      getJupiterPrices([tokenAddress]).catch((error: unknown) => {
+        log.warn({ tokenAddress, err: error }, 'Jupiter price cross-check failed; using Dexscreener alone');
+        return null;
+      }),
+    ]);
+    if (dex.missing || !jupiterResult) return dex;
+    const jupiter = jupiterResult.get(tokenAddress);
     if (!jupiter) return dex;
 
     if (dex.priceUsd > 0) {
@@ -44,7 +49,6 @@ export async function getMarketSnapshot(
       }
     }
 
-    // Rescale market cap by the price ratio so cap and price stay consistent.
     const ratio = dex.priceUsd > 0 ? jupiter.usdPrice / dex.priceUsd : 1;
     return {
       ...dex,
@@ -53,34 +57,83 @@ export async function getMarketSnapshot(
       fdvUsd: dex.fdvUsd !== null ? dex.fdvUsd * ratio : null,
       source: `${dex.source}+jupiter:price`,
     };
-  } catch (error) {
-    log.warn({ tokenAddress, err: error }, 'Jupiter price cross-check failed; using Dexscreener alone');
-    return dex;
   }
+
+  return getDexscreenerMarket(chain, tokenAddress);
+}
+
+/** Short-lived quote-price cache so the dashboard never flashes "price unread". */
+const quotePriceCache = new Map<Chain, { price: number; at: number }>();
+const QUOTE_PRICE_CACHE_TTL_MS = 30_000;
+
+async function fetchSolUsdFallbacks(): Promise<number> {
+  // CoinGecko — reliable for SOL when Jupiter price is briefly unavailable.
+  try {
+    const { data } = await fetchJson<{ solana?: { usd?: number } }>(
+      'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd',
+      { timeoutMs: 2_500, label: 'coingecko/sol' },
+    );
+    const price = data.solana?.usd;
+    if (typeof price === 'number' && price > 0) return price;
+  } catch (error) {
+    log.warn({ err: error }, 'CoinGecko SOL price fallback failed');
+  }
+  // Dexscreener SOL/USDC pair search.
+  try {
+    const { data } = await fetchJson<{
+      pairs?: Array<{ priceUsd?: string; liquidity?: { usd?: number } }>;
+    }>('https://api.dexscreener.com/latest/dex/search?q=SOL%2FUSDC', {
+      timeoutMs: 2_500,
+      label: 'dexscreener/sol',
+    });
+    const best = (data.pairs ?? [])
+      .filter((p) => Number(p.priceUsd) > 0)
+      .sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0))[0];
+    const price = best ? Number(best.priceUsd) : 0;
+    if (price > 0) return price;
+  } catch (error) {
+    log.warn({ err: error }, 'Dexscreener SOL price fallback failed');
+  }
+  return 0;
 }
 
 /** USD price of a chain's quote asset. Required before any trade is sized. */
 export async function getQuoteAssetPriceUsd(chain: Chain): Promise<number> {
+  const cached = quotePriceCache.get(chain);
+  if (cached && Date.now() - cached.at < QUOTE_PRICE_CACHE_TTL_MS) {
+    return cached.price;
+  }
+
   const config = chainConfig(chain);
+  let price = 0;
 
   if (chain === Chain.SOLANA) {
-    const prices = await getJupiterPrices([config.quoteAsset]);
-    const price = prices.get(config.quoteAsset);
-    if (!price) {
+    try {
+      const prices = await getJupiterPrices([config.quoteAsset]);
+      price = prices.get(config.quoteAsset)?.usdPrice ?? 0;
+    } catch (error) {
+      log.warn({ err: error }, 'Jupiter SOL price failed; trying fallbacks');
+    }
+    if (!(price > 0)) price = await fetchSolUsdFallbacks();
+    if (!(price > 0) && cached) return cached.price;
+    if (!(price > 0)) {
       throw new Error(
-        `SOL price unavailable from Jupiter. A trade cannot be sized without the quote-asset price.`,
+        `SOL price unavailable from Jupiter/CoinGecko/Dexscreener. A trade cannot be sized without the quote-asset price.`,
       );
     }
-    return price.usdPrice;
+  } else {
+    const market = await getDexscreenerMarket(chain, config.quoteAsset);
+    price = !market.missing && market.priceUsd > 0 ? market.priceUsd : 0;
+    if (!(price > 0) && cached) return cached.price;
+    if (!(price > 0)) {
+      throw new Error(
+        `${config.quoteAssetSymbol} price unavailable on ${chain}. A trade cannot be sized without the quote-asset price.`,
+      );
+    }
   }
 
-  const market = await getDexscreenerMarket(chain, config.quoteAsset);
-  if (market.missing || market.priceUsd <= 0) {
-    throw new Error(
-      `${config.quoteAssetSymbol} price unavailable on ${chain}. A trade cannot be sized without the quote-asset price.`,
-    );
-  }
-  return market.priceUsd;
+  quotePriceCache.set(chain, { price, at: Date.now() });
+  return price;
 }
 
 export function emptySnapshot(source: string): MarketSnapshot {

@@ -183,5 +183,5 @@ log.info(
   },
   solanaSigner.available || evmSigner.available
     ? 'Bot signers loaded'
-    : 'No bot signing key configured — COPYRA runs in observe-only mode and will not broadcast transactions',
+    : 'No bot signing key configured. COPYRA runs in observe only mode and will not broadcast transactions',
 );

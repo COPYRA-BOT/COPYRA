@@ -1,0 +1,24 @@
+name: Verify before deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run deploy:verify
+        env:
+          DATABASE_URL: postgresql://build:build@127.0.0.1:5432/build?schema=public
+          REDIS_URL: redis://127.0.0.1:6379
+          SESSION_SECRET: ci-only-session-secret-must-be-at-least-32-chars-long

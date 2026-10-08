@@ -14,6 +14,7 @@ import { getMarketSnapshot } from '../market/index.js';
 import { componentLogger } from '../obs/logger.js';
 import { reportError } from '../obs/sentry.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
+import { multiUserCustodyEnabled } from '../security/user-custody.js';
 import { executeSolanaSwap, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
 import { withLock } from '../util/redis.js';
 import {
@@ -25,9 +26,14 @@ import {
 import { telegram } from '../notify/telegram.js';
 import { evaluateExit, computeTrailingStop, updateHighWaterMark } from './exits.js';
 import { executionGate, fractionOfRaw, wholeUnits } from './execution-gate.js';
-import { getPnlSummary, readOnChainBalance } from './portfolio.js';
+import {
+  getPnlSummary,
+  readOnChainBalanceForAddress,
+  resolveTradingAddress,
+} from './portfolio.js';
 import { getSettings, getStrategyConfig } from './settings.js';
 import { TelemetryTracker } from './telemetry.js';
+import type { StrategyConfig } from './types.js';
 
 const log = componentLogger('exit-execute');
 
@@ -38,27 +44,44 @@ export async function monitorOpenPositions(): Promise<void> {
     where: { status: { in: [...LIVE] } },
     include: { token: true },
   });
-  for (const position of positions) {
-    try {
-      await markAndMaybeExit(position);
-    } catch (error) {
-      await reportError(error, {
-        component: 'exit-monitor',
-        code: 'POSITION_TICK_FAILED',
-        chain: position.chain,
-        notify: true,
-        context: { positionId: position.id },
-      });
-    }
-  }
+  if (positions.length === 0) return;
+  // Shared settings for the tick — avoid N sequential DB reads before marks.
+  const [config, settings] = await Promise.all([getStrategyConfig(), getSettings()]);
+  await Promise.all(
+    positions.map(async (position) => {
+      try {
+        await markAndMaybeExit(position, config, settings);
+      } catch (error) {
+        await reportError(error, {
+          component: 'exit-monitor',
+          code: 'POSITION_TICK_FAILED',
+          chain: position.chain,
+          notify: true,
+          context: { positionId: position.id },
+        });
+      }
+    }),
+  );
 }
 
 async function markAndMaybeExit(
   position: Position & { token: { symbol: string | null; decimals: number | null } },
+  config: StrategyConfig,
+  settings: Awaited<ReturnType<typeof getSettings>>,
 ): Promise<void> {
-  const config = await getStrategyConfig();
-  const settings = await getSettings();
-  const market = await getMarketSnapshot(position.chain, position.tokenAddress);
+  // Market mark + trader-sold check in parallel so exit decide is not sequential I/O.
+  const [market, traderSold] = await Promise.all([
+    getMarketSnapshot(position.chain, position.tokenAddress),
+    prisma.detectedTransaction.findFirst({
+      where: {
+        chain: position.chain,
+        tokenInAddress: position.tokenAddress,
+        classification: 'SELL',
+        observedAt: { gte: position.openedAt ?? position.createdAt },
+      },
+      select: { id: true },
+    }),
+  ]);
   if (market.missing || market.priceUsd <= 0) {
     log.warn({ positionId: position.id }, 'No live mark; holding rather than exiting on a missing price');
     return;
@@ -83,40 +106,6 @@ async function markAndMaybeExit(
   const unrealizedQuote = quotePrice > 0 ? unrealizedUsd / quotePrice : 0;
   const unrealizedPct = entry > 0 ? ((market.priceUsd - entry) / entry) * 100 : 0;
 
-  await prisma.token.update({
-    where: { id: position.tokenId },
-    data: {
-      priceUsd: market.priceUsd,
-      marketCapUsd: market.marketCapUsd,
-      liquidityUsd: market.liquidityUsd,
-      marketSource: market.source,
-      marketUpdatedAt: market.fetchedAt,
-    },
-  });
-
-  await prisma.position.update({
-    where: { id: position.id },
-    data: {
-      lastPriceUsd: market.priceUsd,
-      lastPriceAt: market.fetchedAt,
-      highestPriceUsd: highest,
-      trailingStopPriceUsd: trailingStop,
-      unrealizedPnlUsd: unrealizedUsd,
-      unrealizedPnlQuote: unrealizedQuote,
-      unrealizedPnlPct: unrealizedPct,
-    },
-  });
-
-  const traderSold = await prisma.detectedTransaction.findFirst({
-    where: {
-      chain: position.chain,
-      tokenInAddress: position.tokenAddress,
-      classification: 'SELL',
-      observedAt: { gte: position.openedAt ?? position.createdAt },
-    },
-    select: { id: true },
-  });
-
   const action = evaluateExit({
     config,
     exitStrategy: position.exitStrategy,
@@ -128,9 +117,40 @@ async function markAndMaybeExit(
     traderSold: Boolean(traderSold),
   });
 
-  if (action.action === 'HOLD') return;
+  // Persist marks in parallel; do not block the exit broadcast on serial DB writes.
+  const markWrites = Promise.all([
+    prisma.token.update({
+      where: { id: position.tokenId },
+      data: {
+        priceUsd: market.priceUsd,
+        marketCapUsd: market.marketCapUsd,
+        liquidityUsd: market.liquidityUsd,
+        marketSource: market.source,
+        marketUpdatedAt: market.fetchedAt,
+      },
+    }),
+    prisma.position.update({
+      where: { id: position.id },
+      data: {
+        lastPriceUsd: market.priceUsd,
+        lastPriceAt: market.fetchedAt,
+        highestPriceUsd: highest,
+        trailingStopPriceUsd: trailingStop,
+        unrealizedPnlUsd: unrealizedUsd,
+        unrealizedPnlQuote: unrealizedQuote,
+        unrealizedPnlPct: unrealizedPct,
+      },
+    }),
+  ]);
 
-  const signerOk = position.chain === Chain.SOLANA ? solanaSigner.available : evmSigner.available;
+  if (action.action === 'HOLD') {
+    await markWrites;
+    return;
+  }
+
+  const signerOk =
+    multiUserCustodyEnabled() ||
+    (position.chain === Chain.SOLANA ? solanaSigner.available : evmSigner.available);
   const gate = executionGate({
     signerAvailable: signerOk,
     tradingEnabled: true,
@@ -138,14 +158,24 @@ async function markAndMaybeExit(
     emergencyStopReason: null,
   });
   if (!gate.ok) {
-    log.info({ positionId: position.id, status: gate.status }, 'Exit signal held — no signer');
+    await markWrites;
+    log.info({ positionId: position.id, status: gate.status }, 'Exit signal held. No signer');
     return;
   }
 
+  await markWrites;
   await withLock(`exit:${position.id}`, 120_000, async () => {
     const fresh = await prisma.position.findUnique({ where: { id: position.id } });
     if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) return;
-    await executeExit(fresh, action.fraction, action.action === 'SELL' ? action.reason : 'TAKE_PROFIT', action.detail, market.priceUsd, settings.pnlResetAt);
+    await executeExit(
+      fresh,
+      action.fraction,
+      action.action === 'SELL' ? action.reason : 'TAKE_PROFIT',
+      action.detail,
+      market.priceUsd,
+      settings.pnlResetAt,
+      config,
+    );
     if (action.action === 'ACTIVATE_TRAILING') {
       await prisma.position.update({
         where: { id: position.id },
@@ -161,6 +191,100 @@ async function markAndMaybeExit(
   });
 }
 
+/**
+ * Kill switch for one mode: market-sell 100% of that account’s open positions
+ * on Solana (sol) or all EVM execution chains (evm). Proceeds return to custody.
+ */
+export async function killSwitchSellAll(input: {
+  userId: string;
+  mode: 'sol' | 'evm';
+}): Promise<{
+  mode: 'sol' | 'evm';
+  attempted: number;
+  sold: number;
+  failed: number;
+  results: Array<{ positionId: string; chain: Chain; token: string; ok: boolean; error?: string }>;
+}> {
+  const chains =
+    input.mode === 'sol'
+      ? [Chain.SOLANA]
+      : [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+  const positions = await prisma.position.findMany({
+    where: {
+      userId: input.userId,
+      chain: { in: chains },
+      status: { in: [...LIVE] },
+    },
+  });
+  const [settings, config] = await Promise.all([getSettings(), getStrategyConfig()]);
+  const results: Array<{
+    positionId: string;
+    chain: Chain;
+    token: string;
+    ok: boolean;
+    error?: string;
+  }> = [];
+  let sold = 0;
+  let failed = 0;
+
+  for (const position of positions) {
+    const token = position.tokenSymbol ?? position.tokenAddress.slice(0, 8);
+    try {
+      await withLock(`exit:${position.id}`, 180_000, async () => {
+        const fresh = await prisma.position.findUnique({ where: { id: position.id } });
+        if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) {
+          return;
+        }
+        let mark = Number(fresh.lastPriceUsd ?? fresh.entryPriceUsd ?? 0);
+        if (!(mark > 0)) {
+          const market = await getMarketSnapshot(fresh.chain, fresh.tokenAddress);
+          mark = market.priceUsd > 0 ? market.priceUsd : Number(fresh.entryPriceUsd ?? 1) || 1;
+        }
+        await executeExit(
+          fresh,
+          1,
+          TradeReason.EMERGENCY_STOP,
+          `Kill switch (${input.mode}): sell all open positions to custody`,
+          mark,
+          settings.pnlResetAt,
+          config,
+        );
+      });
+      const after = await prisma.position.findUnique({
+        where: { id: position.id },
+        select: { status: true },
+      });
+      const ok = after?.status === PositionStatus.CLOSED;
+      if (ok) sold += 1;
+      else failed += 1;
+      results.push({
+        positionId: position.id,
+        chain: position.chain,
+        token,
+        ok,
+        error: ok ? undefined : 'sell not confirmed',
+      });
+    } catch (error) {
+      failed += 1;
+      results.push({
+        positionId: position.id,
+        chain: position.chain,
+        token,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return {
+    mode: input.mode,
+    attempted: positions.length,
+    sold,
+    failed,
+    results,
+  };
+}
+
 async function executeExit(
   position: Position,
   fraction: number,
@@ -168,8 +292,8 @@ async function executeExit(
   detail: string,
   markPriceUsd: number,
   pnlResetAt: Date,
+  config: StrategyConfig,
 ): Promise<void> {
-  const config = await getStrategyConfig();
   const chainMeta = chainConfig(position.chain);
   const remaining = position.remainingTokenRaw ?? '0';
   const sellRaw = fractionOfRaw(remaining, fraction);
@@ -188,10 +312,12 @@ async function executeExit(
   const existing = await prisma.trade.findUnique({ where: { idempotencyKey } });
   if (existing?.status === TxStatus.CONFIRMED) return;
 
+  const ownerUserId = position.userId;
   const trade = existing
     ? existing
     : await prisma.trade.create({
         data: {
+          userId: ownerUserId,
           idempotencyKey,
           positionId: position.id,
           chain: position.chain,
@@ -222,6 +348,7 @@ async function executeExit(
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         })
       : await executeEvmSwap({
           chain: position.chain,
@@ -235,6 +362,7 @@ async function executeExit(
           maxAttempts: config.maxExecutionAttempts,
           telemetry,
           idempotencyKey,
+          userId: ownerUserId,
         });
 
   await prisma.trade.update({
@@ -273,7 +401,7 @@ async function executeExit(
         txHash: outcome.txHash,
         broadcastLatencyMs: telemetry.sinceStart('broadcast') ?? null,
       }),
-      { kind: 'sell-submitted', tradeId: trade.id, positionId: position.id },
+      { kind: 'sell-submitted', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
   }
 
@@ -294,7 +422,7 @@ async function executeExit(
         txHash: outcome.txHash,
         attempts: outcome.attempts,
       }),
-      { kind: 'sell-failed', tradeId: trade.id, positionId: position.id },
+      { kind: 'sell-failed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
     return;
   }
@@ -330,8 +458,11 @@ async function executeExit(
     },
   });
 
-  const balance = await readOnChainBalance(position.chain).catch(() => null);
-  const total = await getPnlSummary(pnlResetAt);
+  const tradingAddress = await resolveTradingAddress(position.chain, ownerUserId).catch(() => null);
+  const balance = tradingAddress
+    ? await readOnChainBalanceForAddress(position.chain, tradingAddress).catch(() => null)
+    : null;
+  const total = await getPnlSummary(pnlResetAt, ownerUserId);
   const source = await prisma.signal.findFirst({
     where: { positionId: position.id },
     include: { trader: true },
@@ -349,7 +480,7 @@ async function executeExit(
         trailingStopPriceUsd: computeTrailingStop(markPriceUsd, config.trailingDropPct),
         txHash: outcome.txHash as string,
       }),
-      { kind: 'trailing-armed', tradeId: trade.id, positionId: position.id },
+      { kind: 'trailing-armed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
     );
   }
 
@@ -377,6 +508,6 @@ async function executeExit(
       txHash: outcome.txHash as string,
       portionPct: fraction * 100,
     }),
-    { kind: 'sell-confirmed', tradeId: trade.id, positionId: position.id },
+    { kind: 'sell-confirmed', tradeId: trade.id, positionId: position.id, userId: ownerUserId },
   );
 }

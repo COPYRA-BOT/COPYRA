@@ -25,6 +25,8 @@ const API_BASE = 'https://api.telegram.org';
 
 export interface SendOptions {
   kind: string;
+  /** Owning dashboard user — required for account-private notification lists. */
+  userId?: string;
   tradeId?: string;
   positionId?: string;
   disableNotification?: boolean;
@@ -166,6 +168,7 @@ class TelegramNotifier {
     try {
       await prisma.notificationLog.create({
         data: {
+          userId: options.userId ?? null,
           channel: 'telegram',
           kind: options.kind,
           body: text,
