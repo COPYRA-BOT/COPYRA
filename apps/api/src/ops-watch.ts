@@ -55,7 +55,7 @@ export function startOpsWatch(): () => void {
           `Copy-trade <b>worker is DOWN or stale</b>.\n` +
             `Heartbeat age: ${ageSec}s\n` +
             `Status: ${hb?.status ?? 'missing'}\n` +
-            `Check DigitalOcean logs / restart the api service.`,
+            `Check DigitalOcean → Runtime Logs → <b>worker</b> component, then Force rebuild that worker.`,
           { awaitDelivery: true },
         );
         wasWorkerDown = true;

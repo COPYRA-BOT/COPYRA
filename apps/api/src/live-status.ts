@@ -290,7 +290,16 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
     telegram: telegramStatus,
     chains,
     executableChains: executableChains().map((c) => c.chain),
-    workers: heartbeats,
+    // Enrich heartbeats so the dashboard can tell "running" vs stale/dead worker.
+    workers: heartbeats.map((hb) => {
+      const ageMs = hb.beatAt ? Date.now() - new Date(hb.beatAt).getTime() : Number.POSITIVE_INFINITY;
+      const live = Number.isFinite(ageMs) && ageMs < 90_000 && hb.status === 'running';
+      return {
+        ...hb,
+        ageMs: Number.isFinite(ageMs) ? ageMs : null,
+        live,
+      };
+    }),
     counts: { openPositions, signals24h, confirmedTrades: confirmedTrades.length },
     latency: buildLatencyReport(broadcastSamples, confirmSamples),
     socials: {
