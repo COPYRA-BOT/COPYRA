@@ -27,11 +27,13 @@ const log = componentLogger('solana-monitor');
 const TX_FETCH_ATTEMPTS = 4;
 const TX_FETCH_BASE_DELAY_MS = 40;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
-const CATCHUP_LIMIT = 20;
+const CATCHUP_LIMIT = 12;
 /** Steady-state catch-up window — wide enough to recover RPC gaps without flood. */
-const CATCHUP_MAX_AGE_MS = 180_000;
+const CATCHUP_MAX_AGE_MS = 120_000;
 /** First sync after boot / forced WS resub — recover activity missed during a stall. */
-const CATCHUP_RECOVERY_AGE_MS = 5 * 60_000;
+const CATCHUP_RECOVERY_AGE_MS = 3 * 60_000;
+/** Minimum gap between catch-up passes (subscriptions still refresh every sync). */
+const CATCHUP_MIN_GAP_MS = 45_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -76,6 +78,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
   let syncing = false;
   /** Only one catch-up pass at a time — stacked ticks starved Prisma/API → site 504s. */
   let catchingUp = false;
+  let lastCatchUpStartedAt = 0;
   let lastForceResub = 0;
   const bootAt = Date.now();
   /** Keep the wide recovery window for a few minutes after boot / forced resub. */
@@ -157,10 +160,15 @@ export async function startSolanaMonitor(): Promise<() => void> {
       // overlapping catch-ups exhausted the Prisma pool (api+worker share the
       // host), froze heartbeats, and made Cloudflare return 504 on copyra.fun.
       const catchUpTraders = traders;
-      if (catchingUp) {
-        log.debug({ watching: subscriptions.size }, 'Solana catch-up already running — skip stack');
+      const catchUpDue = Date.now() - lastCatchUpStartedAt >= CATCHUP_MIN_GAP_MS;
+      if (catchingUp || !catchUpDue) {
+        log.debug(
+          { watching: subscriptions.size, catchingUp, catchUpDue },
+          'Solana catch-up skipped (in-flight or min gap)',
+        );
       } else {
         catchingUp = true;
+        lastCatchUpStartedAt = Date.now();
         void (async () => {
           let catchUpOk = 0;
           let catchUpErr = 0;
@@ -174,8 +182,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
                   try {
                     await Promise.race([
                       catchUpTrader(trader.id, trader.address, maxAgeMs),
-                      sleep(6_000).then(() => {
-                        throw new Error('catch-up timed out after 6s');
+                      sleep(5_000).then(() => {
+                        throw new Error('catch-up timed out after 5s');
                       }),
                     ]);
                     catchUpOk += 1;
@@ -185,8 +193,9 @@ export async function startSolanaMonitor(): Promise<() => void> {
                   }
                 }),
               );
-              // Yield so exit ticks + heartbeat upserts can use the pool.
-              if (i + batchSize < catchUpTraders.length) await sleep(200);
+              // Keep watchdog clock alive mid-pass; yield for heartbeat/API.
+              touchSolanaSync();
+              if (i + batchSize < catchUpTraders.length) await sleep(300);
             }
           } finally {
             solanaMonitorStats.catchUpOk = catchUpOk;
