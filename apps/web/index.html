@@ -30,8 +30,8 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 #akhost appkit-button,#akhost w3m-button,#akhost w3m-core-button{display:block;width:100%}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
-.tg{background:#2AABEE;color:#fff;box-shadow:0 8px 24px rgba(42,171,238,.35)}.tg:hover{filter:brightness(1.06)}
-#tgBox.open{display:block!important}
+.tg{background:#2AABEE;color:#fff;border-radius:999px;box-shadow:0 8px 24px rgba(42,171,238,.35)}.tg:hover{filter:brightness(1.06)}
+#tgBox[hidden]{display:none!important}#tgBox.open{display:block!important}
 .red{background:var(--r);color:#fff}.sm{padding:7px 12px;border-radius:12px;font-size:13px}
 html{-webkit-text-size-adjust:100%}body{min-height:100dvh;overflow-x:hidden}
 main{max-width:1200px;margin:0 auto;padding:0 max(16px,env(safe-area-inset-left)) 60px max(16px,env(safe-area-inset-right))}.h{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
@@ -322,7 +322,9 @@ function hydrate(snap){
   }else next.worker=prev?.worker||null;
   // Strict per-mode ownership — never mix the other mode's account into this feed.
   const modeUserId=snap.auth?.[e]?.userId||null;
-  const owns=row=>!modeUserId||row.userId===modeUserId;
+  // When signed into this mode, only that account's rows. When not, owns nothing
+  // (Recent Activity stays empty; other panels already use empty snapshot lists).
+  const owns=row=>Boolean(modeUserId)&&row.userId===modeUserId;
   const mine=traders.filter(t=>modeOf(t.chain)===e&&owns(t));
   next.tr=mine.map((t,i)=>({id:t.id,n:t.label,a:t.address,on:t.enabled?1:0,c:0,pnl:0,chain:t.chain}));
   const byId=Object.fromEntries(next.tr.map(t=>[t.id,t]));
@@ -554,7 +556,7 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
 ${e=='evm'?`<div class="card"><h3>Chains and Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'*'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
 <div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>
 <div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.</p>'}</div></div>
-${(()=>{const pg=pageSlice(s.act,actPage[e]||1);const emptyMsg=!LIVE?.auth?.[e]?.userId?'Sign in on this mode to see its Recent Activity.':'No activity on this mode yet.';return`<div class="card"><h3>Recent Activity · ${e.toUpperCase()}</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||`<p class="mu">${emptyMsg}</p>`}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
+${(()=>{const pg=pageSlice(s.act,actPage[e]||1);const emptyMsg=!LIVE?.auth?.[e]?.userId?`Sign in on ${e.toUpperCase()} to see this mode's Recent Activity.`:`No ${e.toUpperCase()} activity yet.`;return`<div class="card"><h3>Recent Activity · ${e.toUpperCase()}</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||`<p class="mu">${emptyMsg}</p>`}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
 <details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b>. ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, market cap or liquidity window, first buy mode, and similar checks).</p>'}</div></details>
 ${howItWorksHtml()}`}
 const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
@@ -982,7 +984,7 @@ function settings(e){const s=S[e].set;
   return `<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label><input id="s_${k}" type="number" step="any" value="${s[k]}">`;
  };
  const botUser=LIVE?.status?.telegram?.botUsername||'copyrafun_bot';
- $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)"><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" style="margin:6px 0 0">1) Open <a href="https://t.me/${botUser}" target="_blank" rel="noopener">@${botUser}</a> and tap <b>Start</b>. 2) Get your numeric chat ID from <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>. 3) Save — this ${e.toUpperCase()} account only gets <b>BUY</b> and <b>SELL</b> alerts (no skips / ops).</p><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Save Telegram</button><button class="btn sm" id="tgDisconnect" type="button">Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" style="margin:6px 0 0">1) Open <a href="https://t.me/${botUser}" target="_blank" rel="noopener">@${botUser}</a> and tap <b>Start</b>. 2) Get your numeric chat ID from <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>. 3) Save — this ${e.toUpperCase()} account only gets <b>BUY</b> and <b>SELL</b> alerts (no skips / ops).</p><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Save Telegram</button><button class="btn sm" id="tgDisconnect" type="button">Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
  dr.classList.add('o');
  $('#drClose')&&($('#drClose').onclick=()=>dr.classList.remove('o'));
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
@@ -1020,29 +1022,40 @@ function settings(e){const s=S[e].set;
    st.textContent=err.message||`Sign in on ${e.toUpperCase()} to link Telegram.`;
   }
  };
- const openTgBox=()=>{
+ const setTgOpen=(opening)=>{
   const box=$('#tgBox');
   const btn=$('#tgConnect');
   if(!box||!btn)return;
-  const opening=!box.classList.contains('open');
   box.classList.toggle('open',opening);
+  if(opening)box.removeAttribute('hidden');
+  else box.setAttribute('hidden','');
   box.style.display=opening?'block':'none';
+  btn.setAttribute('aria-expanded',opening?'true':'false');
   btn.textContent=opening?'Hide Telegram setup':'Connect Telegram BOT';
   if(opening){
    void loadTg();
    const inp=$('#tgChat');
    if(inp)setTimeout(()=>inp.focus(),50);
-   // Keep the form in view inside the drawer.
    setTimeout(()=>box.scrollIntoView({behavior:'smooth',block:'nearest'}),80);
   }
  };
+ const openTgBox=()=>{
+  const box=$('#tgBox');
+  if(!box)return;
+  setTgOpen(!box.classList.contains('open'));
+ };
+ // Bind with addEventListener so the expand/save flow always fires.
  const tgBtn=$('#tgConnect');
  if(tgBtn){
-  tgBtn.onclick=(ev)=>{ev.preventDefault();ev.stopPropagation();openTgBox()};
+  tgBtn.addEventListener('click',(ev)=>{ev.preventDefault();ev.stopPropagation();openTgBox()});
+ }
+ const tgBox=$('#tgBox');
+ if(tgBox){
+  tgBox.addEventListener('click',(ev)=>ev.stopPropagation());
  }
  const tgSave=$('#tgSave');
  if(tgSave){
-  tgSave.onclick=async(ev)=>{
+  tgSave.addEventListener('click',async(ev)=>{
    ev.preventDefault();ev.stopPropagation();
    const errEl=$('#tgErr');
    if(errEl)errEl.textContent='';
@@ -1055,11 +1068,11 @@ function settings(e){const s=S[e].set;
     if($('#tgChat'))$('#tgChat').value='';
     await loadTg();
    }catch(err){if(errEl)errEl.textContent=err.message}
-  };
+  });
  }
  const tgDisc=$('#tgDisconnect');
  if(tgDisc){
-  tgDisc.onclick=async(ev)=>{
+  tgDisc.addEventListener('click',async(ev)=>{
    ev.preventDefault();ev.stopPropagation();
    const errEl=$('#tgErr');
    if(errEl)errEl.textContent='';
@@ -1069,7 +1082,7 @@ function settings(e){const s=S[e].set;
     if($('#tgChat'))$('#tgChat').value='';
     await loadTg();
    }catch(err){if(errEl)errEl.textContent=err.message}
-  };
+  });
  }
 }
 function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd,pnl_pct',...filteredHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,Number(h.size||0).toFixed(2),Number(h.usd||0).toFixed(2),Number(h.pct||0).toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}

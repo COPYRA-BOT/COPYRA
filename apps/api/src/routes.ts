@@ -822,9 +822,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         buildWorkerWalletBalances(),
         userIds.length
           ? prisma.notificationLog.findMany({
+              // Per-mode Recent Activity only needs trade alerts (BUY/SELL).
+              // Ops / redeploy / link probes stay out of the dashboard feed.
               where: {
                 userId: { in: userIds },
-                NOT: { kind: { in: ['worker-online', 'redeploy-finished'] } },
+                kind: {
+                  in: [
+                    'buy-confirmed',
+                    'sell-confirmed',
+                    'buy-submitted',
+                    'sell-submitted',
+                    'buy-failed',
+                    'sell-failed',
+                  ],
+                },
               },
               orderBy: { createdAt: 'desc' },
               take: 60,

@@ -150,9 +150,13 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
    */
   async function requireModeAccount(request: FastifyRequest, reply: FastifyReply) {
     const mode = authModeFromRequest(request);
+    // Prefer the mode session (SOL or EVM) so BUY/SELL alerts bind to that
+    // mode's trading account. Account (email/Google) session is the fallback.
     const session = (await readSession(request, mode)) ?? (await readAccountSession(request));
     if (!session) {
-      reply.code(401).send({ error: 'Sign in to link Telegram for this account.' });
+      reply.code(401).send({
+        error: `Sign in on ${mode.toUpperCase()} to link Telegram for BUY/SELL alerts.`,
+      });
       return null;
     }
     return session;
