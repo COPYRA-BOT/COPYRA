@@ -1,6 +1,6 @@
 # feat/accounts — verification checklist
 
-Branch: `feat/accounts` → PR into `dev` (do **not** merge to `main` until approved).
+Branch: shipped on **`main`** (DigitalOcean autodeploy). See also `docs/ACCOUNTS_ENV.md`.
 
 ## STOP: referral earnings
 
@@ -17,8 +17,8 @@ Referral codes / attribution / claim API are real; **earnings stay 0** (`PLATFOR
 | `npm run audit:mocks` | pass |
 | `npm run audit:secrets` | pass |
 | Prisma migration `20261007234500_accounts_auth_referrals` | applied (additive) |
-| Zero-balance UI (`0` not `*`) | code change on branch |
-| `SOL_TRADING_ENABLED` / `EVM_TRADING_ENABLED` in `.do/app.yaml` | **false** on this branch |
+| Zero-balance UI (`0` not `*`) | on main |
+| `SOL_TRADING_ENABLED` / `EVM_TRADING_ENABLED` in `.do/app.yaml` | **true** (trading stays on) |
 | Wallet SIWE/SIWS nonce TTL | 5 minutes |
 | WebAuthn server routes | implemented (`/api/account/passkeys/*`) |
 | Withdraw step-up (TOTP / password for email accounts) | implemented |
