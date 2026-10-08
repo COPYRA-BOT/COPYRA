@@ -1,7 +1,7 @@
 import { initSentry, logger, monitorOpenPositions, reconcilePendingTrades, telegram } from '@copyra/core';
 import { prisma, type Prisma } from '@copyra/db';
 import { startEvmMonitor } from './evm-monitor.js';
-import { startSolanaMonitor } from './solana-monitor.js';
+import { solanaMonitorStats, startSolanaMonitor } from './solana-monitor.js';
 
 initSentry('copyra-worker');
 
@@ -35,11 +35,14 @@ const exitTimer = setInterval(() => {
 }, EXIT_TICK_MS);
 
 const maintTimer = setInterval(() => {
-  void heartbeat('running', { monitor: 'solana+evm+exits', pid: process.pid, exitTickMs: EXIT_TICK_MS }).catch(
-    (error: unknown) => {
-      logger.error({ err: error }, 'Heartbeat failed');
-    },
-  );
+  void heartbeat('running', {
+    monitor: 'solana+evm+exits',
+    pid: process.pid,
+    exitTickMs: EXIT_TICK_MS,
+    ...solanaMonitorStats,
+  }).catch((error: unknown) => {
+    logger.error({ err: error }, 'Heartbeat failed');
+  });
   void reconcilePendingTrades().catch((error: unknown) => {
     logger.error({ err: error }, 'Reconcile tick failed');
   });
