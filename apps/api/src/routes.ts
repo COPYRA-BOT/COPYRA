@@ -734,10 +734,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: 'Sign in to view your notifications.' });
     }
     const skip = (query.page - 1) * query.pageSize;
-    // Only this account's alerts — never system-wide or other users'.
+    // Only this mode account's trade alerts — never ops / other users / other mode.
     const where = {
       userId,
-      NOT: { kind: { in: ['worker-online', 'redeploy-finished'] } },
+      kind: { in: ['buy-confirmed', 'sell-confirmed', 'buy-submitted', 'sell-submitted', 'buy-failed', 'sell-failed'] },
     };
     const [total, logs] = await Promise.all([
       prisma.notificationLog.count({ where }),
