@@ -65,15 +65,20 @@ export const SOLANA_NON_TRADE_PROGRAMS: Record<string, string> = {
   mv3ekLzLbnVPNxjSKvqBpU3ZeZXPQdEC3bp5MDEBG68: 'nft-marketplace',
 };
 
-function createConnection(url: string): Connection {
+function createConnection(url: string, wsEndpoint?: string): Connection {
   return new Connection(url, {
     commitment: 'confirmed',
     disableRetryOnRateLimit: false,
     confirmTransactionInitialTimeout: 60_000,
+    // Helius/Alchemy require the dedicated WSS URL for onLogs; deriving from HTTPS
+    // often leaves subscriptions dead after idle disconnects.
+    ...(wsEndpoint ? { wsEndpoint } : {}),
   });
 }
 
 let pool: RpcPool<Connection> | undefined;
+/** Dedicated subscription connection (always uses SOLANA_WS_URL when set). */
+let subscriptionConnection: Connection | undefined;
 
 export function solanaPool(): RpcPool<Connection> {
   if (!pool) {
@@ -81,18 +86,40 @@ export function solanaPool(): RpcPool<Connection> {
     if (!config.rpcUrl) {
       throw new Error('SOLANA_RPC_URL is not configured; Solana monitoring is unavailable.');
     }
+    const primaryUrl = config.rpcUrl;
+    const primaryWs = config.wsUrl;
     pool = new RpcPool<Connection>(
       { chain: Chain.SOLANA, urls: [config.rpcUrl, ...config.rpcFallbacks] },
-      createConnection,
+      (url) => createConnection(url, url === primaryUrl ? primaryWs : undefined),
     );
-    log.info({ endpoints: pool.size }, 'Solana RPC pool initialised');
+    log.info(
+      { endpoints: pool.size, ws: Boolean(primaryWs) },
+      'Solana RPC pool initialised',
+    );
   }
   return pool;
 }
 
 /** Primary connection, for WebSocket subscriptions which cannot fail over mid-stream. */
 export function solanaConnection(): Connection {
-  return solanaPool().primary().client;
+  return solanaSubscriptionConnection();
+}
+
+/**
+ * Fresh subscription connection bound to SOLANA_WS_URL.
+ * Call again after a forced resubscribe so a dead WS socket is replaced.
+ */
+export function solanaSubscriptionConnection(recreate = false): Connection {
+  if (!subscriptionConnection || recreate) {
+    const config = chainConfig(Chain.SOLANA);
+    if (!config.rpcUrl) {
+      throw new Error('SOLANA_RPC_URL is not configured; Solana monitoring is unavailable.');
+    }
+    // Replace the Connection object; web3.js does not reliably recover onLogs after idle WS death.
+    subscriptionConnection = createConnection(config.rpcUrl, config.wsUrl);
+    log.info({ ws: Boolean(config.wsUrl), recreate }, 'Solana subscription connection ready');
+  }
+  return subscriptionConnection;
 }
 
 /** Current slot, confirming the RPC is genuinely live. */
