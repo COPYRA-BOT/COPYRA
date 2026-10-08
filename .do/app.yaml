@@ -18,6 +18,21 @@ alerts:
   - rule: DEPLOYMENT_FAILED
   - rule: DOMAIN_FAILED
 
+# App-level flags — apply to api + worker (override any stale component false).
+envs:
+  - key: TRADING_ENABLED
+    value: "true"
+    scope: RUN_TIME
+  - key: SOL_TRADING_ENABLED
+    value: "true"
+    scope: RUN_TIME
+  - key: EVM_TRADING_ENABLED
+    value: "true"
+    scope: RUN_TIME
+  - key: MULTI_USER_CUSTODY
+    value: "true"
+    scope: RUN_TIME
+
 domains:
   - domain: copyra.fun
     type: PRIMARY
@@ -117,12 +132,17 @@ workers:
     instance_count: 1
     # Own vCPU/RAM — catch-up and exits cannot starve API /health.
     instance_size_slug: basic-xs
+    # Health server inside start-worker.sh answers /health if DO probes the port.
     run_command: /app/scripts/start-worker.sh
     envs:
       - key: NODE_ENV
         value: production
       - key: NODE_OPTIONS
         value: "--max-old-space-size=768"
+      - key: PORT
+        value: "8080"
+      - key: HEALTH_PORT
+        value: "8080"
       - key: TRADING_ENABLED
         value: "true"
       - key: SOL_TRADING_ENABLED

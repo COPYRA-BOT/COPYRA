@@ -1,9 +1,25 @@
 #!/bin/sh
-# Dedicated App Platform worker component — copy trading only (no HTTP).
-# Separated from the API so Solana/EVM load can never flip /health → Degraded.
+# Dedicated App Platform worker — copy trading 24/7 + tiny /health for DO checks.
+# If this component was created as a Web Service (HTTP health required), /health
+# keeps the deploy green. Trading still runs in the supervised Node worker.
 set -e
 
-echo "COPYRA dedicated copy-trade worker (24/7 supervisor)"
+PORT="${PORT:-${HEALTH_PORT:-8080}}"
+export PORT
+
+echo "COPYRA dedicated copy-trade worker (24/7 supervisor + health :${PORT})"
+
+# Health first so App Platform marks the component ready immediately.
+node /app/scripts/worker-health.mjs &
+HEALTH_PID=$!
+
+cleanup() {
+  kill "$HEALTH_PID" 2>/dev/null || true
+  if [ -f /tmp/copyra-worker.pid ]; then
+    kill "$(cat /tmp/copyra-worker.pid)" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
 
 while true; do
   echo "COPYRA worker starting..."

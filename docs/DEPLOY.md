@@ -33,9 +33,29 @@ You do **not** need DigitalOcean nameservers if Cloudflare stays your DNS. The D
 
 Until status is **Active**, use `https://copyra-nl7kz.ondigitalocean.app` (should be green).
 
-### B) App status = Degraded / 503 on `*.ondigitalocean.app`
+### B) Worker deploy failed: “did not respond to health checks”
 
-That is the **container**, not DNS. After this deploy you should see two components: `api` (Healthy) and `worker` (Running).
+The trading component must run `/app/scripts/start-worker.sh` (serves `/health` + trading).
+
+1. DO → Settings → component **`worker`**
+2. **Resource type** should be **Worker** (preferred). If you created a **Web Service**, set:
+   - HTTP port **`8080`**
+   - Health check path **`/health`**
+   - Run command **`/app/scripts/start-worker.sh`**
+   - Branch **`main`**
+3. **Destroy** any failed duplicate worker component, then **Force rebuild and deploy**.
+4. Confirm Runtime Logs → worker shows: `worker health listening` and `COPYRA worker starting`.
+
+### C) Banner: `TRADING_ENABLED is false`
+
+1. DO → Settings → **App-level** environment variables  
+2. Set (or fix) **`TRADING_ENABLED=true`**, **`SOL_TRADING_ENABLED=true`**, **`EVM_TRADING_ENABLED=true`**  
+3. Delete any App-level or component value that is `false` / empty  
+4. Redeploy **api** (and worker). Dashboard cannot override a host `false`.
+
+### D) App status = Degraded / 503 on `*.ondigitalocean.app`
+
+That is the **container**, not DNS. You should see two components: `api` (Healthy) and `worker` (Running).
 
 1. DO → **Runtime Logs** → select component **`api`** vs **`worker`**.
 2. If `api` is unhealthy: check `DATABASE_URL` / migrate errors in api logs.

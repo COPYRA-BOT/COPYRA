@@ -103,7 +103,8 @@ COPY --from=assemble /app/apps ./apps
 COPY --from=assemble /app/scripts ./scripts
 COPY --from=assemble /app/tsconfig.base.json /app/tsconfig.json ./
 
-RUN chmod +x /app/scripts/start-production.sh /app/scripts/start-worker.sh
+RUN chmod +x /app/scripts/start-production.sh /app/scripts/start-worker.sh \
+  && test -f /app/scripts/worker-health.mjs
 
 EXPOSE 8080
 

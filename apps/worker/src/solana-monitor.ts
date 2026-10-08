@@ -291,22 +291,20 @@ async function catchUpTrader(
 }
 
 /**
- * Fetch tx ASAP: try `processed` first (matches log subscription), then escalate
- * to `confirmed`. Keeps detect→decode on the sub-second path without inventing data.
+ * Fetch tx at `confirmed` commitment only.
+ * Connection default is `confirmed`; requesting `processed` throws
+ * "method requires at least confirmed" and took Helius out of rotation.
  */
 async function fetchParsedTransaction(
   signature: string,
 ): Promise<ParsedTransactionWithMeta | null> {
   for (let attempt = 1; attempt <= TX_FETCH_ATTEMPTS; attempt += 1) {
-    // web3.js types only allow Finality (confirmed|finalized); Helius/Alchemy
-    // also serve processed, which matches our log subscription and lands earlier.
-    const commitment = (attempt === 1 ? 'processed' : 'confirmed') as 'confirmed';
     try {
       const fetched = await Promise.race([
         solanaPool().call('getParsedTransaction', (client) =>
           client.getParsedTransaction(signature, {
             maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-            commitment,
+            commitment: 'confirmed',
           }),
         ),
         sleep(5_000).then(() => null),
@@ -317,7 +315,7 @@ async function fetchParsedTransaction(
     }
     if (attempt === TX_FETCH_ATTEMPTS) break;
     const delay = TX_FETCH_BASE_DELAY_MS * attempt;
-    log.debug({ signature, attempt, delay, commitment }, 'Parsed tx not ready; retrying');
+    log.debug({ signature, attempt, delay, commitment: 'confirmed' }, 'Parsed tx not ready; retrying');
     await sleep(delay);
   }
   return null;
