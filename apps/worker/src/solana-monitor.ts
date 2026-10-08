@@ -59,8 +59,9 @@ export async function startSolanaMonitor(): Promise<() => void> {
   const subscriptions = new Map<string, number>();
   let syncing = false;
   let lastForceResub = 0;
-  /** Wider catch-up after boot / forced resub so a stalled worker recovers missed buys. */
-  let recoveryCatchUp = true;
+  const bootAt = Date.now();
+  /** Keep the wide recovery window for several minutes after boot / forced resub. */
+  let recoveryUntil = Date.now() + 10 * 60_000;
 
   const dropAll = async () => {
     for (const [traderId, sub] of subscriptions) {
@@ -82,7 +83,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
         await dropAll();
         connection = solanaSubscriptionConnection(true);
         lastForceResub = Date.now();
-        recoveryCatchUp = true;
+        recoveryUntil = Date.now() + 10 * 60_000;
         log.info({}, 'Forced Solana log resubscribe (fresh WS)');
       }
 
@@ -125,20 +126,29 @@ export async function startSolanaMonitor(): Promise<() => void> {
         log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
       }
 
-      const maxAgeMs = recoveryCatchUp ? CATCHUP_RECOVERY_AGE_MS : CATCHUP_MAX_AGE_MS;
+      const maxAgeMs =
+        Date.now() < recoveryUntil || Date.now() - bootAt < 10 * 60_000
+          ? CATCHUP_RECOVERY_AGE_MS
+          : CATCHUP_MAX_AGE_MS;
       // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
+      let catchUpOk = 0;
+      let catchUpErr = 0;
       await Promise.all(
         traders.map(async (trader) => {
           try {
             await catchUpTrader(trader.id, trader.address, maxAgeMs);
+            catchUpOk += 1;
           } catch (error) {
+            catchUpErr += 1;
             log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
           }
         }),
       );
-      recoveryCatchUp = false;
 
-      log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
+      log.info(
+        { watching: subscriptions.size, maxAgeMs, catchUpOk, catchUpErr },
+        'Solana wallet subscriptions are current',
+      );
     } finally {
       syncing = false;
     }
