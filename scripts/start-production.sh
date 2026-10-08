@@ -54,6 +54,12 @@ done
 
 if [ "${RUN_WORKER:-true}" = "true" ]; then
   (
+    # Let App Platform mark the service healthy BEFORE the worker burns CPU/RAM
+    # on Solana catch-up / WS subscribe. Otherwise DO flips Degraded and
+    # Cloudflare in front of copyra.fun returns 504 during every deploy.
+    WORKER_DELAY_SEC="${WORKER_START_DELAY_SEC:-75}"
+    echo "COPYRA delaying worker start ${WORKER_DELAY_SEC}s so /health stays green..."
+    sleep "$WORKER_DELAY_SEC"
     # Supervisor loop — copy trading never stays down after a crash/stall exit.
     while true; do
       echo "COPYRA worker starting (24/7 supervisor)..."

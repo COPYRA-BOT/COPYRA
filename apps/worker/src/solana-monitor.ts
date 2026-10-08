@@ -27,11 +27,11 @@ const log = componentLogger('solana-monitor');
 const TX_FETCH_ATTEMPTS = 4;
 const TX_FETCH_BASE_DELAY_MS = 40;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
-const CATCHUP_LIMIT = 40;
+const CATCHUP_LIMIT = 20;
 /** Steady-state catch-up window — wide enough to recover RPC gaps without flood. */
 const CATCHUP_MAX_AGE_MS = 180_000;
 /** First sync after boot / forced WS resub — recover activity missed during a stall. */
-const CATCHUP_RECOVERY_AGE_MS = 15 * 60_000;
+const CATCHUP_RECOVERY_AGE_MS = 5 * 60_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -53,7 +53,7 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
  * (processed log → confirmed fetch returns null) are not permanently lost.
  */
 /** Rebuild every onLogs subscription on this interval so a dead Helius WS cannot strand the worker. */
-const FORCE_RESUB_MS = 120_000;
+const FORCE_RESUB_MS = 300_000;
 
 /** Latest Solana monitor stats — merged into worker heartbeat by main. */
 export const solanaMonitorStats: {
@@ -76,8 +76,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
   let syncing = false;
   let lastForceResub = 0;
   const bootAt = Date.now();
-  /** Keep the wide recovery window for several minutes after boot / forced resub. */
-  let recoveryUntil = Date.now() + 10 * 60_000;
+  /** Keep the wide recovery window for a few minutes after boot / forced resub. */
+  let recoveryUntil = Date.now() + 3 * 60_000;
 
   const dropAll = async () => {
     for (const [traderId, sub] of subscriptions) {
@@ -99,7 +99,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
         await dropAll();
         connection = solanaSubscriptionConnection(true);
         lastForceResub = Date.now();
-        recoveryUntil = Date.now() + 10 * 60_000;
+        recoveryUntil = Date.now() + 3 * 60_000;
         log.info({}, 'Forced Solana log resubscribe (fresh WS)');
       }
 
@@ -143,7 +143,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
       }
 
       const maxAgeMs =
-        Date.now() < recoveryUntil || Date.now() - bootAt < 10 * 60_000
+        Date.now() < recoveryUntil || Date.now() - bootAt < 3 * 60_000
           ? CATCHUP_RECOVERY_AGE_MS
           : CATCHUP_MAX_AGE_MS;
 
@@ -167,8 +167,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
               try {
                 await Promise.race([
                   catchUpTrader(trader.id, trader.address, maxAgeMs),
-                  sleep(12_000).then(() => {
-                    throw new Error('catch-up timed out after 12s');
+                  sleep(8_000).then(() => {
+                    throw new Error('catch-up timed out after 8s');
                   }),
                 ]);
                 catchUpOk += 1;

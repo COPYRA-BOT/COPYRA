@@ -45,22 +45,24 @@ services:
       deploy_on_push: true
     http_port: 8080
     instance_count: 1
-    instance_size_slug: basic-xxs
+    # basic-xxs (512MB) OOMs / CPU-starves API+worker → DO Degraded + Cloudflare 504.
+    # basic-xs (1GB) keeps /health answering while the copy worker catch-up runs.
+    instance_size_slug: basic-xs
     health_check:
       http_path: /health
-      # basic-xxs needs a long head start (API listen + prisma) or DO marks Degraded
-      # with "Waiting for service" while the new instance is still booting.
-      # Worker+API share one container — brief event-loop stalls must not flip Degraded.
-      # Longer timeout + more failures before kill reduces Cloudflare 504 flaps on redeploy.
-      initial_delay_seconds: 120
-      period_seconds: 15
-      timeout_seconds: 15
+      # API listens first; worker starts ~75s later (see start-production.sh).
+      # Generous checks so brief CPU spikes never flip Degraded / CF 504.
+      initial_delay_seconds: 60
+      period_seconds: 10
+      timeout_seconds: 10
       success_threshold: 1
-      failure_threshold: 20
+      failure_threshold: 30
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=768"
       - key: API_HOST
         value: "0.0.0.0"
       - key: PORT
@@ -69,6 +71,8 @@ services:
         value: "8080"
       - key: RUN_WORKER
         value: "true"
+      - key: WORKER_START_DELAY_SEC
+        value: "75"
       - key: PUBLIC_WEB_URL
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
