@@ -16,7 +16,7 @@ import {
   telegram,
   traderHasPriorBuyOfToken,
 } from '@copyra/core';
-import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
+import { Chain, mapPool, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { getAddress } from 'viem';
 import { touchEvmProcessed, touchEvmTick } from './activity.js';
 
@@ -63,17 +63,16 @@ export async function startEvmMonitor(): Promise<() => void> {
         return;
       }
 
-      // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
-      await Promise.all(
-        pollable.map(async (trader) => {
-          if (stopped) return;
-          try {
-            await pollTrader(trader.chain, trader.id, trader.address, cursors);
-          } catch (error) {
-            log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
-          }
-        }),
-      );
+      // Bound concurrency so parallel Alchemy polls cannot open more DB queries
+      // than the process Prisma pool (default 3).
+      await mapPool(pollable, 2, async (trader) => {
+        if (stopped) return;
+        try {
+          await pollTrader(trader.chain, trader.id, trader.address, cursors);
+        } catch (error) {
+          log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
+        }
+      });
       touchEvmTick();
     } finally {
       ticking = false;

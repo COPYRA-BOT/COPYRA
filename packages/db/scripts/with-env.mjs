@@ -6,6 +6,10 @@
  * single root `.env` so the API, worker and migrations cannot drift onto
  * different databases. In production no `.env` exists and the host's injected
  * environment is used unchanged.
+ *
+ * When DATABASE_URL points at PgBouncer, DIRECT_URL must be the direct host
+ * for `migrate` / `db push`. If DIRECT_URL is unset we derive a best-effort
+ * direct URL from DATABASE_URL (strip pgbouncer params).
  */
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -36,6 +40,26 @@ if (envFile) {
     process.env[key] = rawValue.trim().replace(/^["']|["']$/g, '');
   }
 }
+
+function ensureDirectUrl() {
+  if (process.env.DIRECT_URL?.trim()) return;
+  const raw = process.env.DATABASE_URL?.trim();
+  if (!raw) return;
+  try {
+    const url = new URL(raw);
+    url.searchParams.delete('pgbouncer');
+    url.searchParams.delete('statement_cache_size');
+    url.searchParams.delete('connection_limit');
+    url.searchParams.delete('pool_timeout');
+    // DO pooled hostnames often contain "pool" / "pooler" — operators should
+    // set DIRECT_URL explicitly. Fallback keeps local/dev migrate working.
+    process.env.DIRECT_URL = url.toString();
+  } catch {
+    process.env.DIRECT_URL = raw;
+  }
+}
+
+ensureDirectUrl();
 
 const child = spawn('npx', ['prisma', ...process.argv.slice(2)], {
   stdio: 'inherit',

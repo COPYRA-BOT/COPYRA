@@ -79,13 +79,14 @@ services:
       - key: TRADING_ENABLED
         value: "true"
       - key: SOL_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: EVM_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: MULTI_USER_CUSTODY
         value: "true"
       # Encrypted App-Level secrets scoped to ALL components — never commit:
-      # DATABASE_URL, REDIS_URL, SESSION_SECRET,
+      # DATABASE_URL (prefer PgBouncer pooled URL), DIRECT_URL (direct PG for migrate),
+      # REDIS_URL, SESSION_SECRET,
       # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,
       # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
       # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
@@ -105,6 +106,9 @@ services:
       # WEBAUTHN_RP_NAME          — COPYRA
       # REFERRAL_MIN_CLAIM_USD    — optional, default 1 (claims stay 0 until fees exist)
       #
-      # Prisma pool (optional overrides; defaults are safe for API+worker on basic PG):
-      # PRISMA_CONNECTION_LIMIT=8
-      # PRISMA_POOL_TIMEOUT=20
+      # Prisma pool — see docs/DATABASE_CONNECTIONS.md
+      # Default connection_limit=3 (was 8 → FATAL too many clients on DO basic).
+      # With PgBouncer: DATABASE_URL=pooled, DIRECT_URL=direct, optional PGBOUNCER=true
+      # PRISMA_CONNECTION_LIMIT=3
+      # PRISMA_POOL_TIMEOUT=15
+      # POSTGRES_MAX_CONNECTIONS=22

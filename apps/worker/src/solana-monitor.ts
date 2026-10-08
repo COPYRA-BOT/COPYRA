@@ -158,7 +158,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
       void (async () => {
         let catchUpOk = 0;
         let catchUpErr = 0;
-        const batchSize = 4;
+        // batchSize 2 — each catch-up issues several Prisma queries; stay under pool=3.
+        const batchSize = 2;
         for (let i = 0; i < catchUpTraders.length; i += batchSize) {
           const batch = catchUpTraders.slice(i, i + batchSize);
           await Promise.all(

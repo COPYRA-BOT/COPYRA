@@ -37,7 +37,8 @@
     "ci": "npm run audit:all && npm run format:check && npm run lint && npm run typecheck && npm run test",
     "deploy:verify": "node scripts/deploy-verify.mjs",
     "deploy:links": "node scripts/print-deploy-links.mjs",
-    "verify:live": "node scripts/verify-live.mjs"
+    "verify:live": "node scripts/verify-live.mjs",
+    "test:db-pool": "npm run build -w @copyra/db && node scripts/db-pool-budget.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

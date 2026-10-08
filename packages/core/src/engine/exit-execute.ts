@@ -1,5 +1,6 @@
 import {
   Chain,
+  mapPool,
   PositionStatus,
   prisma,
   TradeReason,
@@ -39,21 +40,8 @@ const log = componentLogger('exit-execute');
 
 const LIVE = [PositionStatus.OPEN, PositionStatus.PARTIALLY_CLOSED] as const;
 
-/** Bound concurrent position ticks so Prisma pool is not exhausted (was limit=2). */
-const EXIT_TICK_CONCURRENCY = 3;
-
-async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
-  if (items.length === 0) return;
-  let i = 0;
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (i < items.length) {
-      const idx = i;
-      i += 1;
-      await fn(items[idx]!);
-    }
-  });
-  await Promise.all(workers);
-}
+/** Stay under per-process Prisma pool (default 3) — leave a slot for heartbeat/API. */
+const EXIT_TICK_CONCURRENCY = 2;
 
 function isTransientExitTickError(error: unknown): boolean {
   if (error instanceof LockHeldError) return true;

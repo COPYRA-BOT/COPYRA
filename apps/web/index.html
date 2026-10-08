@@ -504,7 +504,7 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
  const nxLabel=(showAmt || Number(nx)===0) ? f(e,nx) : '*';
  const wrk=s.worker;
  const wrkNote=!wallet[e]
-  ?`<div class="ban live" style="margin-bottom:12px">Connect and sign in. Trading/Savings show <b>your custody wallet</b> (Deposit funds there. not the shared worker key).</div>`
+  ?`<div class="ban live" style="margin-bottom:12px">Connect your wallet and start copy trading smart wallets.</div>`
   :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody. Amounts appear automatically from cache / RPC.</div>`
   :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance. Refreshing in the background.</div>`
   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
