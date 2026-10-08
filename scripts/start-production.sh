@@ -4,18 +4,26 @@
 # On basic-xxs, starting the worker before the API delays listen() and makes
 # App Platform health checks fail → "Waiting for service" / Degraded during
 # every deploy. Bring the API up first, then start the worker.
+#
+# The copy-trade worker MUST run 24/7. If it exits (watchdog stall, OOM, crash),
+# respawn it forever — never leave the platform without a live monitor.
 set -e
 
 PORT="${PORT:-${API_PORT:-8080}}"
 
 npm run start -w @copyra/api &
 API_PID=$!
+WORKER_PID=""
+WORKER_SUPERVISOR_PID=""
 
 cleanup() {
-  kill "$API_PID" 2>/dev/null || true
-  if [ -n "${WORKER_PID:-}" ]; then
-    kill "$WORKER_PID" 2>/dev/null || true
+  if [ -n "${WORKER_SUPERVISOR_PID:-}" ]; then
+    kill "$WORKER_SUPERVISOR_PID" 2>/dev/null || true
   fi
+  if [ -f /tmp/copyra-worker.pid ]; then
+    kill "$(cat /tmp/copyra-worker.pid)" 2>/dev/null || true
+  fi
+  kill "$API_PID" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -34,8 +42,21 @@ while [ "$i" -lt 90 ]; do
 done
 
 if [ "${RUN_WORKER:-true}" = "true" ]; then
-  npm run start -w @copyra/worker &
-  WORKER_PID=$!
+  (
+    # Supervisor loop — copy trading never stays down after a crash/stall exit.
+    while true; do
+      echo "COPYRA worker starting (24/7 supervisor)..."
+      npm run start -w @copyra/worker &
+      WORKER_PID=$!
+      # Publish PID to parent via a file so cleanup can signal the child.
+      echo "$WORKER_PID" > /tmp/copyra-worker.pid
+      wait "$WORKER_PID" || true
+      code=$?
+      echo "COPYRA worker exited code=${code}; respawning in 3s..." >&2
+      sleep 3
+    done
+  ) &
+  WORKER_SUPERVISOR_PID=$!
 fi
 
 wait "$API_PID"

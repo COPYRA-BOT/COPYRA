@@ -18,6 +18,7 @@ import {
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { getAddress } from 'viem';
+import { touchEvmProcessed, touchEvmTick } from './activity.js';
 
 const log = componentLogger('evm-monitor');
 
@@ -72,6 +73,7 @@ export async function startEvmMonitor(): Promise<() => void> {
           }
         }),
       );
+      touchEvmTick();
     } finally {
       ticking = false;
     }
@@ -168,6 +170,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
+  touchEvmProcessed();
 
   const receipt = await fetchEvmReceipt(chain, hash);
   if (!receipt) {

@@ -19,6 +19,7 @@ import {
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
+import { touchSolanaProcessed, touchSolanaSync } from './activity.js';
 
 const log = componentLogger('solana-monitor');
 
@@ -180,8 +181,10 @@ export async function startSolanaMonitor(): Promise<() => void> {
         solanaMonitorStats.catchUpOk = catchUpOk;
         solanaMonitorStats.catchUpErr = catchUpErr;
         solanaMonitorStats.catchUpAt = new Date().toISOString();
+        touchSolanaSync();
         log.info({ catchUpOk, catchUpErr, maxAgeMs }, 'Solana catch-up tick finished');
       })();
+      touchSolanaSync();
     } finally {
       syncing = false;
     }
@@ -297,6 +300,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
+  touchSolanaProcessed();
 
   const tx = await fetchParsedTransaction(signature);
   if (!tx) {
