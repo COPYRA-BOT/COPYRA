@@ -4,6 +4,10 @@ import { componentLogger } from '../obs/logger.js';
 
 const log = componentLogger('redis');
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 let client: Redis | undefined;
 
 export function redis(): Redis {
@@ -79,15 +83,34 @@ export async function withLock<T>(
 /**
  * Returns true the first time a key is seen within the window. Used as the hot
  * path duplicate-signal guard before any RPC work is done.
+ *
+ * On Redis timeout/error: return true so the caller falls through to Postgres
+ * unique constraints. Never hang the Solana/EVM monitor on a stuck Redis socket.
  */
 export async function markSeenOnce(key: string, ttlSeconds: number): Promise<boolean> {
-  const result = await redis().set(`seen:${key}`, '1', 'EX', ttlSeconds, 'NX');
-  return result === 'OK';
+  try {
+    const result = await Promise.race([
+      redis().set(`seen:${key}`, '1', 'EX', ttlSeconds, 'NX'),
+      sleep(2_000).then(() => '__timeout__' as const),
+    ]);
+    if (result === '__timeout__') {
+      log.warn({ key }, 'markSeenOnce timed out — continuing with DB dedup');
+      return true;
+    }
+    return result === 'OK';
+  } catch (error) {
+    log.warn({ key, err: error }, 'markSeenOnce failed — continuing with DB dedup');
+    return true;
+  }
 }
 
 /** Clears a seen mark so a deferred signature can be retried (e.g. tx-not-found). */
 export async function clearSeen(key: string): Promise<void> {
-  await redis().del(`seen:${key}`);
+  try {
+    await Promise.race([redis().del(`seen:${key}`), sleep(2_000)]);
+  } catch (error) {
+    log.warn({ key, err: error }, 'clearSeen failed');
+  }
 }
 
 const AUTH_NONCE_TTL_SEC = 600;
