@@ -189,15 +189,36 @@ enum DriftResolution {
 }
 
 // ============================================================================
-// Auth — wallet-based (SIWE / Sign-In-With-Solana). No passwords, no keys.
+// Auth — wallet SIWE/SIWS, email+password, Google OIDC. Keys never leave the server.
 // ============================================================================
+
+enum ReferralLedgerKind {
+  ACCRUAL
+  CLAIM
+  ADJUSTMENT
+}
 
 model User {
   id         String   @id @default(cuid())
-  /// Lowercased EVM address, or base58 Solana pubkey.
+  /// Login wallet when present. Email/Google-only accounts use sentinel `acct_<id>` until a wallet is linked.
   address    String   @unique
   chain      Chain
   label      String?
+  email           String?   @unique
+  emailVerifiedAt DateTime?
+  passwordHash    String?
+  /// Google OIDC subject — identity key (not email alone).
+  googleSub       String?   @unique
+  googleEmail     String?
+  googleName      String?
+  /// Unguessable referral code for PUBLIC_URL/?ref=CODE
+  referralCode    String    @unique
+  referredById    String?
+  referredBy      User?     @relation("UserReferrals", fields: [referredById], references: [id])
+  referrals       User[]    @relation("UserReferrals")
+  totpSecretEnc   String?
+  totpEnabled     Boolean   @default(false)
+  totpEnabledAt   DateTime?
   isAdmin    Boolean  @default(false)
   /// When set, deposits and withdrawals are blocked for this user.
   custodyPausedAt DateTime?
@@ -206,6 +227,12 @@ model User {
 
   sessions        Session[]
   custodyWallets  UserCustodyWallet[]
+  walletLinks     UserWalletLink[]
+  passkeys        WebAuthnCredential[]
+  recoveryCodes   RecoveryCode[]
+  referralLedger  ReferralLedgerEntry[] @relation("ReferralBeneficiary")
+  referralSources ReferralLedgerEntry[] @relation("ReferralSource")
+  auditLogs       AccountAuditLog[]
   transfers       Transfer[]
   custodyDeposits CustodyDeposit[]
   traders         Trader[]
@@ -214,7 +241,87 @@ model User {
   trades          Trade[]
   notifications   NotificationLog[]
 
+  @@index([referredById])
   @@map("users")
+}
+
+/// Linked login wallets (Solana / EVM). Distinct from custody deposit addresses.
+model UserWalletLink {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  family    CustodyFamily
+  address   String
+  linkedAt  DateTime      @default(now())
+
+  @@unique([userId, family])
+  @@unique([family, address])
+  @@index([userId])
+  @@map("user_wallet_links")
+}
+
+model WebAuthnCredential {
+  id         String   @id
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicKey  String
+  counter    BigInt   @default(0)
+  deviceType String?
+  backedUp   Boolean  @default(false)
+  transports String?
+  name       String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("webauthn_credentials")
+}
+
+model RecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("recovery_codes")
+}
+
+/// Double-entry referral ledger. Accruals require real platform-fee collection (see docs/ACCOUNTS_FEES_STOP.md).
+model ReferralLedgerEntry {
+  id                String             @id @default(cuid())
+  beneficiaryUserId String
+  beneficiary       User               @relation("ReferralBeneficiary", fields: [beneficiaryUserId], references: [id], onDelete: Cascade)
+  sourceUserId      String?
+  source            User?              @relation("ReferralSource", fields: [sourceUserId], references: [id], onDelete: SetNull)
+  tradeId           String?
+  txHash            String?
+  chain             Chain
+  amountRaw         String
+  assetSymbol       String
+  kind              ReferralLedgerKind
+  idempotencyKey    String             @unique
+  createdAt         DateTime           @default(now())
+
+  @@index([beneficiaryUserId, kind])
+  @@index([sourceUserId])
+  @@map("referral_ledger_entries")
+}
+
+model AccountAuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  detail    Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("account_audit_logs")
 }
 
 /// Server-derived deposit/trading wallet. Private key material is AES-GCM encrypted at rest.

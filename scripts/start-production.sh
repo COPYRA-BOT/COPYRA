@@ -11,6 +11,17 @@ set -e
 
 PORT="${PORT:-${API_PORT:-8080}}"
 
+# Apply additive Prisma schema (accounts / referrals / 2FA) before listen.
+# Prefer migrate deploy; if this DB was previously synced with db push and has no
+# migration history, fall back to db push so App Platform does not stay Degraded.
+if ! npm run db:migrate; then
+  echo "COPYRA db:migrate failed — falling back to db push (additive account schema)" >&2
+  if ! npm run db:push; then
+    echo "COPYRA schema sync failed — refusing to start" >&2
+    exit 1
+  fi
+fi
+
 npm run start -w @copyra/api &
 API_PID=$!
 WORKER_PID=""

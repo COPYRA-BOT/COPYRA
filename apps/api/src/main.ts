@@ -10,6 +10,7 @@ import websocket from '@fastify/websocket';
 import Fastify from 'fastify';
 import { registerRoutes } from './routes.js';
 import { registerFundsRoutes } from './funds.js';
+import { registerAccountRoutes } from './account/routes.js';
 
 initSentry('copyra-api');
 
@@ -53,6 +54,7 @@ try {
 }
 
 await registerRoutes(app);
+await registerAccountRoutes(app);
 await registerFundsRoutes(app);
 
 function browserConfigJs(): string {
@@ -61,6 +63,8 @@ function browserConfigJs(): string {
     `window.__COPYRA_CONFIG__=${JSON.stringify({
       reownProjectId: publicReownProjectId(),
       site: 'https://copyra.fun',
+      googleClientId: env.GOOGLE_CLIENT_ID?.trim() || null,
+      googleSignInEnabled: Boolean(env.GOOGLE_CLIENT_ID?.trim()),
     })};`
   );
 }

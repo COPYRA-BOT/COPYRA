@@ -1,11 +1,14 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { Chain, prisma } from '@copyra/db';
 import { consumeAuthNonce, env, isOwnerWallet, provisionUserCustody, storeAuthNonce } from '@copyra/core';
+import { CustodyFamily } from '@copyra/db';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import nacl from 'tweetnacl';
 import { PublicKey } from '@solana/web3.js';
 import bs58 from 'bs58';
 import { verifyMessage } from 'viem';
+import { randomReferralCode } from './account/crypto.js';
+import { resolveReferrerId } from './account/users.js';
 
 /** Legacy single cookie — still read for migration, never written for new logins. */
 const LEGACY_SESSION_COOKIE = 'copyra_session';
@@ -176,12 +179,35 @@ export async function createSession(
   const mode = authModeFromChain(chain);
   const otherMode: AuthMode = mode === 'sol' ? 'evm' : 'sol';
   const admin = isOwnerWallet(address, chain);
+  const referredById = await resolveReferrerId(meta.cookies ?? {});
+  const existing = await prisma.user.findUnique({ where: { address } });
+  // Never attach self-referral; never overwrite an existing attribution.
+  const safeReferrer =
+    referredById && (!existing || existing.id !== referredById) ? referredById : null;
   const user = await prisma.user.upsert({
     where: { address },
-    create: { address, chain, isAdmin: admin },
+    create: {
+      address,
+      chain,
+      isAdmin: admin,
+      referralCode: randomReferralCode(),
+      referredById: safeReferrer,
+    },
     update: { lastSeenAt: new Date(), chain, ...(admin ? { isAdmin: true } : {}) },
   });
   await provisionUserCustody(user.id);
+  const family = chain === Chain.SOLANA ? CustodyFamily.SOLANA : CustodyFamily.EVM;
+  // Refuse silently if this login wallet is already linked to a different account
+  // (unique on family+address). Primary address users already own the row.
+  try {
+    await prisma.userWalletLink.upsert({
+      where: { userId_family: { userId: user.id, family } },
+      create: { userId: user.id, family, address },
+      update: { address, linkedAt: new Date() },
+    });
+  } catch {
+    /* unique conflict — keep existing link ownership */
+  }
   const token = randomBytes(32).toString('hex');
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000);
   await prisma.session.create({
@@ -195,6 +221,14 @@ export async function createSession(
   });
   const secure = cookieSecure(meta.secureCookie);
   reply.setCookie(MODE_COOKIES[mode], token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure,
+    path: '/',
+    expires: expiresAt,
+  });
+  // Unified account cookie for Account / Referrals / 2FA pages.
+  reply.setCookie('copyra_session_acct', token, {
     httpOnly: true,
     sameSite: 'lax',
     secure,

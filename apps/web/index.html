@@ -863,10 +863,27 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
  };
  if(e==='evm')$('#wc').onchange=rebind;
  const chainKeyOf=(chainName)=>EVM_CH_KEYS.find(k=>EVM_CH_TO_CHAIN[k]===chainName)||defaultCh;
- const withdrawOnce=async(chain,amount,fromBucket)=>{
+ const withdrawOnce=async(chain,amount,fromBucket,stepUpToken)=>{
   try{
-   return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain},{mode:e});
+   return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain,stepUpToken},{mode:e});
   }catch(err){
+   if(err.code==='NEED_STEP_UP'||/authenticator code before withdrawing|NEED_STEP_UP/i.test(err.message||'')){
+    const step=await new Promise((resolve)=>{
+     md(`<h3>Confirm withdrawal</h3><p class="mu">${err.need2fa?'Enter your authenticator code.':'Enter your account password.'}</p><label>${err.need2fa?'6-digit code':'Password'}</label><input id="su" ${err.need2fa?'maxlength="6" inputmode="numeric"':'type="password"'}><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="suok">Confirm</button><button class="btn" id="sucancel">Cancel</button></div>`);
+     $('#sucancel').onclick=()=>resolve(null);
+     $('#suok').onclick=async()=>{
+      try{
+       const payload=err.need2fa?{code:$('#su').value.trim()}:{password:$('#su').value};
+       const r=await fetch((BASE||'')+'/api/account/step-up',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});
+       const j=await r.json().catch(()=>({}));
+       if(!r.ok)throw new Error(j.error||'Step-up failed');
+       resolve(j.stepUpToken);
+      }catch(ex){$('#ae').textContent=ex.message||'Failed'}
+     };
+    });
+    if(!step)throw new Error('Withdrawal cancelled.');
+    return await api('POST','/api/funds/withdraw',{mode:e,amount,fromBucket,chain,stepUpToken:step},{mode:e});
+   }
    if(e!=='evm'||!(err.code==='CUSTODY_NEEDS_GAS'||/CUSTODY_NEEDS_GAS|needs a tiny|already has gas/i.test(err.message||'')))throw err;
    // Prefer a sibling EVM chain that already has custody gas + balance.
    const ready=(err.gasReadyChains||[]).filter(Boolean);
@@ -1012,6 +1029,8 @@ async function finishConnect(e,N,connected){
   const addr=await sessionSign(e,connected);
   wallet[e]=addr;
   try{localStorage.setItem('cpy_wallet_'+e,addr);localStorage.setItem('cpy_wallet_'+e+'_sticky','1')}catch{}
+  // Sync Account layer (Referrals / 2FA) from the same cookie session.
+  try{await window.CPY?.syncSession?.()}catch{}
   cl();toast(N+' account signed in. balances load for this wallet only');
   await refresh();
   draw();
@@ -1232,49 +1251,218 @@ async state(b,t,m){const d=db(),u=who(d,t);if(m=='PUT'){u.state=b.state;sv(d);re
 async referral(b,t){const d=db(),u=who(d,t),r=rl(u,d),tot=r.reduce((a,x)=>a+x.earn,0);return{code:u.ref.code,link:location.href.split(/[?#]/)[0]+'?ref='+u.ref.code,refs:r,claimable:Math.max(0,+(tot-u.ref.claimed).toFixed(2)),claimed:u.ref.claimed}},
 async'referral/claim'(b,t){const d=db(),u=who(d,t),r=rl(u,d),a=+Math.max(0,r.reduce((s,x)=>s+x.earn,0)-u.ref.claimed).toFixed(2);if(a<=0)throw E('Nothing to claim yet');u.ref.claimed=+(u.ref.claimed+a).toFixed(2);sv(d);return{amount:a}},
 async'referral/sim'(b,t){const d=db(),u=who(d,t),open=u.ref.sim.filter(x=>Date.now()-x.joined<30*864e5);if(!open.length||Math.random()<.35)u.ref.sim.push({n:['a***@gmail.com','k***@proton.me','0x9f3A…c21e','7xKX…sAsU'][Math.random()*4|0],joined:Date.now()-(Math.random()*40|0)*864e5,vol:0,fee:0,earn:0});const x=u.ref.sim.filter(x=>Date.now()-x.joined<30*864e5);if(x.length){const f=x[Math.random()*x.length|0],v=200+Math.random()*3000;f.vol+=v;f.fee+=v*.01;f.earn+=v*.01*.1}sv(d);return{ok:1}}};
-async function call(p,b={},m='POST'){if(BASE){const r=await fetch(BASE+'/api/'+p,{method:m,headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:m=='GET'?undefined:JSON.stringify({...b,deviceId:DID,ua:dn()})}),j=await r.json().catch(()=>({}));if(!r.ok)throw E(j.error||'Request failed',r.status);return j}return L[p](b,tok,m)}
-// ---------- state sync (each account keeps its own data) ----------
-const snap=()=>{const o={};for(const e of['sol','evm']){const s=S[e];o[e]={cash:s.cash,sav:s.sav,bot:s.bot,set:s.set,tr:s.tr,id:s.id,hist:s.hist,seen:[...s.seen],wa:s.wa,pos:s.pos.map(p=>({...p,tr:p.tr.id}))}}return o};
-const load=o=>{for(const e of['sol','evm']){const s=S[e],x=o[e];if(!x)continue;Object.assign(s,{cash:x.cash,sav:x.sav,bot:x.bot,set:x.set,tr:x.tr,id:x.id,hist:x.hist,seen:new Set(x.seen),wa:x.wa});s.pos=x.pos.map(p=>({...p,tr:s.tr.find(t=>t.id==p.tr)||{n:'Removed trader',id:0,pnl:0,c:0,on:0}}))}};
+/** Map legacy CPY paths → real /api/account/* (cookie sessions, credentials include). */
+const ACCT_PATH={
+  register:'account/register',login:'account/login','verify-email':'account/verify-email',
+  me:'account/me',logout:'account/logout','2fa/setup':'account/2fa/setup','2fa/enable':'account/2fa/enable',
+  '2fa/disable':'account/2fa/disable',devices:'account/devices','devices/revoke':'account/devices/revoke',
+  referral:'account/referral','referral/claim':'account/referral/claim',google:'account/google',
+  'google/config':'account/google/config',ref:'account/ref','wallet/link':'account/wallet/link',
+  'link/wallet':'account/wallet/link','link/email':'account/link/email',
+  'password-reset/request':'account/password-reset/request','password-reset/confirm':'account/password-reset/confirm',
+  'passkeys/options':'account/passkeys/options','passkeys/register':'account/passkeys/register',
+  'passkeys/login/options':'account/passkeys/login/options','passkey/login':'account/passkeys/login',
+  'step-up':'account/step-up'
+};
+async function call(p,b={},m='POST'){
+  const path=ACCT_PATH[p];
+  // Prefer real same-origin account API (empty COPYRA_API means same origin in production).
+  if(path){
+    const r=await fetch((BASE||'')+'/api/'+path,{method:m,credentials:'include',headers:{'content-type':'application/json','x-copyra-mode':M||'sol'},body:m=='GET'?undefined:JSON.stringify({...b,ref:b.ref??pref()})});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok)throw E(j.error||'Request failed',r.status);
+    return j;
+  }
+  if(BASE){const r=await fetch(BASE+'/api/'+p,{method:m,credentials:'include',headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:m=='GET'?undefined:JSON.stringify({...b,deviceId:DID,ua:dn()})}),j=await r.json().catch(()=>({}));if(!r.ok)throw E(j.error||'Request failed',r.status);return j}
+  return L[p](b,tok,m);
+}
 async function sync(){/* live balances come from /api/snapshot, not account storage */}
 setInterval(sync,3000);
 // ---------- session ----------
 const pref=()=>new URLSearchParams(location.search).get('ref')||st.get('cpy_ref',null),er=m=>{const e=$('#ae');e&&(e.textContent=m)};
-async function onAuth(r,fresh,quiet){tok=r.token;st.set('cpy_tok',tok);user=r.user;st.set('cpy_seen',1);for(const k of['sol','evm'])if(user.wallets&&user.wallets[k])wallet[k]=user.wallets[k];
- cl();if(!quiet)toast(r.newDevice?'New device recognized and added to your account':r.created?'Account created':'Signed in');draw();navUp();sync()}
-async function out(expired){try{await sync();await call('logout')}catch{}tok=null;user=null;st.del('cpy_tok');if(expired)toast('Session ended. Please sign in again.');setTimeout(()=>location.reload(),expired?900:100)}
+async function onAuth(r,fresh,quiet){
+  tok=r.token||'cookie';st.set('cpy_tok',tok);user=r.user;st.set('cpy_seen',1);
+  for(const k of['sol','evm'])if(user.wallets&&user.wallets[k])wallet[k]=user.wallets[k];
+  cl();
+  if(!quiet)toast(r.needVerify?'Check your email for the verification code':r.created?'Account created':'Signed in');
+  draw();navUp();sync();
+}
+async function out(expired){try{await call('logout')}catch{}tok=null;user=null;st.del('cpy_tok');if(expired)toast('Session ended. Please sign in again.');setTimeout(()=>location.reload(),expired?900:100)}
 const fail=e=>{er(e.message||'Something went wrong')};
-// ---------- wallets ----------
-const prov=k=>k=='sol'?(window.phantom&&window.phantom.solana||window.solana):window.ethereum;
-async function ext(k){try{const p=prov(k);if(!p)return null;return k=='sol'?(await p.connect()).publicKey.toString():(await p.request({method:'eth_requestAccounts'}))[0]}catch{return null}}
-async function proof(k,a,signed){const n=await call('wallet/nonce',{kind:k,address:a});if(!n.message||!signed)return null;const p=prov(k);if(k=='sol'){const r=await p.signMessage(te.encode(n.message),'utf8');return b64(r.signature)}return await p.request({method:'personal_sign',params:[n.message,a]})}
-async function withWallet(k,done){const N=k=='sol'?'Solana':'EVM',a=await ext(k);if(a)return done(a,true);
- md(`<h3>${N} wallet address</h3><p class="mu">No ${N} wallet extension detected. Paste your address (the type is verified).${BASE?' Note: the live server requires a signature, so use a wallet extension.':''}</p><input id="wi" autocapitalize="off" spellcheck="false"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Verify &amp; continue</button><button class="btn" onclick="cl()">Cancel</button></div>`);
- $('#ok').onclick=()=>{const v=$('#wi').value.trim(),x=kind(v);if(!x)return er('Not a valid Solana or EVM address.');if(x!=k)return er(`That is ${x=='sol'?'a Solana':'an EVM'} address. Choose the ${x=='sol'?'Solana':'EVM'} option instead.`);done(v,false)}}
-const wLogin=k=>withWallet(k,async(a,s)=>{try{const sig=await proof(k,a,s),r=await call('wallet/login',{kind:k,address:a,signature:sig,ref:pref()});await onAuth(r,!!r.created)}catch(e){auth('in');setTimeout(()=>fail(e),0)}});
-const wLink=k=>withWallet(k,async(a,s)=>{try{const sig=await proof(k,a,s),r=await call('link/wallet',{kind:k,address:a,signature:sig});user=r.user;wallet[k]=a;toast('Wallet linked to your account');draw();acct()}catch(e){acct();setTimeout(()=>fail(e),0)}});
+// ---------- wallets (Reown Connect modal — no address typing) ----------
+const wLink=k=>{(async()=>{
+  try{
+   cl();
+   const W=await waitWallet();
+   const connected=await W.connect(k==='sol'?'sol':'evm');
+   if(!connected?.address)throw new Error('Connect cancelled.');
+   const a=connected.address;
+   const chainId=k==='evm'?(connected.chainId||W.getChainId?.()||1):undefined;
+   const chain=k==='sol'?'SOLANA':chainFromId(chainId);
+   const issued=await api('POST','/api/auth/nonce',{address:a,chain,chainId:k==='evm'?chainId:undefined,clientOrigin:location.origin,clientHost:location.host},{mode:k});
+   const signature=await W.signMessage(issued.message,issued.address,k);
+   const r=await call('wallet/link',{kind:k,address:issued.address,signature,message:issued.message,chainId});
+   user=r.user;wallet[k]=issued.address;toast('Wallet linked to your account');draw();acct();
+  }catch(e){acct();setTimeout(()=>fail(e),0)}
+ })()};
 // ---------- UI ----------
 function auth(tab='up'){md(`<div class="seg" style="margin-top:0"><button class="${tab=='up'?'on':''}" onclick="CPY.auth('up')">Create account</button><button class="${tab=='in'?'on':''}" onclick="CPY.auth('in')">Sign in</button></div>
-<label>Email</label><input id="ae1" type="email" autocomplete="email" autocapitalize="off"><label>Password${tab=='up'?' (8+ characters)':''}</label><input id="ap" type="password" autocomplete="${tab=='up'?'new':'current'}-password"><div id="a2" style="display:none"><label>2FA code (6 digits)</label><input id="ac" maxlength="6" inputmode="numeric" autocomplete="one-time-code"></div><p class="rd" id="ae"></p>
+<label>Email</label><input id="ae1" type="email" autocomplete="email" autocapitalize="off"><label>Password${tab=='up'?' (8+ characters)':''}</label><input id="ap" type="password" autocomplete="${tab=='up'?'new':'current'}-password"><div id="a2" style="display:none"><label>Verification / 2FA code</label><input id="ac" maxlength="6" inputmode="numeric" autocomplete="one-time-code"></div><p class="rd" id="ae"></p>
 <button class="btn pri" id="ago" style="width:100%">${tab=='up'?'Create account':'Sign in'}</button><div class="mu" style="text-align:center;margin:14px 0 8px">or continue with</div>
+<button class="btn" id="agoogle" style="width:100%;margin-bottom:8px">${tab=='up'?'Continue with Google':'Sign in with Google'}</button>
+<div id="gbtn" style="display:flex;justify-content:center;width:100%;margin:0 0 10px"></div>
 <div class="row"><button class="btn" id="aws">Solana wallet</button><button class="btn" id="awe">EVM wallet</button><button class="btn" id="apk">Passkey</button></div>
 <p class="mu" style="font-size:13px">Email accounts are protected by 2FA. Wallet accounts sign in with a wallet signature, with no 2FA needed. The same wallet always opens the same account, on any device.${LS?'':' (This browser cannot persist the account layer; sign in lasts this session only.)'}</p><button class="btn" style="width:100%" onclick="cl();CPY.skip()">Continue without an account</button>`);
- $('#aws').onclick=()=>wLogin('sol');$('#awe').onclick=()=>wLogin('evm');$('#apk').onclick=pkLogin;
- $('#ago').onclick=async()=>{const b={email:$('#ae1').value,password:$('#ap').value,code:$('#ac').value.trim(),ref:pref()};try{const r=await call(tab=='up'?'register':'login',b);if(r.need2fa){$('#a2').style.display='block';$('#ac').focus();return er('Enter the 6-digit code from your authenticator app.')}await onAuth(r,tab=='up')}catch(e){fail(e)}}}
-async function pkLogin(){const ids=st.get('cpy_pk',[]);if(!ids.length)return er('No passkey saved on this device yet. Sign in once, then add a passkey in Devices & passkeys.');
- let id=null;try{const real=ids.filter(x=>!x.sim);if(!navigator.credentials||!real.length)throw 0;const c=await navigator.credentials.get({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),allowCredentials:real.map(x=>({type:'public-key',id:Uint8Array.from(atob(x.id),c=>c.charCodeAt(0))})),userVerification:'preferred',timeout:60000}});id=b64(c.rawId)}catch{const s=ids.find(x=>x.sim);if(s&&!BASE){id=s.id;toast('Using a local passkey fallback. WebAuthn is unavailable in this browser.')}}
- if(!id)return er('Passkey was cancelled or is unavailable.');try{await onAuth(await call('passkey/login',{id}),false)}catch(e){fail(e)}}
-async function addPk(){let id,sim=0;try{if(!navigator.credentials||!navigator.credentials.create)throw 0;const c=await navigator.credentials.create({publicKey:{challenge:crypto.getRandomValues(new Uint8Array(32)),rp:{name:'COPYRA'},user:{id:te.encode(user.id),name:user.email||user.id,displayName:user.email||'COPYRA user'},pubKeyCredParams:[{type:'public-key',alg:-7},{type:'public-key',alg:-257}],authenticatorSelection:{residentKey:'preferred',userVerification:'preferred'},timeout:60000}});id=b64(c.rawId)}catch{if(BASE)return toast('Passkey cancelled or not supported on this device');id='sim_'+rnd();sim=1}
- try{await call('passkeys/add',{id,name:dn(),sim});st.set('cpy_pk',[...st.get('cpy_pk',[]),{id,sim}]);toast(sim?'Local passkey saved. WebAuthn is unavailable in this browser.':'Passkey added');dev()}catch(e){toast(e.message)}}
+ $('#aws').onclick=()=>{cl();window.switchMode('sol');beginConnectFromClick()};
+ $('#awe').onclick=()=>{cl();window.switchMode('evm');beginConnectFromClick()};
+ $('#apk').onclick=pkLogin;
+ $('#agoogle').onclick=()=>googleSignIn(tab);
+ // Auto-mount Google Identity button when Create account / Sign in opens (real OIDC ID token).
+ void mountGoogleButton(tab);
+ $('#ago').onclick=async()=>{
+  const b={email:$('#ae1').value,password:$('#ap').value,code:$('#ac').value.trim(),ref:pref()};
+  try{
+   if(tab=='up'&&$('#a2').style.display==='block'&&b.code){
+    const r=await call('verify-email',{email:b.email,code:b.code});
+    await onAuth(r,true);return;
+   }
+   const r=await call(tab=='up'?'register':'login',b);
+   if(r.needVerify){$('#a2').style.display='block';$('#ac').focus();return er(r.devCode?('Dev code: '+r.devCode+' — enter it to verify.'):'Enter the 6-digit code we emailed you.')}
+   if(r.need2fa){$('#a2').style.display='block';$('#ac').focus();return er('Enter the 6-digit code from your authenticator app.')}
+   await onAuth(r,tab=='up');
+  }catch(e){fail(e)}
+ }
+}
+async function loadGis(){
+  if(window.google?.accounts?.id)return;
+  await new Promise((resolve,reject)=>{
+    if(document.querySelector('script[data-copyra-gis]')){
+      const t=setInterval(()=>{if(window.google?.accounts?.id){clearInterval(t);resolve()}},50);
+      setTimeout(()=>{clearInterval(t);reject(new Error('Google script blocked'))},8000);
+      return;
+    }
+    const s=document.createElement('script');
+    s.src='https://accounts.google.com/gsi/client';
+    s.async=true;s.dataset.copyraGis='1';
+    s.onload=()=>resolve();
+    s.onerror=()=>reject(new Error('Google script blocked'));
+    document.head.appendChild(s);
+  });
+}
+async function mountGoogleButton(tab='in'){
+  try{
+   const cfg=await call('google/config',{},'GET');
+   if(!cfg.enabled||!cfg.clientId){
+     const b=$('#agoogle');if(b)b.title='Set GOOGLE_CLIENT_ID on the server to enable Google sign-in';
+     return;
+   }
+   await loadGis();
+   let host=$('#gbtn');
+   if(!host){
+     host=document.createElement('div');
+     host.id='gbtn';
+     host.style.cssText='display:flex;justify-content:center;width:100%;margin:0 0 10px';
+     const btn=$('#agoogle');if(btn)btn.insertAdjacentElement('afterend',host);
+   }
+   host.innerHTML='';
+   google.accounts.id.initialize({
+    client_id:cfg.clientId,
+    auto_select:false,
+    cancel_on_tap_outside:true,
+    callback:async(resp)=>{
+     try{const r=await call('google',{idToken:resp.credential,ref:pref()});await onAuth(r,!!r.created)}catch(e){fail(e)}
+    }
+   });
+   google.accounts.id.renderButton(host,{
+    theme:'outline',
+    size:'large',
+    shape:'rectangular',
+    text:tab==='up'?'signup_with':'signin_with',
+    width:Math.min(360,Math.max(280,(host.parentElement?.clientWidth||320)-8)),
+    logo_alignment:'left'
+   });
+  }catch{/* optional until GOOGLE_CLIENT_ID is set */}
+}
+async function googleSignIn(tab='in'){
+  try{
+   const cfg=await call('google/config',{},'GET');
+   if(!cfg.enabled||!cfg.clientId)return er('Google sign-in is not configured yet. Add GOOGLE_CLIENT_ID (and authorized origin https://copyra.fun) in DigitalOcean / Google Cloud Console.');
+   await mountGoogleButton(tab);
+   await loadGis();
+   google.accounts.id.prompt((notification)=>{
+     if(notification.isNotDisplayed()||notification.isSkippedMoment()){
+      const host=$('#gbtn');
+      if(host){host.scrollIntoView({block:'nearest'});er('Use the Google button below to authorize your email.')}
+      else er('Google prompt was blocked. Allow popups / third-party sign-in and try again.');
+     }
+   });
+  }catch(e){fail(e)}
+}
+function b64urlToBuf(s){const p=s.replace(/-/g,'+').replace(/_/g,'/');const pad=p+'==='.slice((p.length+3)%4);const bin=atob(pad);const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u.buffer}
+function bufToB64url(buf){const u=new Uint8Array(buf);let s='';for(const b of u)s+=String.fromCharCode(b);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
+async function pkLogin(){
+ try{
+  const opts=await call('passkeys/login/options',{ids:st.get('cpy_pk',[]).map(x=>x.id).filter(Boolean)});
+  if(!navigator.credentials?.get)return er('Passkeys are not supported in this browser.');
+  const publicKey={
+   challenge:b64urlToBuf(opts.challenge),
+   rpId:opts.rpId,
+   allowCredentials:(opts.allowCredentials||[]).map(c=>({type:'public-key',id:b64urlToBuf(c.id),transports:c.transports})),
+   userVerification:opts.userVerification||'preferred',timeout:60000
+  };
+  const cred=await navigator.credentials.get({publicKey});
+  if(!cred)return er('Passkey was cancelled.');
+  const credential={
+   id:cred.id,rawId:bufToB64url(cred.rawId),type:cred.type,
+   response:{
+    clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+    authenticatorData:bufToB64url(cred.response.authenticatorData),
+    signature:bufToB64url(cred.response.signature),
+    userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):undefined
+   }
+  };
+  await onAuth(await call('passkey/login',{credential}),false);
+ }catch(e){fail(e)}
+}
+async function addPk(){
+ try{
+  if(!navigator.credentials?.create)return toast('Passkeys are not supported on this device');
+  const opts=await call('passkeys/options');
+  const publicKey={
+   challenge:b64urlToBuf(opts.challenge),
+   rp:{name:opts.rp.name,id:opts.rp.id},
+   user:{id:b64urlToBuf(opts.user.id),name:opts.user.name,displayName:opts.user.displayName},
+   pubKeyCredParams:opts.pubKeyCredParams,authenticatorSelection:opts.authenticatorSelection,
+   timeout:opts.timeout||60000,attestation:opts.attestation||'none',
+   excludeCredentials:(opts.excludeCredentials||[]).map(c=>({type:'public-key',id:b64urlToBuf(c.id),transports:c.transports}))
+  };
+  const cred=await navigator.credentials.create({publicKey});
+  if(!cred)return toast('Passkey cancelled');
+  const credential={
+   id:cred.id,rawId:bufToB64url(cred.rawId),type:cred.type,
+   response:{
+    clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+    attestationObject:bufToB64url(cred.response.attestationObject),
+    transports:cred.response.getTransports?.()||[]
+   }
+  };
+  const r=await call('passkeys/register',{credential,name:dn()});
+  st.set('cpy_pk',[...st.get('cpy_pk',[]),{id:r.id}]);
+  toast('Passkey added');dev();
+ }catch(e){toast(e.message||'Passkey failed')}
+}
 const gate=f=>user?f():auth('in');
 const ago=t=>{const m=(Date.now()-t)/6e4;return m<2?'now':m<60?(m|0)+' min ago':m<1440?(m/60|0)+' h ago':(m/1440|0)+' d ago'};
-function acct(){gate(()=>{const u=user,w=u.wallets||{};md(`<div class="row sp"><h3 style="margin:0">Account</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu">${u.email||'Wallet account'} · ID ${u.id.slice(2,10)}</p>
+function acct(){gate(()=>{const u=user,w=u.wallets||{};
+ const mismatch=['sol','evm'].filter(k=>w[k]&&wallet[k]&&String(w[k]).toLowerCase()!==String(wallet[k]).toLowerCase());
+ md(`<div class="row sp"><h3 style="margin:0">Account</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu">${u.email||'Wallet account'} · ID ${u.id.slice(2,10)}</p>
+${mismatch.length?`<p class="rd" style="margin:8px 0">Connected wallet does not match the linked ${mismatch.map(k=>k.toUpperCase()).join('/')} wallet on this account.</p>`:''}
 <h3 style="margin-top:14px">Sign in methods</h3><div class="dv"><span>Email</span>${u.email?'<span class="pill g">Linked</span>':'<button class="btn sm" onclick="CPY.addEmail()">Add email</button>'}</div>
-${['sol','evm'].map(k=>`<div class="dv"><span>${k=='sol'?'Solana':'EVM'} wallet<br><span class="mu">${w[k]?w[k].slice(0,6)+'…'+w[k].slice(-4):'Not linked'}</span></span>${w[k]?'<span class="pill g">Linked</span>':`<button class="btn sm" onclick="CPY.link('${k}')">Link</button>`}</div>`).join('')}
+${['sol','evm'].map(k=>`<div class="dv"><span>${k=='sol'?'Solana':'EVM'} wallet<br><span class="mu">${w[k]?w[k].slice(0,6)+'…'+w[k].slice(-4):'Not linked'}${wallet[k]&&w[k]&&String(wallet[k]).toLowerCase()===String(w[k]).toLowerCase()?' · connected':''}</span></span>${w[k]?'<span class="pill g">Linked</span>':`<button class="btn sm" onclick="CPY.link('${k}')">Link</button>`}</div>`).join('')}
 <p class="mu" style="font-size:13px">Linking an email and wallets to one account lets either method open the same balances and settings.</p>
 <h3>Two-factor authentication</h3>${u.email?`<div class="dv"><span>Authenticator app</span>${u.twofa?'<span class="pill g">On</span>':'<span class="pill">Off</span>'}</div><button class="btn" onclick="CPY.${u.twofa?'tfOff':'tfOn'}()" style="margin-top:8px">${u.twofa?'Turn off 2FA':'Turn on 2FA'}</button>`:'<p class="mu">Not needed: wallet accounts sign in with a wallet signature. Add an email above to use email sign in with 2FA.</p>'}
 <div class="row" style="margin-top:18px"><button class="btn" onclick="CPY.go('dev')">Devices &amp; passkeys</button><button class="btn red" onclick="CPY.out()">Sign out</button></div>`)})}
-function addEmail(){md(`<h3>Add email</h3><label>Email</label><input id="ae1" type="email"><label>Password (8+ characters)</label><input id="ap" type="password" autocomplete="new-password"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Add email</button><button class="btn" onclick="CPY.go('acct')">Back</button></div>`);$('#ok').onclick=async()=>{try{user=(await call('link/email',{email:$('#ae1').value,password:$('#ap').value})).user;toast('Email linked');acct()}catch(e){fail(e)}}}
+function addEmail(){md(`<h3>Add email</h3><label>Email</label><input id="ae1" type="email"><label>Password (8+ characters)</label><input id="ap" type="password" autocomplete="new-password"><div id="a2" style="display:none"><label>Verification code</label><input id="ac" maxlength="6" inputmode="numeric"></div><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Add email</button><button class="btn" onclick="CPY.go('acct')">Back</button></div>`);$('#ok').onclick=async()=>{try{const b={email:$('#ae1').value,password:$('#ap').value,code:$('#ac')?.value?.trim()||undefined};const r=await call('link/email',b);if(r.needVerify){$('#a2').style.display='block';return er('Enter the 6-digit code we emailed you.')}user=r.user;toast('Email linked');acct()}catch(e){fail(e)}}}
 async function tfOn(){try{const r=await call('2fa/setup');md(`<h3>Turn on 2FA</h3><p class="mu">Add this key to Google Authenticator, Authy or 1Password (choose “enter a setup key”), then enter the 6-digit code.</p><div class="cd">${r.secret}</div><p class="mu" style="font-size:13px"><a href="${r.uri}" style="color:var(--ac)">Open in authenticator app</a></p><label>6-digit code</label><input id="ac" maxlength="6" inputmode="numeric"><p class="rd" id="ae"></p><div class="row"><button class="btn pri" id="ok">Enable 2FA</button><button class="btn" onclick="CPY.go('acct')">Cancel</button></div>`);$('#ok').onclick=async()=>{try{await call('2fa/enable',{code:$('#ac').value.trim()});user.twofa=true;toast('2FA enabled');acct()}catch(e){fail(e)}}}catch(e){toast(e.message)}}
 function tfOff(){md(`<h3>Turn off 2FA</h3><label>Current 6-digit code</label><input id="ac" maxlength="6" inputmode="numeric"><p class="rd" id="ae"></p><div class="row"><button class="btn red" id="ok">Turn off</button><button class="btn" onclick="CPY.go('acct')">Cancel</button></div>`);$('#ok').onclick=async()=>{try{await call('2fa/disable',{code:$('#ac').value.trim()});user.twofa=false;toast('2FA turned off');acct()}catch(e){fail(e)}}}
 async function dev(){gate(async()=>{try{const r=await call('devices',{},'GET');md(`<div class="row sp"><h3 style="margin:0">Devices &amp; passkeys</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu" style="font-size:13px">Devices that have accessed your account. Sign out any you don't recognize.${user.email?' New devices are flagged and need your 2FA code.':''}</p>
@@ -1282,25 +1470,29 @@ ${r.devices.map(d=>`<div class="dv"><span><b>${d.name}</b> ${d.current?'<span cl
 <h3 style="margin-top:16px">Passkeys</h3>${r.passkeys.map(p=>`<div class="dv"><span>${p.name}${p.sim?' <span class="pill">local</span>':''}<br><span class="mu">Added ${ago(p.at)}</span></span></div>`).join('')||'<p class="mu">No passkeys yet. A passkey lets you sign in with Face ID, Touch ID or a security key.</p>'}
 <button class="btn pri" style="margin-top:10px;width:100%" onclick="CPY.addPk()">Add passkey on this device</button>`)}catch(e){toast(e.message)}})}
 async function ref(){gate(async()=>{try{const r=await call('referral',{},'GET'),tot=r.refs.reduce((a,x)=>a+x.earn,0),vol=r.refs.reduce((a,x)=>a+x.vol,0),enc=encodeURIComponent,tx=enc('Copy top Solana and EVM traders automatically with COPYRA. Join with my link:');window.__rl=r.link;
+ const feeNote=r.earningsEnabled===false?`<p class="mu" style="margin-top:8px">${r.note||'Referral earnings unlock when platform fees are collected on confirmed trades.'}</p>`:'';
  md(`<div class="row sp"><h3 style="margin:0">Referrals</h3><button class="btn sm" onclick="cl()">Close</button></div><p class="mu">Invite friends and earn <b style="color:var(--tx)">10% of the fees from their trades</b> during their first 30 days.</p>
 <label>Your referral link</label><div class="row" style="flex-wrap:nowrap"><input readonly value="${r.link}" onfocus="this.select()"><button class="btn pri" onclick="CPY.copy()">Copy</button></div>
 <div class="row" style="margin:10px 0"><button class="btn sm" onclick="CPY.share()">Share</button><a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener" href="https://x.com/intent/tweet?text=${tx}&url=${enc(r.link)}">Share on X</a><a class="btn sm" style="text-decoration:none" target="_blank" rel="noopener" href="https://t.me/share/url?url=${enc(r.link)}&text=${tx}">Telegram</a></div>
-<div class="kp"><div class="k"><small>Friends</small><b>${r.refs.length}</b></div><div class="k"><small>Their volume</small><b>$${vol.toFixed(0)}</b></div><div class="k"><small>Total earned</small><b>$${(tot).toFixed(2)}</b></div><div class="k"><small>Claimable</small><b class="g">$${r.claimable.toFixed(2)}</b></div></div>
-<button class="btn pri" style="width:100%" ${r.claimable>0?'':'disabled style="width:100%;opacity:.5"'} onclick="CPY.claim()">Claim $${r.claimable.toFixed(2)} to my ${M=='sol'?'SOL':'EVM'} trading balance</button>
+<div class="kp"><div class="k"><small>Friends</small><b>${r.refs.length}</b></div><div class="k"><small>Their volume</small><b>$${vol.toFixed(0)}</b></div><div class="k"><small>Total earned</small><b>$${(r.totalEarned??tot).toFixed(2)}</b></div><div class="k"><small>Claimable</small><b class="g">$${Number(r.claimable||0).toFixed(2)}</b></div></div>
+${feeNote}
+<button class="btn pri" style="width:100%" ${Number(r.claimable)>0?'':'disabled style="width:100%;opacity:.5"'} onclick="CPY.claim()">Claim $${Number(r.claimable||0).toFixed(2)} to my ${M=='sol'?'SOL':'EVM'} trading balance</button>
 <div class="tw" style="margin-top:14px"><table><tr><th>Friend</th><th>Joined</th><th>Window</th><th>Volume</th><th>You earned</th></tr>${r.refs.map(x=>`<tr><td>${x.n}</td><td>${new Date(x.joined).toLocaleDateString()}</td><td>${x.daysLeft?x.daysLeft+' d left':'<span class="mu">ended</span>'}</td><td>$${x.vol.toFixed(0)}</td><td class="g">$${x.earn.toFixed(2)}</td></tr>`).join('')||'<tr><td class="mu" colspan=5>No referrals yet. Share your link to get started.</td></tr>'}</table></div>
 `)}catch(e){toast(e.message)}})}
 const info=k=>md(k=='sec'?`<h3>How we protect you</h3><p class="mu">Passwords are stored only as salted hashes. Email accounts use 2FA. Every device is listed and can be signed out. Passkeys let you skip passwords. Wallet sign in uses a signature, and COPYRA never asks for your seed phrase or private key.</p><button class="btn" onclick="cl()">Close</button>`:`<h3>Risk disclosure</h3><p class="mu">Copy trading digital assets carries a high risk of loss. You can lose some or all of your capital. Copied traders' past results do not predict future results. Only trade with funds you can afford to lose. COPYRA does not provide financial advice.</p><button class="btn" onclick="cl()">Close</button>`);
 const navUp=()=>{const b=$('#cpso');if(b)b.textContent=user?'Sign out':'Sign in / Create account'};
-window.CPY={auth,skip:()=>st.set('cpy_seen',1),addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:async id=>{try{await call('devices/revoke',{id});toast('Device signed out');dev()}catch(e){toast(e.message)}},
+window.CPY={auth,addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:async id=>{try{await call('devices/revoke',{id});toast('Device signed out');dev()}catch(e){toast(e.message)}},
+ syncSession:async()=>{try{const r=await call('me',{},'GET');tok='cookie';st.set('cpy_tok','cookie');user=r.user;st.set('cpy_seen',1);for(const k of['sol','evm'])if(user.wallets&&user.wallets[k])wallet[k]=user.wallets[k];navUp()}catch{}},
  copy:()=>navigator.clipboard?navigator.clipboard.writeText(window.__rl).then(()=>toast('Referral link copied'),()=>toast('Press and hold the link to copy')):toast('Press and hold the link to copy'),
  share:()=>navigator.share?navigator.share({title:'COPYRA',text:'Copy top Solana and EVM traders automatically with COPYRA.',url:window.__rl}).catch(()=>{}):CPY.copy(),
- claim:async()=>{try{const r=await call('referral/claim');const e=M,X=UI[e],u=Math.round(r.amount/X.usd*X.k),c=Object.keys(S[e].cash)[0];S[e].cash[c]+=u;log(e,`Referral reward claimed: +${f(e,u)} ${X.u}`);toast(`$${r.amount.toFixed(2)} added to your ${e.toUpperCase()} trading balance`);draw();sync();ref()}catch(e){toast(e.message)}},
- sim:async()=>{await call('referral/sim');ref()},go:k=>{nav.classList.remove('o');({acct,dev,ref})[k]()}};
+ claim:async()=>{try{const r=await call('referral/claim',{mode:M});if(!r.claimed){toast(r.reason==='PLATFORM_FEES_NOT_COLLECTED'?'Referral payouts wait until platform fees are collected on chain.':'Nothing to claim yet');ref();return}toast(`$${Number(r.amount).toFixed(2)} claimed to trading balance`);await refresh();ref()}catch(e){toast(e.message)}},
+ go:k=>{nav.classList.remove('o');({acct,dev,ref})[k]()},
+ skip:()=>{st.set('cpy_seen',1);const r=pref();if(r)fetch('/api/account/ref',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({code:r})}).catch(()=>{});cl();toast('Browsing as guest. Public stats only — sign in to trade.')}};
 $('#nav').insertAdjacentHTML('beforeend','<button onclick="CPY.go(\'acct\')">Account &amp; 2FA</button><button onclick="CPY.go(\'dev\')">Devices &amp; passkeys</button><button onclick="CPY.go(\'ref\')">Referrals</button><button id="cpso" onclick="nav.classList.remove(\'o\');user?CPY.out():CPY.auth(\'in\')"></button>');
 document.querySelector('main').insertAdjacentElement('afterend',$('#ft'));
-const rf=new URLSearchParams(location.search).get('ref');if(rf)st.set('cpy_ref',rf);
+const rf=new URLSearchParams(location.search).get('ref');if(rf){st.set('cpy_ref',rf);fetch('/api/account/ref',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({code:rf})}).catch(()=>{})}
 Object.defineProperty(window,'user',{get:()=>user});
-(async()=>{if(tok){try{const r=await call('me',{},'GET');await onAuth(r,false,true)}catch{tok=null;st.del('cpy_tok')}}navUp();if(!tok&&!st.get('cpy_seen',0))setTimeout(()=>auth('up'),700)})();
+(async()=>{try{const r=await call('me',{},'GET');await onAuth(r,false,true)}catch{tok=null;st.del('cpy_tok')}navUp();if(!user&&!st.get('cpy_seen',0))setTimeout(()=>auth('up'),700)})();
 })();
 </script>
 </body></html>

@@ -93,3 +93,14 @@ services:
       # (public WalletConnect id — set App-Level RUN_AND_BUILD_TIME so the
       # dashboard can open the full Reown Connect Wallet modal),
       # Bot keys alone are not enough — RPC URLs must be on the api component too.
+      #
+      # Account layer (Sign in / Google / email codes / 2FA / passkeys / referrals):
+      # GOOGLE_CLIENT_ID          — OAuth Web client ID (GIS). Authorized JS origins:
+      #                             https://copyra.fun  (+ DO preview if needed)
+      # GOOGLE_CLIENT_SECRET      — optional (ID-token verify uses client ID only)
+      # RESEND_API_KEY            — send email verification codes
+      # ACCOUNT_EMAIL_FROM        — e.g. COPYRA <noreply@your-verified-domain>
+      #   (ALERT_EMAIL_FROM also accepted as From fallback)
+      # WEBAUTHN_RP_ID            — copyra.fun
+      # WEBAUTHN_RP_NAME          — COPYRA
+      # REFERRAL_MIN_CLAIM_USD    — optional, default 1 (claims stay 0 until fees exist)
