@@ -156,7 +156,12 @@ logger.info(
   'COPYRA API listening',
 );
 
+const { startOpsWatch } = await import('./ops-watch.js');
+const stopOpsWatch = startOpsWatch();
+logger.info({}, 'Ops Telegram watchdog armed (worker stale + trading-off alerts)');
+
 const shutdown = async () => {
+  stopOpsWatch();
   await app.close();
   process.exit(0);
 };

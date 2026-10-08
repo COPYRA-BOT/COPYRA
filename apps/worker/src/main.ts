@@ -1,4 +1,11 @@
-import { initSentry, logger, monitorOpenPositions, reconcilePendingTrades, telegram } from '@copyra/core';
+import {
+  alertOps,
+  initSentry,
+  logger,
+  monitorOpenPositions,
+  reconcilePendingTrades,
+  telegram,
+} from '@copyra/core';
 import { prisma, type Prisma } from '@copyra/db';
 import { workerActivity } from './activity.js';
 import { startEvmMonitor } from './evm-monitor.js';
@@ -18,14 +25,29 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
   });
 }
 
+async function fatalExit(kind: string, detail: string, code = 1): Promise<never> {
+  try {
+    await alertOps(kind, detail, { awaitDelivery: true, cooldownSec: 5 * 60 });
+  } catch {
+    /* never block exit on telegram */
+  }
+  process.exit(code);
+}
+
 // Prevent the process from being considered idle by the runtime; copy trading is always on.
 process.on('uncaughtException', (error) => {
-  logger.error({ err: error }, 'Uncaught exception in worker — keeping process for supervisor restart');
-  process.exit(1);
+  logger.error({ err: error }, 'Uncaught exception in worker — exiting for supervisor restart');
+  void fatalExit(
+    'worker-crash',
+    `Worker <b>uncaught exception</b> — auto-respawning.\n${String(error instanceof Error ? error.message : error).slice(0, 280)}`,
+  );
 });
 process.on('unhandledRejection', (reason) => {
-  logger.error({ err: reason }, 'Unhandled rejection in worker — keeping process for supervisor restart');
-  process.exit(1);
+  logger.error({ err: reason }, 'Unhandled rejection in worker — exiting for supervisor restart');
+  void fatalExit(
+    'worker-crash',
+    `Worker <b>unhandled rejection</b> — auto-respawning.\n${String(reason instanceof Error ? reason.message : reason).slice(0, 280)}`,
+  );
 });
 
 const stopSolana = await startSolanaMonitor();
@@ -91,20 +113,19 @@ const watchdogTimer = setInterval(() => {
       { solAgeMs: solAge, watching, stats: solanaMonitorStats },
       'Watchdog: Solana monitor silent — exiting for 24/7 respawn',
     );
-    telegram.send(
-      `⚠️ <b>WORKER WATCHDOG</b>\nSolana monitor silent ${Math.round(solAge / 1000)}s. Respawning copy-trade worker.`,
-      { kind: 'worker-watchdog' },
+    void fatalExit(
+      'worker-watchdog-solana',
+      `Solana monitor <b>silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders. Respawning copy-trade worker.`,
     );
-    process.exit(1);
+    return;
   }
 
   if (evmAge > WATCHDOG_SILENCE_MS) {
     logger.error({ evmAgeMs: evmAge }, 'Watchdog: EVM monitor silent — exiting for 24/7 respawn');
-    telegram.send(
-      `⚠️ <b>WORKER WATCHDOG</b>\nEVM monitor silent ${Math.round(evmAge / 1000)}s. Respawning copy-trade worker.`,
-      { kind: 'worker-watchdog' },
+    void fatalExit(
+      'worker-watchdog-evm',
+      `EVM monitor <b>silent ${Math.round(evmAge / 1000)}s</b>. Respawning copy-trade worker.`,
     );
-    process.exit(1);
   }
 }, WATCHDOG_CHECK_MS);
 
@@ -119,6 +140,11 @@ const shutdown = async () => {
   clearInterval(watchdogTimer);
   stopSolana();
   stopEvm();
+  await alertOps(
+    'worker-stopped',
+    'Copy-trade worker received <b>SIGTERM/SIGINT</b> and is stopping.\nIf this was not an intentional deploy, check DigitalOcean immediately.',
+    { awaitDelivery: true, cooldownSec: 60 },
+  );
   await heartbeat('stopped', { alwaysOn: false });
   await prisma.$disconnect();
   process.exit(0);
