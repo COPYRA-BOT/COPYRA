@@ -1,22 +1,18 @@
 #!/bin/sh
-# One container, one image: API (HTTP + dashboard) + background worker.
+# API + dashboard only (production App Platform).
 #
-# On basic-xxs, starting the worker before the API delays listen() and makes
-# App Platform health checks fail → "Waiting for service" / Degraded during
-# every deploy. Bring the API up FIRST so /health answers immediately.
+# The copy-trade worker runs as a SEPARATE App Platform `workers:` component
+# (scripts/start-worker.sh). Do not start it here when RUN_WORKER=false —
+# that is what keeps /health green and stops Degraded/503.
 #
 # Schema migrate/push runs AFTER health is up — never block the load balancer
-# on prisma migrate (that caused HTTP 504 / UptimeRobot downs).
-#
-# The copy-trade worker MUST run 24/7. If it exits (watchdog stall, OOM, crash),
-# respawn it forever — never leave the platform without a live monitor.
+# on prisma migrate.
 set -e
 
 PORT="${PORT:-${API_PORT:-8080}}"
 
 npm run start -w @copyra/api &
 API_PID=$!
-WORKER_PID=""
 WORKER_SUPERVISOR_PID=""
 
 cleanup() {
@@ -52,26 +48,20 @@ done
   fi
 ) &
 
-if [ "${RUN_WORKER:-true}" = "true" ]; then
+# Legacy single-container mode only (local/dev). Production DO sets RUN_WORKER=false.
+if [ "${RUN_WORKER:-false}" = "true" ]; then
   (
-    # Let App Platform mark the service healthy BEFORE the worker burns CPU/RAM
-    # on Solana catch-up / WS subscribe. Otherwise DO flips Degraded and
-    # Cloudflare in front of copyra.fun returns 504 during every deploy.
     WORKER_DELAY_SEC="${WORKER_START_DELAY_SEC:-75}"
-    echo "COPYRA delaying worker start ${WORKER_DELAY_SEC}s so /health stays green..."
+    echo "COPYRA in-process worker enabled (RUN_WORKER=true); delay ${WORKER_DELAY_SEC}s..."
     sleep "$WORKER_DELAY_SEC"
-    # Supervisor loop — copy trading never stays down after a crash/stall exit.
-    # nice +10: API keeps CPU for /health so App Platform never flips Degraded
-    # when Solana catch-up or exit marks spike (shared basic-xs vCPU).
     while true; do
-      echo "COPYRA worker starting (24/7 supervisor, nice +10)..."
+      echo "COPYRA worker starting (in-process supervisor)..."
       if command -v nice >/dev/null 2>&1; then
         nice -n 10 npm run start -w @copyra/worker &
       else
         npm run start -w @copyra/worker &
       fi
       WORKER_PID=$!
-      # Publish PID to parent via a file so cleanup can signal the child.
       echo "$WORKER_PID" > /tmp/copyra-worker.pid
       wait "$WORKER_PID" || true
       code=$?
@@ -80,6 +70,8 @@ if [ "${RUN_WORKER:-true}" = "true" ]; then
     done
   ) &
   WORKER_SUPERVISOR_PID=$!
+else
+  echo "COPYRA API-only mode (RUN_WORKER=false). Trading runs on the dedicated worker component."
 fi
 
 wait "$API_PID"

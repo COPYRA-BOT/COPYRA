@@ -1,10 +1,14 @@
-# DigitalOcean App Platform — COPYRA (single image: API + dashboard + worker)
-# Push to GitHub main → autodeploy. See docs/DEPLOY.md and docs/live-urls.json.
+# DigitalOcean App Platform — COPYRA
+# Push to GitHub main → autodeploy. See docs/DEPLOY.md.
 #
-# Domain TLS is managed only by DigitalOcean App Platform (no external CDN).
-# Point copyra.fun DNS at the records DigitalOcean shows under Networking → Domains.
-# CRITICAL: Cloudflare must be DNS-only (grey cloud). Orange-cloud proxy → 504s when
-# the single basic-xs container (API+worker) is busy; see docs/DEPLOY.md.
+# Architecture (phase-4 ready):
+#  * api     — HTTP + dashboard only (health checks stay green)
+#  * worker  — dedicated 24/7 copy-trade process (SOL + EVM + exits)
+# Keeping them on separate containers is what stops Degraded/503 when the
+# trading engine is busy.
+#
+# Domain: Cloudflare DNS must be DNS-only (grey cloud). Custom domain must
+# show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
 region: nyc
@@ -12,6 +16,7 @@ features:
   - buildpack-stack=ubuntu-22
 alerts:
   - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
 
 domains:
   - domain: copyra.fun
@@ -37,6 +42,9 @@ ingress:
       component:
         name: api
 
+# ---------------------------------------------------------------------------
+# API + dashboard (no in-process worker)
+# ---------------------------------------------------------------------------
 services:
   - name: api
     dockerfile_path: Dockerfile
@@ -47,35 +55,29 @@ services:
       deploy_on_push: true
     http_port: 8080
     instance_count: 1
-    # basic-xxs (512MB) OOMs / CPU-starves API+worker → DO Degraded + Cloudflare 504.
-    # basic-xs (1GB) keeps /health answering while the copy worker catch-up runs.
     instance_size_slug: basic-xs
     health_check:
       http_path: /health
-      # API listens first; worker starts ~75s later (see start-production.sh).
-      # Generous checks so brief CPU spikes never flip Degraded / CF 504.
-      initial_delay_seconds: 90
+      initial_delay_seconds: 45
       period_seconds: 10
-      timeout_seconds: 15
+      timeout_seconds: 10
       success_threshold: 1
-      # ~6 min of failures before Degraded — covers worker catch-up spikes on basic-xs.
-      failure_threshold: 36
+      failure_threshold: 18
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
         value: production
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=768"
+        value: "--max-old-space-size=512"
       - key: API_HOST
         value: "0.0.0.0"
       - key: PORT
         value: "8080"
       - key: API_PORT
         value: "8080"
+      # Worker runs as its own component — never start it inside the API box.
       - key: RUN_WORKER
-        value: "true"
-      - key: WORKER_START_DELAY_SEC
-        value: "75"
+        value: "false"
       - key: PUBLIC_WEB_URL
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
@@ -92,31 +94,44 @@ services:
         value: "true"
       - key: MULTI_USER_CUSTODY
         value: "true"
-      # Encrypted App-Level secrets scoped to ALL components — never commit:
-      # DATABASE_URL (prefer PgBouncer pooled URL), DIRECT_URL (direct PG for migrate),
-      # REDIS_URL, SESSION_SECRET,
+      # App-Level encrypted secrets (scope ALL components / RUN_AND_BUILD_TIME):
+      # DATABASE_URL, DIRECT_URL, PGBOUNCER, REDIS_URL, SESSION_SECRET,
       # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,
       # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
       # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-      # VITE_REOWN_PROJECT_ID / NEXT_PUBLIC_REOWN_PROJECT_ID / REOWN_PROJECT_ID
-      # (public WalletConnect id — set App-Level RUN_AND_BUILD_TIME so the
-      # dashboard can open the full Reown Connect Wallet modal),
-      # Bot keys alone are not enough — RPC URLs must be on the api component too.
-      #
-      # Account layer (Sign in / Google / email codes / 2FA / passkeys / referrals):
-      # GOOGLE_CLIENT_ID          — OAuth Web client ID (GIS). Authorized JS origins:
-      #                             https://copyra.fun  (+ DO preview if needed)
-      # GOOGLE_CLIENT_SECRET      — optional (ID-token verify uses client ID only)
-      # RESEND_API_KEY            — send email verification codes
-      # ACCOUNT_EMAIL_FROM        — e.g. COPYRA <noreply@your-verified-domain>
-      #   (ALERT_EMAIL_FROM also accepted as From fallback)
-      # WEBAUTHN_RP_ID            — copyra.fun
-      # WEBAUTHN_RP_NAME          — COPYRA
-      # REFERRAL_MIN_CLAIM_USD    — optional, default 1 (claims stay 0 until fees exist)
-      #
-      # Prisma pool — see docs/DATABASE_CONNECTIONS.md
-      # Default connection_limit=3 (was 8 → FATAL too many clients on DO basic).
-      # With PgBouncer: DATABASE_URL=pooled, DIRECT_URL=direct, optional PGBOUNCER=true
-      # PRISMA_CONNECTION_LIMIT=3
-      # PRISMA_POOL_TIMEOUT=15
-      # POSTGRES_MAX_CONNECTIONS=22
+      # VITE_REOWN_PROJECT_ID / REOWN_PROJECT_ID,
+      # GOOGLE_CLIENT_ID, RESEND_API_KEY, ACCOUNT_EMAIL_FROM,
+      # WEBAUTHN_RP_ID, WEBAUTHN_RP_NAME
+
+# ---------------------------------------------------------------------------
+# Dedicated 24/7 copy-trade worker (not HTTP-routable)
+# ---------------------------------------------------------------------------
+workers:
+  - name: worker
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: COPYRA-BOT/COPYRA
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    # Own vCPU/RAM — catch-up and exits cannot starve API /health.
+    instance_size_slug: basic-xs
+    run_command: /app/scripts/start-worker.sh
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=768"
+      - key: TRADING_ENABLED
+        value: "true"
+      - key: SOL_TRADING_ENABLED
+        value: "true"
+      - key: EVM_TRADING_ENABLED
+        value: "true"
+      - key: MULTI_USER_CUSTODY
+        value: "true"
+      - key: PUBLIC_WEB_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_API_URL
+        value: "https://copyra.fun"

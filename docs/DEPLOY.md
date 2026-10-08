@@ -5,21 +5,46 @@ Platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
-## Domain (DigitalOcean only) — #1 cause of “site down” / 504
+## Architecture (keeps the site up while trading runs)
 
-TLS and the custom domain must be managed **only** by App Platform.  
-**Do not orange-cloud / proxy `copyra.fun` through Cloudflare** (or any CDN).  
-Proxied Cloudflare sits in front of a single `basic-xs` container (API + 24/7 worker). When the worker does Solana catch-up or a deploy rolls, origin response time spikes past Cloudflare’s proxy timeout → **HTTP 504 / Degraded**, even though the App Platform health check may still pass on the DO hostname.
+| Component | Role | Health |
+|---|---|---|
+| `api` | Dashboard + `/api` + `/health` | HTTP health checks |
+| `worker` | SOL/EVM detect → buy/sell + exits + Telegram | No HTTP (cannot make the app Degraded) |
 
-### Fix Cloudflare (manual — required if DNS is at CF)
+`RUN_WORKER=false` on the API. Trading runs only on the dedicated worker.
 
-1. Cloudflare → **DNS** → records for `copyra.fun` and `www`.
-2. Set the proxy status to **DNS only** (grey cloud), **not** Proxied (orange cloud).
-3. Use the **A / CNAME values DigitalOcean shows** under App → Networking → Domains (not a CNAME to a CF-proxied host).
-4. Confirm response headers: `server` should **not** be `cloudflare`. Prefer `https://copyra-nl7kz.ondigitalocean.app/health` as a bypass check while DNS propagates.
-5. App Platform status **Healthy**; `https://copyra.fun/health` → `{"ok":true,"service":"copyra-api"}`.
+## Domain stuck on “Configuring” / site 504 / DO Degraded
 
-If you keep Cloudflare for DNS only, leave SSL/TLS mode compatible with DO (Full is fine with grey cloud).
+### A) Domain status = Configuring (your screenshot)
+
+You do **not** need DigitalOcean nameservers if Cloudflare stays your DNS. The DO banner is generic. Fix validation:
+
+1. DO → **copyra** → **Networking** → **Domains** → click `copyra.fun`.
+2. Copy the **exact** CNAME/TXT/A records DO shows (not guesswork).
+3. Cloudflare → DNS:
+   - `copyra.fun` → CNAME → `copyra-nl7kz.ondigitalocean.app` → **DNS only** (grey).
+   - `www` → same → **DNS only**.
+   - Delete any extra A/AAAA on `@` that conflicts.
+   - Add any **TXT** DO shows for ownership (required when stuck).
+4. Cloudflare → SSL/TLS → mode **Full** (not Flexible).
+5. Back in DO → **Refresh status**. Wait until status is **Active** (can take 15–60 min for cert).
+6. If still Configuring after 1 hour: **Remove** `copyra.fun` from DO Domains → re-add as Primary → repeat records → Refresh.
+
+Until status is **Active**, use `https://copyra-nl7kz.ondigitalocean.app` (should be green).
+
+### B) App status = Degraded / 503 on `*.ondigitalocean.app`
+
+That is the **container**, not DNS. After this deploy you should see two components: `api` (Healthy) and `worker` (Running).
+
+1. DO → **Runtime Logs** → select component **`api`** vs **`worker`**.
+2. If `api` is unhealthy: check `DATABASE_URL` / migrate errors in api logs.
+3. If `worker` crashes: check RPC keys + `TELEGRAM_*` are **App-level** secrets (available to **all** components), not only the api component.
+4. Force redeploy: Actions → **Force rebuild and deploy**.
+
+### C) Cloudflare (already DNS-only — keep it)
+
+Grey cloud on `copyra.fun` + `www`. Leave it DNS only.
 
 ---
 
