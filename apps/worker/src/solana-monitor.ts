@@ -10,8 +10,8 @@ import {
   markSeenOnce,
   qualifySignal,
   sleep,
-  solanaConnection,
   solanaPool,
+  solanaSubscriptionConnection,
   telegram,
   traderHasPriorBuyOfToken,
   renderSkip,
@@ -49,58 +49,92 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
  * Also runs a catch-up poll so signatures that raced `getParsedTransaction`
  * (processed log → confirmed fetch returns null) are not permanently lost.
  */
+/** Rebuild every onLogs subscription on this interval so a dead Helius WS cannot strand the worker. */
+const FORCE_RESUB_MS = 120_000;
+
 export async function startSolanaMonitor(): Promise<() => void> {
-  const connection = solanaConnection();
+  let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
+  let syncing = false;
+  let lastForceResub = 0;
+
+  const dropAll = async () => {
+    for (const [traderId, sub] of subscriptions) {
+      try {
+        await connection.removeOnLogsListener(sub);
+      } catch {
+        /* socket may already be dead */
+      }
+      subscriptions.delete(traderId);
+    }
+  };
 
   const sync = async () => {
-    const traders = await prisma.trader.findMany({
-      where: { chain: Chain.SOLANA, enabled: true },
-    });
-    const wanted = new Set(traders.map((trader) => trader.id));
-
-    for (const [traderId, sub] of subscriptions) {
-      if (wanted.has(traderId)) continue;
-      await connection.removeOnLogsListener(sub);
-      subscriptions.delete(traderId);
-      log.info({ traderId }, 'Dropped Solana log subscription');
-    }
-
-    for (const trader of traders) {
-      if (subscriptions.has(trader.id)) continue;
-      let pubkey: PublicKey;
-      try {
-        pubkey = new PublicKey(trader.address);
-      } catch {
-        log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
-        continue;
+    if (syncing) return;
+    syncing = true;
+    try {
+      const force = Date.now() - lastForceResub >= FORCE_RESUB_MS;
+      if (force) {
+        await dropAll();
+        connection = solanaSubscriptionConnection(true);
+        lastForceResub = Date.now();
+        log.info({}, 'Forced Solana log resubscribe (fresh WS)');
       }
-      // 'processed' fires as soon as a leader sees the tx — shaves hundreds of ms vs confirmed.
-      const id = connection.onLogs(
-        pubkey,
-        (logs, ctx) => {
-          void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
-            log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
-          });
-        },
-        'processed',
-      );
-      subscriptions.set(trader.id, id);
-      log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
-    }
 
-    // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
-    await Promise.all(
-      traders.map(async (trader) => {
+      const traders = await prisma.trader.findMany({
+        where: { chain: Chain.SOLANA, enabled: true },
+      });
+      const wanted = new Set(traders.map((trader) => trader.id));
+
+      for (const [traderId, sub] of subscriptions) {
+        if (wanted.has(traderId)) continue;
         try {
-          await catchUpTrader(trader.id, trader.address);
-        } catch (error) {
-          log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+          await connection.removeOnLogsListener(sub);
+        } catch {
+          /* ignore */
         }
-      }),
-    );
+        subscriptions.delete(traderId);
+        log.info({ traderId }, 'Dropped Solana log subscription');
+      }
 
-    log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
+      for (const trader of traders) {
+        if (subscriptions.has(trader.id)) continue;
+        let pubkey: PublicKey;
+        try {
+          pubkey = new PublicKey(trader.address);
+        } catch {
+          log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
+          continue;
+        }
+        // 'processed' fires as soon as a leader sees the tx — shaves hundreds of ms vs confirmed.
+        const id = connection.onLogs(
+          pubkey,
+          (logs, ctx) => {
+            void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
+              log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
+            });
+          },
+          'processed',
+        );
+        subscriptions.set(trader.id, id);
+        log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
+      }
+
+      // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
+      await Promise.all(
+        traders.map(async (trader) => {
+          try {
+            await catchUpTrader(trader.id, trader.address);
+          } catch (error) {
+            log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+          }
+        }),
+      );
+
+      log.info({ watching: subscriptions.size }, 'Solana wallet subscriptions are current');
+    } finally {
+      syncing = false;
+    }
   };
 
   await sync();
@@ -112,10 +146,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
 
   return () => {
     clearInterval(timer);
-    for (const id of subscriptions.values()) {
-      void connection.removeOnLogsListener(id);
-    }
-    subscriptions.clear();
+    void dropAll();
   };
 }
 

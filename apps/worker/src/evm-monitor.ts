@@ -43,30 +43,38 @@ interface AssetTransfer {
 export async function startEvmMonitor(): Promise<() => void> {
   const cursors = new Map<string, string>();
   let stopped = false;
+  /** Never overlap ticks — stacked 250ms polls were hanging the whole worker. */
+  let ticking = false;
 
   const tick = async () => {
-    const settings = await getStrategyConfig();
-    const chains = POLL_CHAINS.filter((chain) => {
-      const config = chainConfig(chain);
-      return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
-    });
-    if (chains.length === 0) return;
+    if (stopped || ticking) return;
+    ticking = true;
+    try {
+      const settings = await getStrategyConfig();
+      const chains = POLL_CHAINS.filter((chain) => {
+        const config = chainConfig(chain);
+        return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
+      });
+      if (chains.length === 0) return;
 
-    const traders = await prisma.trader.findMany({
-      where: { chain: { in: chains }, enabled: true },
-    });
+      const traders = await prisma.trader.findMany({
+        where: { chain: { in: chains }, enabled: true },
+      });
 
-    // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
-    await Promise.all(
-      traders.map(async (trader) => {
-        if (stopped) return;
-        try {
-          await pollTrader(trader.chain, trader.id, trader.address, cursors);
-        } catch (error) {
-          log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
-        }
-      }),
-    );
+      // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
+      await Promise.all(
+        traders.map(async (trader) => {
+          if (stopped) return;
+          try {
+            await pollTrader(trader.chain, trader.id, trader.address, cursors);
+          } catch (error) {
+            log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
+          }
+        }),
+      );
+    } finally {
+      ticking = false;
+    }
   };
 
   await tick();
@@ -100,6 +108,7 @@ async function pollTrader(
   const cursor = cursors.get(key);
   if (cursor) params.fromBlock = cursor;
 
+  // Hard timeout — a hung Alchemy socket previously stalled every subsequent tick.
   const response = await fetch(config.rpcUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -109,6 +118,7 @@ async function pollTrader(
       method: 'alchemy_getAssetTransfers',
       params: [params],
     }),
+    signal: AbortSignal.timeout(8_000),
   });
   if (!response.ok) {
     throw new Error(`alchemy_getAssetTransfers HTTP ${response.status}`);
