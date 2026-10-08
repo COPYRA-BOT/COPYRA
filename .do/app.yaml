@@ -54,11 +54,12 @@ services:
       http_path: /health
       # API listens first; worker starts ~75s later (see start-production.sh).
       # Generous checks so brief CPU spikes never flip Degraded / CF 504.
-      initial_delay_seconds: 60
+      initial_delay_seconds: 90
       period_seconds: 10
-      timeout_seconds: 10
+      timeout_seconds: 15
       success_threshold: 1
-      failure_threshold: 30
+      # ~6 min of failures before Degraded — covers worker catch-up spikes on basic-xs.
+      failure_threshold: 36
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV

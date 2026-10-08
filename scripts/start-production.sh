@@ -61,9 +61,15 @@ if [ "${RUN_WORKER:-true}" = "true" ]; then
     echo "COPYRA delaying worker start ${WORKER_DELAY_SEC}s so /health stays green..."
     sleep "$WORKER_DELAY_SEC"
     # Supervisor loop — copy trading never stays down after a crash/stall exit.
+    # nice +10: API keeps CPU for /health so App Platform never flips Degraded
+    # when Solana catch-up or exit marks spike (shared basic-xs vCPU).
     while true; do
-      echo "COPYRA worker starting (24/7 supervisor)..."
-      npm run start -w @copyra/worker &
+      echo "COPYRA worker starting (24/7 supervisor, nice +10)..."
+      if command -v nice >/dev/null 2>&1; then
+        nice -n 10 npm run start -w @copyra/worker &
+      else
+        npm run start -w @copyra/worker &
+      fi
       WORKER_PID=$!
       # Publish PID to parent via a file so cleanup can signal the child.
       echo "$WORKER_PID" > /tmp/copyra-worker.pid

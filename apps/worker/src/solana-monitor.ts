@@ -34,6 +34,10 @@ const CATCHUP_MAX_AGE_MS = 120_000;
 const CATCHUP_RECOVERY_AGE_MS = 3 * 60_000;
 /** Minimum gap between catch-up passes (subscriptions still refresh every sync). */
 const CATCHUP_MIN_GAP_MS = 60_000;
+/** Traders per catch-up pass — round-robin so each pass finishes fast and /health stays green. */
+const CATCHUP_PER_PASS = 4;
+/** Hard cap for one catch-up pass (must always clear `catchingUp`). */
+const CATCHUP_PASS_TIMEOUT_MS = 45_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -79,6 +83,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
   /** Only one catch-up pass at a time — stacked ticks starved Prisma/API → site 504s. */
   let catchingUp = false;
   let lastCatchUpStartedAt = 0;
+  /** Round-robin offset so all wallets get catch-up without one long blocking pass. */
+  let catchUpCursor = 0;
   let lastForceResub = 0;
   const bootAt = Date.now();
   /** Keep the wide recovery window for a few minutes after boot / forced resub. */
@@ -159,43 +165,50 @@ export async function startSolanaMonitor(): Promise<() => void> {
       // Catch-up OUTSIDE the subscription critical path. Never stack passes —
       // overlapping catch-ups exhausted the Prisma pool (api+worker share the
       // host), froze heartbeats, and made Cloudflare return 504 on copyra.fun.
-      const catchUpTraders = traders;
+      // Round-robin a few traders per pass so WS detection stays primary and
+      // each pass finishes before App Platform health checks flap.
       const catchUpDue = Date.now() - lastCatchUpStartedAt >= CATCHUP_MIN_GAP_MS;
-      if (catchingUp || !catchUpDue) {
+      if (catchingUp || !catchUpDue || traders.length === 0) {
         log.debug(
           { watching: subscriptions.size, catchingUp, catchUpDue },
           'Solana catch-up skipped (in-flight or min gap)',
         );
       } else {
+        const n = traders.length;
+        const slice: typeof traders = [];
+        for (let i = 0; i < Math.min(CATCHUP_PER_PASS, n); i++) {
+          slice.push(traders[(catchUpCursor + i) % n]!);
+        }
+        catchUpCursor = (catchUpCursor + slice.length) % n;
         catchingUp = true;
         lastCatchUpStartedAt = Date.now();
         void (async () => {
           let catchUpOk = 0;
           let catchUpErr = 0;
-          // Serial (1) — leave pool slots for heartbeat, exits, and API.
-          const batchSize = 1;
+          const passDeadline = Date.now() + CATCHUP_PASS_TIMEOUT_MS;
           try {
-            for (let i = 0; i < catchUpTraders.length; i += batchSize) {
-              const batch = catchUpTraders.slice(i, i + batchSize);
-              await Promise.all(
-                batch.map(async (trader) => {
-                  try {
-                    await Promise.race([
-                      catchUpTrader(trader.id, trader.address, maxAgeMs),
-                      sleep(5_000).then(() => {
-                        throw new Error('catch-up timed out after 5s');
-                      }),
-                    ]);
-                    catchUpOk += 1;
-                  } catch (error) {
-                    catchUpErr += 1;
-                    log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
-                  }
-                }),
-              );
+            for (let i = 0; i < slice.length; i++) {
+              if (Date.now() > passDeadline) {
+                catchUpErr += slice.length - i;
+                log.warn({ left: slice.length - i }, 'Solana catch-up pass hit hard timeout');
+                break;
+              }
+              const trader = slice[i]!;
+              try {
+                await Promise.race([
+                  catchUpTrader(trader.id, trader.address, maxAgeMs),
+                  sleep(5_000).then(() => {
+                    throw new Error('catch-up timed out after 5s');
+                  }),
+                ]);
+                catchUpOk += 1;
+              } catch (error) {
+                catchUpErr += 1;
+                log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+              }
               // Keep watchdog clock alive mid-pass; yield for heartbeat/API.
               touchSolanaSync();
-              if (i + batchSize < catchUpTraders.length) await sleep(300);
+              if (i + 1 < slice.length) await sleep(300);
             }
           } finally {
             solanaMonitorStats.catchUpOk = catchUpOk;
@@ -203,7 +216,10 @@ export async function startSolanaMonitor(): Promise<() => void> {
             solanaMonitorStats.catchUpAt = new Date().toISOString();
             catchingUp = false;
             touchSolanaSync();
-            log.info({ catchUpOk, catchUpErr, maxAgeMs }, 'Solana catch-up tick finished');
+            log.info(
+              { catchUpOk, catchUpErr, maxAgeMs, slice: slice.length },
+              'Solana catch-up tick finished',
+            );
           }
         })();
       }
