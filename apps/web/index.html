@@ -494,19 +494,26 @@ function paintLocalCustody(){
 function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=invOf(e),nx=Math.max(0,avail*s.set.alloc/100),L=s.m,P=s.pos.filter(p=>!q||p.sym.toLowerCase().includes(q));
  const st={ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[s.bot];
  const showAmt=s.balReady;
- const amt=(u)=>showAmt?f(e,u):'*';
+ // Known amounts (including real zero) show 0.xx — never use * as a stand-in for empty buckets.
+ const amt=(u)=> (showAmt || Number(u)===0) ? f(e,u) : '*';
+ const usdLine=()=>{
+  if(showAmt) return X.usd?usd(e,cash+inv):(LIVE?'…':'$0.00');
+  if(Number(cash+inv)===0) return X.usd?usd(e,0):'$0.00';
+  return '*';
+ };
+ const nxLabel=(showAmt || Number(nx)===0) ? f(e,nx) : '*';
  const wrk=s.worker;
  const wrkNote=!wallet[e]
   ?`<div class="ban live" style="margin-bottom:12px">Connect and sign in. Trading/Savings show <b>your custody wallet</b> (Deposit funds there. not the shared worker key).</div>`
-  :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody (*). Amounts appear automatically from cache / RPC.</div>`
+  :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody. Amounts appear automatically from cache / RPC.</div>`
   :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance. Refreshing in the background.</div>`
   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
    ?`<div class="ban live" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
    :'')));
  return `${liveBanner(e)}${wrkNote}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${showAmt?(X.usd?usd(e,cash+inv):(LIVE?'…':'*')):'*'}</div>
+<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${usdLine()}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${showAmt?f(e,nx):'*'} ${X.u}</b>${showAmt&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect and sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+<p class="mu">Next copy trade: <b style="color:var(--tx)">${nxLabel} ${X.u}</b>${(showAmt||Number(nx)===0)&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect and sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${amt(s.sav)} ${X.u}</div><div class="mu">Reserved on your custody wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>

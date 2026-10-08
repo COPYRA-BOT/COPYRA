@@ -50,11 +50,12 @@ services:
       http_path: /health
       # basic-xxs needs a long head start (API listen + prisma) or DO marks Degraded
       # with "Waiting for service" while the new instance is still booting.
-      initial_delay_seconds: 60
-      period_seconds: 5
-      timeout_seconds: 5
+      # Worker+API share one container — brief event-loop stalls must not flip Degraded.
+      initial_delay_seconds: 90
+      period_seconds: 10
+      timeout_seconds: 10
       success_threshold: 1
-      failure_threshold: 12
+      failure_threshold: 18
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV
