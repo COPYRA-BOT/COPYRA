@@ -41,6 +41,11 @@ export interface SwapRequest {
   idempotencyKey: string;
   /** When set with multi-user custody, spend/sign from that account's custody wallet. */
   userId?: string;
+  /**
+   * Exit / kill-switch path: veryHigh priority fees, skip preflight, shorter
+   * confirm-before-retry so blockhashes do not expire mid-attempt.
+   */
+  urgency?: 'normal' | 'exit';
 }
 
 export interface ExecutionOutcome {
@@ -168,8 +173,9 @@ export async function confirmSolanaTransaction(
       // 'processed' — seen by a validator but not yet confirmed. Keep waiting.
     } else {
       missPolls += 1;
-      // Block-height expiry check every 3rd miss (not every poll) to cut RPC RTT.
-      if (missPolls % 3 === 0) {
+      // Check expiry often so dead txs fail fast and the executor can rebuild
+      // (waiting a full ~60s for natural expiry was the 32–47s sell lag).
+      if (missPolls === 1 || missPolls % 2 === 0) {
         const heightResult = await solanaPool()
           .call('getBlockHeight', (client) => client.getBlockHeight())
           .catch(() => null);
@@ -363,6 +369,7 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- build ------------------------------------------------------------
+    const isExit = request.urgency === 'exit';
     let built: Awaited<ReturnType<typeof buildJupiterSwap>>;
     try {
       built = await buildJupiterSwap({
@@ -370,6 +377,11 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
         userPublicKey: walletAddress,
         wrapAndUnwrapSol: true,
         computeUnitLimit: env.SOLANA_COMPUTE_UNIT_LIMIT,
+        // Exits need to land in the next few slots — use max priority.
+        priorityFeeMicroLamports: isExit
+          ? Math.max(env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS, 2_000_000)
+          : undefined,
+        priorityLevel: isExit ? 'veryHigh' : 'high',
       });
       telemetry.mark('built');
       record(attempt, 'build', 'ok', `lastValidBlockHeight=${built.lastValidBlockHeight}`);
@@ -408,48 +420,53 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- pre-flight against a real validator (time-bounded) ---------------
-    // simulateTransaction is a genuine RPC call against live state. Cap wait so
-    // a slow RPC cannot push detect→broadcast past the 1s budget; on timeout we
-    // still broadcast with skipPreflight (real chain confirmation remains).
-    // copyra-audit-allow: real Solana RPC method name
-    const PREFLIGHT_BUDGET_MS = 220;
-    const preflight = await Promise.race([
-      solanaPool()
-        .call('simulateTransaction', (client) =>
-          // copyra-audit-allow: `simulateTransaction` is the Solana RPC method
-          client.simulateTransaction(transaction, { replaceRecentBlockhash: false, sigVerify: false }),
-        )
-        .catch((error: unknown) => {
-          log.warn({ err: error }, 'Pre-flight RPC call failed; proceeding to broadcast');
+    // Exits skip preflight entirely — every ms of delay ages the blockhash.
+    // Buys keep a short RPC preflight budget; on timeout we still broadcast.
+    if (isExit) {
+      record(attempt, 'preflight', 'ok', 'skipped-exit-urgency');
+    } else {
+      const PREFLIGHT_BUDGET_MS = 180;
+      const preflight = await Promise.race([
+        solanaPool()
+          .call('simulateTransaction', (client) =>
+            // copyra-audit-allow: `simulateTransaction` is the Solana RPC method
+            client.simulateTransaction(transaction, {
+              replaceRecentBlockhash: false,
+              sigVerify: false,
+            }),
+          )
+          .catch((error: unknown) => {
+            log.warn({ err: error }, 'Pre-flight RPC call failed; proceeding to broadcast');
+            return null;
+          }),
+        sleep(PREFLIGHT_BUDGET_MS).then(() => {
+          log.warn({ budgetMs: PREFLIGHT_BUDGET_MS }, 'Pre-flight budget exceeded; proceeding to broadcast');
           return null;
         }),
-      sleep(PREFLIGHT_BUDGET_MS).then(() => {
-        log.warn({ budgetMs: PREFLIGHT_BUDGET_MS }, 'Pre-flight budget exceeded; proceeding to broadcast');
-        return null;
-      }),
-    ]);
+      ]);
 
-    if (preflight?.value.value.err) {
-      const detail = JSON.stringify(preflight.value.value.err);
-      const logs = preflight.value.value.logs?.slice(-5).join(' | ') ?? '';
-      record(attempt, 'preflight', 'error', `${detail} ${logs}`);
-      lastError = new Error(`Pre-flight failed: ${detail}`);
-      if (attempt === request.maxAttempts) {
-        return failure(TxStatus.FAILED, 'PREFLIGHT_FAILED', `${detail} ${logs}`, {
-          quotedAmountRaw: quote.quote.outAmount,
-          priceImpactPct: quote.priceImpactPct,
-          blockhash,
-          lastValidBlockHeight: BigInt(built.lastValidBlockHeight),
-        });
+      if (preflight?.value.value.err) {
+        const detail = JSON.stringify(preflight.value.value.err);
+        const logs = preflight.value.value.logs?.slice(-5).join(' | ') ?? '';
+        record(attempt, 'preflight', 'error', `${detail} ${logs}`);
+        lastError = new Error(`Pre-flight failed: ${detail}`);
+        if (attempt === request.maxAttempts) {
+          return failure(TxStatus.FAILED, 'PREFLIGHT_FAILED', `${detail} ${logs}`, {
+            quotedAmountRaw: quote.quote.outAmount,
+            priceImpactPct: quote.priceImpactPct,
+            blockhash,
+            lastValidBlockHeight: BigInt(built.lastValidBlockHeight),
+          });
+        }
+        continue; // fresh quote + fresh blockhash
       }
-      continue; // fresh quote + fresh blockhash
+      record(
+        attempt,
+        'preflight',
+        'ok',
+        preflight ? `units=${preflight.value.value.unitsConsumed ?? 'n/a'}` : 'skipped-budget',
+      );
     }
-    record(
-      attempt,
-      'preflight',
-      'ok',
-      preflight ? `units=${preflight.value.value.unitsConsumed ?? 'n/a'}` : 'skipped-budget',
-    );
 
     // --- broadcast ---------------------------------------------------------
     let broadcastSignature: string;
@@ -458,14 +475,15 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
         () =>
           solanaPool().call('sendRawTransaction', (client) =>
             client.sendRawTransaction(transaction.serialize(), {
-              skipPreflight: true, // already pre-flighted above
-              maxRetries: 0, // retries are owned here, not by the client
-              preflightCommitment: 'confirmed',
+              skipPreflight: true,
+              // Let the RPC rebroadcast briefly while we poll confirmation.
+              maxRetries: isExit ? 3 : 0,
+              preflightCommitment: 'processed',
             }),
           ),
         {
           attempts: 2,
-          baseDelayMs: 100,
+          baseDelayMs: 40,
           // A duplicate-signature error means it is already out there, which is
           // success for broadcast purposes, so never treat it as retryable.
           retryable: (error) => !/already been processed|duplicate signature/i.test(describe(error)),
@@ -497,10 +515,15 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- confirm, by reading chain state -----------------------------------
+    // Exits: bound confirm wait; expiry polls above fail fast so we rebuild
+    // instead of sitting on a dead blockhash for ~60s (32–47s sell lag).
+    const confirmBudget = isExit
+      ? Math.min(request.confirmTimeoutMs, 12_000)
+      : request.confirmTimeoutMs;
     const confirmation = await confirmSolanaTransaction(
       broadcastSignature,
       built.lastValidBlockHeight,
-      request.confirmTimeoutMs,
+      confirmBudget,
     );
     record(
       attempt,
@@ -585,9 +608,10 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       continue;
     }
 
-    // EXPIRED or UNKNOWN.
+    // EXPIRED only: signature never observed and blockhash dead — safe to rebuild.
+    // UNKNOWN must not retry with a new tx (risk of double-spend if the first lands).
     if (confirmation.status === TxStatus.EXPIRED && attempt < request.maxAttempts) {
-      continue; // nothing landed; safe to rebuild
+      continue;
     }
 
     return {

@@ -51,20 +51,21 @@ export async function startEvmMonitor(): Promise<() => void> {
     if (stopped || ticking) return;
     ticking = true;
     try {
-      const settings = await getStrategyConfig();
-      const chains = POLL_CHAINS.filter((chain) => {
-        const config = chainConfig(chain);
-        return Boolean(config.rpcUrl) && settings.enabledChains.includes(chain);
-      });
-      if (chains.length === 0) return;
-
+      // Poll every EVM chain that has an RPC + enabled traders.
+      // Do not gate detection on strategy.enabledChains — that list controls
+      // execution only; missing BASE/ETH traders previously looked like “EVM dead”.
       const traders = await prisma.trader.findMany({
-        where: { chain: { in: chains }, enabled: true },
+        where: { chain: { in: POLL_CHAINS }, enabled: true },
       });
+      const pollable = traders.filter((t) => Boolean(chainConfig(t.chain).rpcUrl));
+      if (pollable.length === 0) {
+        touchEvmTick();
+        return;
+      }
 
       // Parallel polls across traders — sequential 4s loops were the EVM detect floor.
       await Promise.all(
-        traders.map(async (trader) => {
+        pollable.map(async (trader) => {
           if (stopped) return;
           try {
             await pollTrader(trader.chain, trader.id, trader.address, cursors);

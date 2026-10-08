@@ -27,9 +27,9 @@ const log = componentLogger('solana-monitor');
 const TX_FETCH_ATTEMPTS = 4;
 const TX_FETCH_BASE_DELAY_MS = 40;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
-const CATCHUP_LIMIT = 20;
-/** Steady-state catch-up window (avoids stale “Detected in” spam). */
-const CATCHUP_MAX_AGE_MS = 90_000;
+const CATCHUP_LIMIT = 40;
+/** Steady-state catch-up window — wide enough to recover RPC gaps without flood. */
+const CATCHUP_MAX_AGE_MS = 180_000;
 /** First sync after boot / forced WS resub — recover activity missed during a stall. */
 const CATCHUP_RECOVERY_AGE_MS = 15 * 60_000;
 /** Outcomes that mean "try again later" — never treat as final. */

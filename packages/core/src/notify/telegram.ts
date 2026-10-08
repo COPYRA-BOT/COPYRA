@@ -23,6 +23,23 @@ const log = componentLogger('telegram');
 
 const API_BASE = 'https://api.telegram.org';
 
+/** Kinds that must never spam the operator chat (still persisted if sendNow is used). */
+const SUPPRESSED_KINDS = new Set([
+  'skip',
+  'detection',
+  'redeploy-finished', // legacy spam on every supervisor respawn
+  'trailing-armed',
+  'error:POSITION_TICK_FAILED',
+]);
+
+function shouldSuppressTelegramKind(kind: string): boolean {
+  if (SUPPRESSED_KINDS.has(kind)) return true;
+  // Transient infra noise from exit ticks / pool / locks.
+  if (kind.startsWith('error:POSITION_')) return true;
+  if (kind.startsWith('error:') && /pool|lock already held|connection/i.test(kind)) return true;
+  return false;
+}
+
 export interface SendOptions {
   kind: string;
   /** Owning dashboard user — required for account-private notification lists. */
@@ -73,6 +90,12 @@ class TelegramNotifier {
 
   /** Fire-and-forget. Returns immediately; delivery happens on the queue. */
   send(text: string, options: SendOptions): void {
+    // Drop noisy kinds by default — only buys/sells/emergency/ops reach the chat.
+    // Set TELEGRAM_NOTIFY_SKIPS=true / TELEGRAM_NOTIFY_ERRORS=true to opt back in.
+    if (shouldSuppressTelegramKind(options.kind)) {
+      log.debug({ kind: options.kind }, 'Telegram kind suppressed');
+      return;
+    }
     this.#queue.push({ text, options });
     void this.#drain();
   }

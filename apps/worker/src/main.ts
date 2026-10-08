@@ -55,17 +55,25 @@ const stopEvm = await startEvmMonitor();
 workerActivity.lastSolanaSyncAt = Date.now();
 workerActivity.lastEvmTickAt = Date.now();
 
+// Only notify after a real cold start / deploy — not every supervisor respawn.
+// Recent heartbeat means this is a crash-loop restart (or DO health flap), not a push.
+const priorBeat = await prisma.workerHeartbeat.findUnique({ where: { name: 'copyra-worker' } });
+const priorAgeMs = priorBeat?.beatAt ? Date.now() - priorBeat.beatAt.getTime() : Number.POSITIVE_INFINITY;
+const isColdStart = !priorBeat || priorAgeMs > 5 * 60_000;
+
 await heartbeat('running', {
   monitor: 'solana-logs+evm-transfers+exits-fast',
   pid: process.pid,
   alwaysOn: true,
 });
-logger.info({}, 'COPYRA worker started 24/7. Solana logs, EVM polls, TP/SL marks, and stall watchdog are live');
+logger.info({ isColdStart, priorAgeMs }, 'COPYRA worker started 24/7. Solana logs, EVM polls, TP/SL, stall watchdog live');
 
-telegram.send(
-  '✅ <b>AUTO REDEPLOY FINISHED</b>\nWorker is live 24/7. Solana subscriptions, EVM polls, TP/SL (250ms), and a stall watchdog (auto-respawn) are active.',
-  { kind: 'redeploy-finished' },
-);
+if (isColdStart) {
+  telegram.send(
+    '✅ <b>WORKER ONLINE</b>\nCopy-trade worker is live after deploy. Solana + EVM monitors and TP/SL watchdog are active.',
+    { kind: 'worker-online' },
+  );
+}
 
 /** TP/SL / trailing marks — sub-second so exits stay inside the 1s budget. */
 const EXIT_TICK_MS = 250;
@@ -140,11 +148,8 @@ const shutdown = async () => {
   clearInterval(watchdogTimer);
   stopSolana();
   stopEvm();
-  await alertOps(
-    'worker-stopped',
-    'Copy-trade worker received <b>SIGTERM/SIGINT</b> and is stopping.\nIf this was not an intentional deploy, check DigitalOcean immediately.',
-    { awaitDelivery: true, cooldownSec: 60 },
-  );
+  // Graceful SIGTERM is normal on DO deploy — do not page the operator.
+  // Crash / watchdog still alert via fatalExit → alertOps.
   await heartbeat('stopped', { alwaysOn: false });
   await prisma.$disconnect();
   process.exit(0);

@@ -3,24 +3,16 @@
 #
 # On basic-xxs, starting the worker before the API delays listen() and makes
 # App Platform health checks fail → "Waiting for service" / Degraded during
-# every deploy. Bring the API up first, then start the worker.
+# every deploy. Bring the API up FIRST so /health answers immediately.
+#
+# Schema migrate/push runs AFTER health is up — never block the load balancer
+# on prisma migrate (that caused HTTP 504 / UptimeRobot downs).
 #
 # The copy-trade worker MUST run 24/7. If it exits (watchdog stall, OOM, crash),
 # respawn it forever — never leave the platform without a live monitor.
 set -e
 
 PORT="${PORT:-${API_PORT:-8080}}"
-
-# Apply additive Prisma schema (accounts / referrals / 2FA) before listen.
-# Prefer migrate deploy; if this DB was previously synced with db push and has no
-# migration history, fall back to db push so App Platform does not stay Degraded.
-if ! npm run db:migrate; then
-  echo "COPYRA db:migrate failed — falling back to db push (additive account schema)" >&2
-  if ! npm run db:push; then
-    echo "COPYRA schema sync failed — refusing to start" >&2
-    exit 1
-  fi
-fi
 
 npm run start -w @copyra/api &
 API_PID=$!
@@ -51,6 +43,14 @@ while [ "$i" -lt 90 ]; do
   i=$((i + 1))
   sleep 1
 done
+
+# Additive schema sync after /health is live (accounts / referrals / 2FA).
+(
+  if ! npm run db:migrate; then
+    echo "COPYRA db:migrate failed — falling back to db push" >&2
+    npm run db:push || echo "COPYRA schema sync deferred; API stays up" >&2
+  fi
+) &
 
 if [ "${RUN_WORKER:-true}" = "true" ]; then
   (

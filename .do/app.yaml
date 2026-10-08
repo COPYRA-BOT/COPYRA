@@ -104,3 +104,7 @@ services:
       # WEBAUTHN_RP_ID            — copyra.fun
       # WEBAUTHN_RP_NAME          — COPYRA
       # REFERRAL_MIN_CLAIM_USD    — optional, default 1 (claims stay 0 until fees exist)
+      #
+      # Prisma pool (optional overrides; defaults are safe for API+worker on basic PG):
+      # PRISMA_CONNECTION_LIMIT=8
+      # PRISMA_POOL_TIMEOUT=20

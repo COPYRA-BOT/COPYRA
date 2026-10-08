@@ -138,6 +138,8 @@ export interface SwapBuildParams {
   /** Jupiter creates/closes the wrapped-SOL account for us when true. */
   wrapAndUnwrapSol?: boolean;
   priorityFeeMicroLamports?: number;
+  /** Jupiter priorityLevelWithMaxLamports.priorityLevel */
+  priorityLevel?: 'medium' | 'high' | 'veryHigh';
   computeUnitLimit?: number;
 }
 
@@ -165,7 +167,7 @@ export async function buildJupiterSwap(params: SwapBuildParams): Promise<SwapBui
     prioritizationFeeLamports: {
       priorityLevelWithMaxLamports: {
         maxLamports: params.priorityFeeMicroLamports ?? env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS,
-        priorityLevel: 'high',
+        priorityLevel: params.priorityLevel ?? 'high',
       },
     },
   };

@@ -16,7 +16,7 @@ import { reportError } from '../obs/sentry.js';
 import { evmSigner, solanaSigner } from '../security/signer.js';
 import { multiUserCustodyEnabled } from '../security/user-custody.js';
 import { executeSolanaSwap, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
-import { withLock } from '../util/redis.js';
+import { LockHeldError, withLock } from '../util/redis.js';
 import {
   renderFailure,
   renderSell,
@@ -39,6 +39,30 @@ const log = componentLogger('exit-execute');
 
 const LIVE = [PositionStatus.OPEN, PositionStatus.PARTIALLY_CLOSED] as const;
 
+/** Bound concurrent position ticks so Prisma pool is not exhausted (was limit=2). */
+const EXIT_TICK_CONCURRENCY = 3;
+
+async function mapPool<T>(items: T[], concurrency: number, fn: (item: T) => Promise<void>): Promise<void> {
+  if (items.length === 0) return;
+  let i = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (i < items.length) {
+      const idx = i;
+      i += 1;
+      await fn(items[idx]!);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function isTransientExitTickError(error: unknown): boolean {
+  if (error instanceof LockHeldError) return true;
+  const msg = error instanceof Error ? error.message : String(error);
+  return /Timed out fetching a new connection from the connection pool|connection pool|Lock already held/i.test(
+    msg,
+  );
+}
+
 export async function monitorOpenPositions(): Promise<void> {
   const positions = await prisma.position.findMany({
     where: { status: { in: [...LIVE] } },
@@ -47,21 +71,27 @@ export async function monitorOpenPositions(): Promise<void> {
   if (positions.length === 0) return;
   // Shared settings for the tick — avoid N sequential DB reads before marks.
   const [config, settings] = await Promise.all([getStrategyConfig(), getSettings()]);
-  await Promise.all(
-    positions.map(async (position) => {
-      try {
-        await markAndMaybeExit(position, config, settings);
-      } catch (error) {
-        await reportError(error, {
-          component: 'exit-monitor',
-          code: 'POSITION_TICK_FAILED',
-          chain: position.chain,
-          notify: true,
-          context: { positionId: position.id },
-        });
+  await mapPool(positions, EXIT_TICK_CONCURRENCY, async (position) => {
+    try {
+      await markAndMaybeExit(position, config, settings);
+    } catch (error) {
+      // Lock contention / pool blips are expected under load — log, don't Telegram.
+      if (isTransientExitTickError(error)) {
+        log.warn(
+          { positionId: position.id, err: error },
+          'Exit tick deferred (lock or pool); will retry next interval',
+        );
+        return;
       }
-    }),
-  );
+      await reportError(error, {
+        component: 'exit-monitor',
+        code: 'POSITION_TICK_FAILED',
+        chain: position.chain,
+        notify: false,
+        context: { positionId: position.id },
+      });
+    }
+  });
 }
 
 async function markAndMaybeExit(
@@ -163,8 +193,11 @@ async function markAndMaybeExit(
     return;
   }
 
-  await markWrites;
-  await withLock(`exit:${position.id}`, 120_000, async () => {
+  // Fire marks in background — do not delay the sell broadcast on DB writes.
+  void markWrites.catch((error: unknown) => {
+    log.warn({ positionId: position.id, err: error }, 'Mark write failed during exit');
+  });
+  await withLock(`exit:${position.id}`, 45_000, async () => {
     const fresh = await prisma.position.findUnique({ where: { id: position.id } });
     if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) return;
     await executeExit(
@@ -343,12 +376,13 @@ async function executeExit(
           amountRaw: sellRaw,
           slippageBps: config.maxSlippageBps,
           maxPriceImpactPct: config.maxPriceImpactPct,
-          quoteMaxAgeMs: config.quoteMaxAgeMs,
-          confirmTimeoutMs: config.confirmTimeoutMs,
-          maxAttempts: config.maxExecutionAttempts,
+          quoteMaxAgeMs: Math.min(config.quoteMaxAgeMs, 2_000),
+          confirmTimeoutMs: Math.min(config.confirmTimeoutMs, 12_000),
+          maxAttempts: Math.max(config.maxExecutionAttempts, 5),
           telemetry,
           idempotencyKey,
           userId: ownerUserId,
+          urgency: 'exit',
         })
       : await executeEvmSwap({
           chain: position.chain,
@@ -357,9 +391,9 @@ async function executeExit(
           amountInRaw: sellRaw,
           slippageBps: config.maxSlippageBps,
           maxPriceImpactPct: config.maxPriceImpactPct,
-          quoteMaxAgeMs: config.quoteMaxAgeMs,
-          confirmTimeoutMs: config.confirmTimeoutMs,
-          maxAttempts: config.maxExecutionAttempts,
+          quoteMaxAgeMs: Math.min(config.quoteMaxAgeMs, 2_000),
+          confirmTimeoutMs: Math.min(config.confirmTimeoutMs, 12_000),
+          maxAttempts: Math.max(config.maxExecutionAttempts, 5),
           telemetry,
           idempotencyKey,
           userId: ownerUserId,

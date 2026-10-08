@@ -10,10 +10,12 @@ declare global {
 
 /**
  * Cap pool size per process. App Platform runs API + worker as two Node
- * processes against a small managed Postgres; Prisma's default
- * (num_cpus*2+1 each) exhausts DO connection slots and surfaces as
- * intermittent /api/funds 504s and "remaining connection slots are reserved".
- * Keep this very low (default 2) — DO basic plans often allow ~22 total.
+ * processes against managed Postgres (~22–25 slots on basic plans).
+ *
+ * Default was 2 and that starved the exit monitor (250ms ticks × N positions ×
+ * parallel queries) → "Timed out fetching a new connection from the connection
+ * pool" → /health 504 → App Platform Degraded → container restarts.
+ * 8 per process (~16 total) leaves headroom for admin connections.
  */
 function datasourceUrl(): string | undefined {
   const raw = process.env.DATABASE_URL?.trim();
@@ -21,10 +23,10 @@ function datasourceUrl(): string | undefined {
   try {
     const url = new URL(raw);
     if (!url.searchParams.has('connection_limit')) {
-      url.searchParams.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT?.trim() || '2');
+      url.searchParams.set('connection_limit', process.env.PRISMA_CONNECTION_LIMIT?.trim() || '8');
     }
     if (!url.searchParams.has('pool_timeout')) {
-      url.searchParams.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT?.trim() || '10');
+      url.searchParams.set('pool_timeout', process.env.PRISMA_POOL_TIMEOUT?.trim() || '20');
     }
     // Prefer connection reuse; avoid opening extra sockets on small DO DBs.
     if (!url.searchParams.has('connect_timeout')) {
