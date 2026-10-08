@@ -363,19 +363,21 @@ function hydrate(snap){
   const acts=[];
   // Not signed into this mode → empty Recent Activity (never borrow the other mode).
   if(modeUserId){
+  const sigStage={DETECTED:'Detect',QUALIFIED:'Qualify',EXECUTING:'Buy',EXECUTED:'Buy filled',FAILED:'Buy failed',SKIPPED:'Skip',BLOCKED_NO_SIGNER:'Blocked',BLOCKED_DISABLED:'Blocked'};
+  const exitWhy={COPY:'copy',TAKE_PROFIT:'TP',STOP_LOSS:'SL',TRAILING_STOP:'trailing',TRADER_SOLD:'trader sold',MANUAL:'manual',EMERGENCY_STOP:'kill switch'};
   for(const s of signals.filter(x=>modeOf(x.chain)===e&&owns(x))){
    const who=s.trader?.label||'Trader';
    const tok=s.token?.symbol||(s.tokenAddress||'').slice(0,6);
    const when=new Date(s.createdAt).toLocaleTimeString();
    const ts=new Date(s.createdAt).getTime();
+   const stage=sigStage[s.status]||s.status;
+   const src=s.sourceTx||s.sourceTxHash||'';
    if(s.status==='SKIPPED'||String(s.status).startsWith('BLOCKED')){
     const r=s.skipReason||s.status;
     next.skip.unshift({t:when,w:who+' → '+tok,r});
-    const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${who}</b> → ${tok}. ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e,kind:'signal'});
+    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${stage}</b> · <b>${who}</b> → ${tok} · ${r}${txExplorerLink(s.chain,src)}`,e,kind:'signal'});
    }else{
-    const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${who}</b> bought ${tok}. ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e,kind:'signal'});
+    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${stage}</b> · <b>${who}</b> bought ${tok}${txExplorerLink(s.chain,src)||(' · '+(src.slice(0,8)||'')+'…')}`,e,kind:'signal'});
    }
   }
   for(const t of trades.filter(x=>modeOf(x.chain)===e&&owns(x))){
@@ -384,7 +386,9 @@ function hydrate(snap){
    const link=t.explorerUrl
     ?` <a href="${t.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
     :(t.txHash?txExplorerLink(t.chain,t.txHash):'. No hash (not broadcast)');
-   acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`<b>On chain</b> · COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e,kind:'trade'});
+   const why=t.reason?` · ${exitWhy[t.reason]||t.reason}`:'';
+   const stage=t.side==='SELL'?`<b>Exit</b>${why}`:`<b>Buy</b>`;
+   acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`<b>On chain</b> · ${stage} · COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e,kind:'trade'});
   }
   // On chain custody activity (deposits / withdrawals / bucket moves).
   const decimalsFor=(chain,sym)=>{
