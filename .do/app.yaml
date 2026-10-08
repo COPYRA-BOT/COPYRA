@@ -76,11 +76,11 @@ services:
       - key: CORS_ORIGINS
         value: "https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app"
       - key: TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: SOL_TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: EVM_TRADING_ENABLED
-        value: "false"
+        value: "true"
       - key: MULTI_USER_CUSTODY
         value: "true"
       # Encrypted App-Level secrets scoped to ALL components — never commit:
