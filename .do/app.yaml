@@ -73,11 +73,12 @@ services:
     instance_size_slug: basic-xs
     health_check:
       http_path: /health
-      initial_delay_seconds: 45
+      initial_delay_seconds: 60
       period_seconds: 10
-      timeout_seconds: 10
+      timeout_seconds: 15
       success_threshold: 1
-      failure_threshold: 18
+      # Prefer staying Healthy through brief CPU blips; worker is a separate component.
+      failure_threshold: 36
     run_command: /app/scripts/start-production.sh
     envs:
       - key: NODE_ENV

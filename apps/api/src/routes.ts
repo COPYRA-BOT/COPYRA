@@ -822,8 +822,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         buildWorkerWalletBalances(),
         userIds.length
           ? prisma.notificationLog.findMany({
-              // Per-mode Recent Activity only needs trade alerts (BUY/SELL).
-              // Ops / redeploy / link probes stay out of the dashboard feed.
+              // Account Recent Activity: BUY/SELL alerts + Telegram link confirmation.
+              // Ops / redeploy stay out of the dashboard feed.
               where: {
                 userId: { in: userIds },
                 kind: {
@@ -834,11 +834,12 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
                     'sell-submitted',
                     'buy-failed',
                     'sell-failed',
+                    'telegram-link',
                   ],
                 },
               },
               orderBy: { createdAt: 'desc' },
-              take: 60,
+              take: 80,
             })
           : Promise.resolve([]),
         userIds.length
@@ -891,8 +892,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })),
       pnl,
       notifications,
-      transfers,
-      deposits,
+      transfers: transfers.map((tr) => ({
+        ...tr,
+        explorerUrl: tr.explorerUrl || (tr.txHash ? explorerTxUrl(tr.chain, tr.txHash) : null),
+      })),
+      deposits: deposits.map((d) => ({
+        ...d,
+        explorerUrl: d.txHash ? explorerTxUrl(d.chain, d.txHash) : null,
+      })),
       auth: {
         sol: sessions.sol
           ? { address: sessions.sol.user.address, chain: sessions.sol.user.chain, userId: sessions.sol.user.id }

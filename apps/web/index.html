@@ -372,10 +372,10 @@ function hydrate(snap){
     const r=s.skipReason||s.status;
     next.skip.unshift({t:when,w:who+' → '+tok,r});
     const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>${who}</b> → ${tok}. ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e});
+    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${who}</b> → ${tok}. ${s.status==='SKIPPED'?'Trade skipped':'Blocked'} · ${r}${txExplorerLink(s.chain,src)}`,e,kind:'signal'});
    }else{
     const src=s.sourceTx||s.sourceTxHash||'';
-    acts.push({t:when,ts,h:`<b>${who}</b> bought ${tok}. ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e});
+    acts.push({t:when,ts,h:`<b>On chain</b> · <b>${who}</b> bought ${tok}. ${s.status} · source${txExplorerLink(s.chain,src)||(' '+(src.slice(0,8)||'')+'…')}`,e,kind:'signal'});
    }
   }
   for(const t of trades.filter(x=>modeOf(x.chain)===e&&owns(x))){
@@ -384,7 +384,7 @@ function hydrate(snap){
    const link=t.explorerUrl
     ?` <a href="${t.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
     :(t.txHash?txExplorerLink(t.chain,t.txHash):'. No hash (not broadcast)');
-   acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e});
+   acts.push({t:when,ts:new Date(t.createdAt).getTime(),h:`<b>On chain</b> · COPYRA ${t.side} ${t.tokenSymbol||''} · ${t.status}${t.errorMessage?' · '+t.errorMessage:''}${link}`,e,kind:'trade'});
   }
   // On chain custody activity (deposits / withdrawals / bucket moves).
   const decimalsFor=(chain,sym)=>{
@@ -399,7 +399,7 @@ function hydrate(snap){
    const explorer=d.explorerUrl
     ?` <a href="${d.explorerUrl}" target="_blank" rel="noopener noreferrer">${(TX_EXPLORER[d.chain]||{}).name||'tx'}</a>`
     :txExplorerLink(d.chain,d.txHash);
-   acts.push({t:when,ts:new Date(d.creditedAt||d.createdAt).getTime(),h:`<b>Deposit</b> ${amt.toFixed(e==='sol'?3:2)} ${e==='sol'?'SOL':'USDC'} on ${d.chain} · ${d.status}${explorer}`,e,kind:'deposit'});
+   acts.push({t:when,ts:new Date(d.creditedAt||d.createdAt).getTime(),h:`<b>On chain</b> · <b>Deposit</b> ${amt.toFixed(e==='sol'?3:2)} ${e==='sol'?'SOL':'USDC'} on ${d.chain} · ${d.status}${explorer}`,e,kind:'deposit'});
   }
   for(const tr of (snap.transfers||[]).filter(x=>modeOf(x.chain)===e&&owns(x))){
    // Same-bucket + txHash rows mirror custodyDeposit. skip to avoid duplicate Deposit lines.
@@ -416,22 +416,21 @@ function hydrate(snap){
    const link=tr.explorerUrl
     ?` <a href="${tr.explorerUrl}" target="_blank" rel="noopener noreferrer">${name}</a>`
     :txExplorerLink(tr.chain,tr.txHash);
-   acts.push({t:when,ts:new Date(tr.confirmedAt||tr.requestedAt).getTime(),h:`<b>${label}</b> ${amt.toFixed(e==='sol'?3:4)} ${tr.assetSymbol||(e==='sol'?'SOL':'USDC')} · ${tr.status}${link}`,e,kind:'transfer'});
+   acts.push({t:when,ts:new Date(tr.confirmedAt||tr.requestedAt).getTime(),h:`<b>On chain</b> · <b>${label}</b> ${amt.toFixed(e==='sol'?3:4)} ${tr.assetSymbol||(e==='sol'?'SOL':'USDC')} · ${tr.status}${link}`,e,kind:'transfer'});
   }
   for(const n of (snap.notifications||[])){
    const kind=String(n.kind||'');
-   // Ops / link probes stay out of the per-mode feed; BUY/SELL (+ fails) only.
-   if(kind==='worker-online'||kind==='redeploy-finished'||kind==='telegram-link')continue;
+   // Platform ops stay out; this account's trade + Telegram-link notes stay in.
+   if(kind==='worker-online'||kind==='redeploy-finished')continue;
    if(kind.startsWith('ops-')||kind.startsWith('ops-clear-'))continue;
    if(n.userId!==modeUserId)continue;
    const tradeKind=/^(buy|sell)-(confirmed|submitted|failed)$/.test(kind);
+   const accountKind=kind==='telegram-link';
    if(tradeKind){
     const nm=modeFromNotifyBody(n.body);
     if(nm&&nm!==e)continue;
-    // Same account on both modes with no chain marker → keep only when chain matches mode via kind alone is impossible; skip ambiguous.
-    if(!nm)continue;
-   }else{
-    // Non-trade account notes: skip (Recent Activity is mode trade/custody feed).
+    // No chain marker → still show on this signed-in mode so the account feed is complete.
+   }else if(!accountKind){
     continue;
    }
    const when=new Date(n.createdAt||Date.now()).toLocaleTimeString();
@@ -441,7 +440,15 @@ function hydrate(snap){
     .replace(/\s+/g,' ')
     .trim()
     .slice(0,180);
-   acts.push({t:when,ts:new Date(n.createdAt||Date.now()).getTime(),h:`Notify · ${kind||n.channel||'telegram'} · ${body}`,e,kind:'notify'});
+   const label=accountKind?'Telegram'
+    :kind==='buy-confirmed'?'BUY'
+    :kind==='sell-confirmed'?'SELL'
+    :kind==='buy-submitted'?'BUY submitted'
+    :kind==='sell-submitted'?'SELL submitted'
+    :kind==='buy-failed'?'BUY failed'
+    :kind==='sell-failed'?'SELL failed'
+    :(kind||n.channel||'notify');
+   acts.push({t:when,ts:new Date(n.createdAt||Date.now()).getTime(),h:`<b>${label}</b> · ${body}`,e,kind:'notify'});
   }
   }
   acts.sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -533,13 +540,15 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
  };
  const nxLabel=(showAmt || Number(nx)===0) ? f(e,nx) : '*';
  const wrk=s.worker;
+ // Custody cache refresh stays silent in the background (no public "last confirmed" banner).
+ // Connect-wallet uses the same warm tone as other custody notes (not red .ban.live).
  const wrkNote=!wallet[e]
-  ?`<div class="ban live" style="margin-bottom:12px">Connect your wallet and start copy trading smart wallets.</div>`
-  :(!s.balReady?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Loading custody. Amounts appear automatically from cache / RPC.</div>`
-  :(s.balError?`<div class="ban" style="margin-bottom:12px;background:rgba(255,184,77,.12);color:var(--wn)">Showing last confirmed custody balance. Refreshing in the background.</div>`
-  :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
-   ?`<div class="ban live" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
-   :'')));
+  ?`<div class="ban" style="margin-bottom:12px">Connect your wallet and start copy trading smart wallets.</div>`
+  :(!s.balReady
+   ?`<div class="ban" style="margin-bottom:12px">Loading custody balances…</div>`
+   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
+    ?`<div class="ban" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
+    :''));
  return `${liveBanner(e)}${wrkNote}
 <div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${usdLine()}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>

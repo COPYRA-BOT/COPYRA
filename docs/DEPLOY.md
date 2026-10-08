@@ -116,10 +116,12 @@ The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so *
 |---|---|
 | HTTP Port | **`8080`** |
 | Health Check Path | **`/health`** |
-| Initial Delay | **60s** (xxs boot) |
-| Period | **5s** |
-| Timeout | **5s** |
-| Success / Failure | **1 / 12** |
+| Initial Delay | **60s** |
+| Period | **10s** |
+| Timeout | **15s** |
+| Success / Failure | **1 / 36** |
+
+Worker is a separate App Platform **Worker** component (`start-worker.sh`) so trading load cannot flip the app to Degraded.
 
 ### Environment
 
