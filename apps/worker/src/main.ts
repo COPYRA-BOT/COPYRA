@@ -113,10 +113,18 @@ function beatDetail(): Record<string, unknown> {
   };
 }
 
+/** Never overlap exit ticks — 250ms interval + slow marks was stacking pool waits. */
+let exitInFlight = false;
 const exitTimer = setInterval(() => {
-  void monitorOpenPositions().catch((error: unknown) => {
-    logger.error({ err: error }, 'Exit monitor tick failed');
-  });
+  if (exitInFlight) return;
+  exitInFlight = true;
+  void monitorOpenPositions()
+    .catch((error: unknown) => {
+      logger.error({ err: error }, 'Exit monitor tick failed');
+    })
+    .finally(() => {
+      exitInFlight = false;
+    });
 }, EXIT_TICK_MS);
 
 /** Never overlap heartbeat upserts — stacked pool waits froze beatAt for minutes. */
@@ -133,10 +141,17 @@ const heartbeatTimer = setInterval(() => {
     });
 }, HEARTBEAT_MS);
 
+let maintInFlight = false;
 const maintTimer = setInterval(() => {
-  void reconcilePendingTrades().catch((error: unknown) => {
-    logger.error({ err: error }, 'Reconcile tick failed');
-  });
+  if (maintInFlight) return;
+  maintInFlight = true;
+  void reconcilePendingTrades()
+    .catch((error: unknown) => {
+      logger.error({ err: error }, 'Reconcile tick failed');
+    })
+    .finally(() => {
+      maintInFlight = false;
+    });
 }, MAINT_TICK_MS);
 
 /**
