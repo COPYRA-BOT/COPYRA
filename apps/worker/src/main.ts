@@ -119,10 +119,18 @@ const exitTimer = setInterval(() => {
   });
 }, EXIT_TICK_MS);
 
+/** Never overlap heartbeat upserts — stacked pool waits froze beatAt for minutes. */
+let heartbeatInFlight = false;
 const heartbeatTimer = setInterval(() => {
-  void heartbeat('running', beatDetail()).catch((error: unknown) => {
-    logger.error({ err: error }, 'Heartbeat failed');
-  });
+  if (heartbeatInFlight) return;
+  heartbeatInFlight = true;
+  void heartbeat('running', beatDetail())
+    .catch((error: unknown) => {
+      logger.error({ err: error }, 'Heartbeat failed');
+    })
+    .finally(() => {
+      heartbeatInFlight = false;
+    });
 }, HEARTBEAT_MS);
 
 const maintTimer = setInterval(() => {
