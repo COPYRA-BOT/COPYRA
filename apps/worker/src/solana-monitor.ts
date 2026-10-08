@@ -152,27 +152,31 @@ export async function startSolanaMonitor(): Promise<() => void> {
 
       // Catch-up OUTSIDE the subscription critical path, with a hard per-trader
       // timeout. A hung getParsedTransaction used to hold `syncing` forever and
-      // permanently disable both catch-up and resubscribe.
+      // permanently disable both catch-up and resubscribe. Batch to avoid RPC storms.
       const catchUpTraders = traders;
       void (async () => {
         let catchUpOk = 0;
         let catchUpErr = 0;
-        await Promise.all(
-          catchUpTraders.map(async (trader) => {
-            try {
-              await Promise.race([
-                catchUpTrader(trader.id, trader.address, maxAgeMs),
-                sleep(12_000).then(() => {
-                  throw new Error('catch-up timed out after 12s');
-                }),
-              ]);
-              catchUpOk += 1;
-            } catch (error) {
-              catchUpErr += 1;
-              log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
-            }
-          }),
-        );
+        const batchSize = 4;
+        for (let i = 0; i < catchUpTraders.length; i += batchSize) {
+          const batch = catchUpTraders.slice(i, i + batchSize);
+          await Promise.all(
+            batch.map(async (trader) => {
+              try {
+                await Promise.race([
+                  catchUpTrader(trader.id, trader.address, maxAgeMs),
+                  sleep(12_000).then(() => {
+                    throw new Error('catch-up timed out after 12s');
+                  }),
+                ]);
+                catchUpOk += 1;
+              } catch (error) {
+                catchUpErr += 1;
+                log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+              }
+            }),
+          );
+        }
         solanaMonitorStats.catchUpOk = catchUpOk;
         solanaMonitorStats.catchUpErr = catchUpErr;
         solanaMonitorStats.catchUpAt = new Date().toISOString();
