@@ -1,5 +1,6 @@
 import {
   buildLatencyReport,
+  env,
   evmSigner,
   executableChains,
   getEvmBlockNumber,
@@ -257,7 +258,9 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
 
   return jsonSafe({
     trading: {
-      envGuard: process.env.TRADING_ENABLED === 'true',
+      envGuard: env.TRADING_ENABLED,
+      solTradingEnabled: env.SOL_TRADING_ENABLED,
+      evmTradingEnabled: env.EVM_TRADING_ENABLED,
       settingsEnabled: settings.tradingEnabled,
       emergencyStop: settings.emergencyStop,
       blockedReason: tradingBlockedReason(settings, signerAvailable),

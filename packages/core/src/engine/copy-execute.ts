@@ -192,10 +192,13 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   const modeKey = input.chain === Chain.SOLANA ? 'sol' : 'evm';
   const modeUi = (settings.ui as Record<string, { engine?: string } | undefined> | null)?.[modeKey];
   const modeStopped = modeUi?.engine === 'STOPPED' || modeUi?.engine === 'PAUSED';
+  // Host-level per-family guards (DO App env). Master TRADING_ENABLED alone is not enough.
+  const chainTradingEnabled =
+    input.chain === Chain.SOLANA ? env.SOL_TRADING_ENABLED : env.EVM_TRADING_ENABLED;
 
   const gate = executionGate({
     signerAvailable: signer.available,
-    tradingEnabled: config.tradingEnabled && !modeStopped,
+    tradingEnabled: config.tradingEnabled && !modeStopped && chainTradingEnabled,
     emergencyStop: settings.emergencyStop,
     emergencyStopReason: settings.emergencyStopReason,
   });

@@ -120,6 +120,9 @@ export function tradingBlockedReason(
   if (!env.TRADING_ENABLED) {
     return 'TRADING_ENABLED is false in the server environment. This is a host-level guard that the dashboard cannot override.';
   }
+  if (!env.SOL_TRADING_ENABLED && !env.EVM_TRADING_ENABLED) {
+    return 'SOL_TRADING_ENABLED and EVM_TRADING_ENABLED are both false in the server environment.';
+  }
   if (!row.tradingEnabled) {
     return 'Trading is switched off in strategy settings.';
   }

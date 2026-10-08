@@ -9,6 +9,7 @@ import {
   type Position,
 } from '@copyra/db';
 import { chainConfig } from '../config/chains.js';
+import { env } from '../config/env.js';
 import { NATIVE_SENTINEL } from '../evm/kyberswap.js';
 import { executeEvmSwap } from '../evm/executor.js';
 import { getMarketSnapshot } from '../market/index.js';
@@ -169,15 +170,18 @@ async function markAndMaybeExit(
   const signerOk =
     multiUserCustodyEnabled() ||
     (position.chain === Chain.SOLANA ? solanaSigner.available : evmSigner.available);
+  const chainTradingEnabled =
+    position.chain === Chain.SOLANA ? env.SOL_TRADING_ENABLED : env.EVM_TRADING_ENABLED;
   const gate = executionGate({
     signerAvailable: signerOk,
-    tradingEnabled: true,
-    emergencyStop: false,
-    emergencyStopReason: null,
+    // Exits still respect per-chain host guards; never force-sell when that family is off.
+    tradingEnabled: config.tradingEnabled && chainTradingEnabled,
+    emergencyStop: settings.emergencyStop,
+    emergencyStopReason: settings.emergencyStopReason,
   });
   if (!gate.ok) {
     await markWrites;
-    log.info({ positionId: position.id, status: gate.status }, 'Exit signal held. No signer');
+    log.info({ positionId: position.id, status: gate.status }, 'Exit signal held');
     return;
   }
 

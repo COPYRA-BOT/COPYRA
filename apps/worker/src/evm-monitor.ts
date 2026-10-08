@@ -54,10 +54,31 @@ export async function startEvmMonitor(): Promise<() => void> {
       // Poll every EVM chain that has an RPC + enabled traders.
       // Do not gate detection on strategy.enabledChains — that list controls
       // execution only; missing BASE/ETH traders previously looked like “EVM dead”.
+      //
+      // Also watch each EVM address on Base when the saved row is ETH/ARB/BSC.
+      // KOL wallets are often added as ETHEREUM but trade memes on Base — without
+      // this cross-chain poll, EVM copy stays silent (transfers-only on mainnet).
       const traders = await prisma.trader.findMany({
         where: { chain: { in: POLL_CHAINS }, enabled: true },
       });
-      const pollable = traders.filter((t) => Boolean(chainConfig(t.chain).rpcUrl));
+      const jobs = new Map<string, { chain: Chain; traderId: string; address: string; label: string }>();
+      for (const trader of traders) {
+        const addJob = (chain: Chain) => {
+          if (!chainConfig(chain).rpcUrl) return;
+          const key = `${chain}:${trader.address.toLowerCase()}`;
+          if (!jobs.has(key)) {
+            jobs.set(key, {
+              chain,
+              traderId: trader.id,
+              address: trader.address,
+              label: trader.label,
+            });
+          }
+        };
+        addJob(trader.chain);
+        if (trader.chain !== Chain.BASE) addJob(Chain.BASE);
+      }
+      const pollable = [...jobs.values()];
       if (pollable.length === 0) {
         touchEvmTick();
         return;
@@ -65,12 +86,12 @@ export async function startEvmMonitor(): Promise<() => void> {
 
       // Bound concurrency so parallel Alchemy polls cannot open more DB queries
       // than the process Prisma pool (default 3).
-      await mapPool(pollable, 2, async (trader) => {
+      await mapPool(pollable, 2, async (job) => {
         if (stopped) return;
         try {
-          await pollTrader(trader.chain, trader.id, trader.address, cursors);
+          await pollTrader(job.chain, job.traderId, job.address, cursors);
         } catch (error) {
-          log.error({ err: error, trader: trader.label, chain: trader.chain }, 'EVM poll failed');
+          log.error({ err: error, trader: job.label, chain: job.chain }, 'EVM poll failed');
         }
       });
       touchEvmTick();

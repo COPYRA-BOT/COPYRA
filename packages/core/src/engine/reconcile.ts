@@ -1,10 +1,13 @@
-import { Chain, prisma, PositionStatus, SignalStatus, TxStatus } from '@copyra/db';
+import { Chain, prisma, PositionStatus, SignalStatus, TradeSide, TxStatus } from '@copyra/db';
 import { confirmEvmTransaction } from '../evm/executor.js';
 import { componentLogger } from '../obs/logger.js';
 import { reportError } from '../obs/sentry.js';
 import { confirmSolanaTransaction } from '../solana/executor.js';
 
 const log = componentLogger('reconcile');
+
+/** BUILDING with no broadcast this long is abandoned — reopen CLOSING books for retry. */
+const STALE_BUILDING_MS = 3 * 60_000;
 
 /**
  * Re-reads chain state for trades that left the executor without a verdict.
@@ -68,5 +71,52 @@ export async function reconcilePendingTrades(): Promise<number> {
       });
     }
   }
+
+  // Stuck exits: position CLOSING + trade BUILDING with no txHash (executor died mid-swap).
+  // Fail the trade and reopen the book so the 250ms exit tick can sell again.
+  const staleBuilding = await prisma.trade.findMany({
+    where: {
+      status: TxStatus.BUILDING,
+      createdAt: { lt: new Date(Date.now() - STALE_BUILDING_MS) },
+    },
+    take: 20,
+    orderBy: { createdAt: 'asc' },
+  });
+  for (const trade of staleBuilding) {
+    try {
+      await prisma.trade.update({
+        where: { id: trade.id },
+        data: {
+          status: TxStatus.FAILED,
+          errorCode: 'STALE_BUILDING',
+          errorMessage:
+            'Trade stuck in BUILDING without a broadcast; marked failed so the exit monitor can retry.',
+          failedAt: new Date(),
+        },
+      });
+      if (trade.positionId && trade.side === TradeSide.SELL) {
+        await prisma.position.updateMany({
+          where: { id: trade.positionId, status: PositionStatus.CLOSING },
+          data: { status: PositionStatus.OPEN },
+        });
+      } else if (trade.positionId && trade.side === TradeSide.BUY) {
+        await prisma.position.updateMany({
+          where: { id: trade.positionId, status: PositionStatus.PENDING_OPEN },
+          data: { status: PositionStatus.OPEN_FAILED },
+        });
+      }
+      resolved += 1;
+      log.warn({ tradeId: trade.id, positionId: trade.positionId }, 'Reconciled stale BUILDING trade');
+    } catch (error) {
+      await reportError(error, {
+        component: 'reconcile',
+        code: 'RECONCILE_STALE_BUILDING_FAILED',
+        chain: trade.chain,
+        notify: false,
+        context: { tradeId: trade.id },
+      });
+    }
+  }
+
   return resolved;
 }

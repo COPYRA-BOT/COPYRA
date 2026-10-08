@@ -66,4 +66,4 @@ Simulates steady + rolling-deploy connection demand and fails if the budget exce
 
 ## Trading flags
 
-Per operator request for this change set: `SOL_TRADING_ENABLED=false`, `EVM_TRADING_ENABLED=false` in `.do/app.yaml`. Re-enable only when you approve a push.
+Production App Platform defaults: `TRADING_ENABLED=true`, `SOL_TRADING_ENABLED=true`, `EVM_TRADING_ENABLED=true`. Each chain family is gated independently in `copy-execute` / `exit-execute`.
