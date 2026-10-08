@@ -33,7 +33,7 @@ const CATCHUP_MAX_AGE_MS = 120_000;
 /** First sync after boot / forced WS resub — recover activity missed during a stall. */
 const CATCHUP_RECOVERY_AGE_MS = 3 * 60_000;
 /** Minimum gap between catch-up passes (subscriptions still refresh every sync). */
-const CATCHUP_MIN_GAP_MS = 45_000;
+const CATCHUP_MIN_GAP_MS = 60_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */

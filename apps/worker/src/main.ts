@@ -13,8 +13,10 @@ import { solanaMonitorStats, startSolanaMonitor } from './solana-monitor.js';
 
 initSentry('copyra-worker');
 
-/** If Solana sync or EVM ticks go silent this long, exit so the 24/7 supervisor respawns us. */
-const WATCHDOG_SILENCE_MS = 3 * 60_000;
+/** If Solana sync or EVM ticks go silent this long, exit so the 24/7 supervisor respawns us.
+ *  5 min matches ops-watch — tighter windows were killing the worker during RPC/pool blips
+ *  and DO rolling deploys (two containers briefly share the DB). */
+const WATCHDOG_SILENCE_MS = 5 * 60_000;
 const WATCHDOG_CHECK_MS = 30_000;
 
 async function heartbeat(status: string, detail: Record<string, unknown> = {}): Promise<void> {

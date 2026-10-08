@@ -90,6 +90,18 @@ TRADING_ENABLED=true
 
 Required secrets: `DATABASE_URL`, `REDIS_URL`, `SESSION_SECRET`, bot keys, RPC URLs, Telegram, Reown project id. See `.do/app.yaml` comments.
 
+### Keep the trading engine online (ops checklist)
+
+| Priority | Action |
+|---|---|
+| 1 | **Cloudflare DNS only (grey cloud)** for `copyra.fun` / `www` — see above. Orange proxy is the main 504 source. |
+| 2 | **PgBouncer** on DO Postgres: set `DATABASE_URL` = pooled, `DIRECT_URL` = direct, `PGBOUNCER=true` (see `docs/DATABASE_CONNECTIONS.md`). |
+| 3 | Keep `TRADING_ENABLED` / `SOL_TRADING_ENABLED` / `EVM_TRADING_ENABLED` = `true` (App-Level). |
+| 4 | Optional: upgrade App Platform size from `basic-xs` → `basic-s` if CPU still pegs during catch-up. |
+| 5 | Telegram BUY/SELL DMs require **Settings → Connect Telegram BOT** with your chat ID (ops chat only gets admin/ops alerts). |
+
+The worker is supervised 24/7 (`scripts/start-production.sh` respawns on crash). Live WS subscriptions keep detecting while catch-up runs in the background.
+
 ### Balances
 
 Trading / Savings buckets are **live RPC reads of the signed-in account’s custody wallet**. They are not sticky browser guesses. Deposit via the dashboard Deposit button so funds land on that custody address (not the shared bot signer).
