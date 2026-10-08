@@ -219,7 +219,10 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
     lastValidBlockHeight: null,
     routeProvider: 'kyberswap',
     routeSummary: null,
-    attempts: attemptLog.filter((a) => a.stage === 'broadcast').length,
+    attempts: Math.max(
+      attemptLog.filter((a) => a.stage === 'broadcast').length,
+      attemptLog.reduce((m, a) => Math.max(m, a.attempt), 0),
+    ),
     attemptLog,
     errorCode,
     errorMessage,
@@ -279,8 +282,13 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       continue;
     }
 
-    if (route.priceImpactPct > request.maxPriceImpactPct) {
-      const message = `Price impact ${route.priceImpactPct.toFixed(4)}% exceeds the ${request.maxPriceImpactPct}% limit; refusing the swap.`;
+    // Sells/exits (token → native) use a higher ceiling so TP/SL can land on thin books.
+    const isExit = request.tokenOut.toLowerCase() === NATIVE_SENTINEL.toLowerCase();
+    const impactCeiling = isExit
+      ? Math.max(request.maxPriceImpactPct, 25)
+      : request.maxPriceImpactPct;
+    if (route.priceImpactPct > impactCeiling) {
+      const message = `Price impact ${route.priceImpactPct.toFixed(4)}% exceeds the ${impactCeiling}% limit; refusing the swap.`;
       record(attempt, 'guard', 'error', message);
       return failure('PRICE_IMPACT_TOO_HIGH', message, {
         priceImpactPct: route.priceImpactPct,

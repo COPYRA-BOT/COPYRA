@@ -77,17 +77,13 @@ if (isColdStart) {
 
 /** TP/SL / trailing marks — sub-second so exits stay inside the 1s budget. */
 const EXIT_TICK_MS = 250;
-/** Heartbeat + pending-tx reconcile (not on the buy/exit critical path). */
+/** Dedicated heartbeat — never share a timer with reconcile (that caused false "worker stale"). */
+const HEARTBEAT_MS = 5_000;
+/** Pending-tx reconcile (not on the buy/exit critical path). */
 const MAINT_TICK_MS = 8_000;
 
-const exitTimer = setInterval(() => {
-  void monitorOpenPositions().catch((error: unknown) => {
-    logger.error({ err: error }, 'Exit monitor tick failed');
-  });
-}, EXIT_TICK_MS);
-
-const maintTimer = setInterval(() => {
-  void heartbeat('running', {
+function beatDetail(): Record<string, unknown> {
+  return {
     monitor: 'solana+evm+exits',
     pid: process.pid,
     exitTickMs: EXIT_TICK_MS,
@@ -97,9 +93,22 @@ const maintTimer = setInterval(() => {
     lastEvmTickAt: workerActivity.lastEvmTickAt || null,
     lastEvmProcessedAt: workerActivity.lastEvmProcessedAt || null,
     ...solanaMonitorStats,
-  }).catch((error: unknown) => {
+  };
+}
+
+const exitTimer = setInterval(() => {
+  void monitorOpenPositions().catch((error: unknown) => {
+    logger.error({ err: error }, 'Exit monitor tick failed');
+  });
+}, EXIT_TICK_MS);
+
+const heartbeatTimer = setInterval(() => {
+  void heartbeat('running', beatDetail()).catch((error: unknown) => {
     logger.error({ err: error }, 'Heartbeat failed');
   });
+}, HEARTBEAT_MS);
+
+const maintTimer = setInterval(() => {
   void reconcilePendingTrades().catch((error: unknown) => {
     logger.error({ err: error }, 'Reconcile tick failed');
   });
@@ -144,6 +153,7 @@ void monitorOpenPositions().catch((error: unknown) => {
 
 const shutdown = async () => {
   clearInterval(exitTimer);
+  clearInterval(heartbeatTimer);
   clearInterval(maintTimer);
   clearInterval(watchdogTimer);
   stopSolana();

@@ -292,7 +292,11 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     lastValidBlockHeight: null,
     routeProvider: 'jupiter',
     routeSummary: null,
-    attempts: attemptLog.filter((a) => a.stage === 'broadcast').length,
+    // Count quote/guard loops too — "0 attempt(s)" was wrong when impact refused before broadcast.
+    attempts: Math.max(
+      attemptLog.filter((a) => a.stage === 'broadcast').length,
+      attemptLog.reduce((m, a) => Math.max(m, a.attempt), 0),
+    ),
     attemptLog,
     errorCode,
     errorMessage,
@@ -352,9 +356,14 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       continue;
     }
 
+    const isExit = request.urgency === 'exit';
     // --- guards, before anything is signed -------------------------------
-    if (quote.priceImpactPct > request.maxPriceImpactPct) {
-      const error = new PriceImpactTooHighError(quote.priceImpactPct, request.maxPriceImpactPct);
+    // Exits (TP/SL) must land even when the book is thin — refuse only extreme impact.
+    const impactCeiling = isExit
+      ? Math.max(request.maxPriceImpactPct, 25)
+      : request.maxPriceImpactPct;
+    if (quote.priceImpactPct > impactCeiling) {
+      const error = new PriceImpactTooHighError(quote.priceImpactPct, impactCeiling);
       record(attempt, 'guard', 'error', error.message);
       return failure(TxStatus.FAILED, error.code, error.message, {
         priceImpactPct: quote.priceImpactPct,
@@ -369,7 +378,6 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- build ------------------------------------------------------------
-    const isExit = request.urgency === 'exit';
     let built: Awaited<ReturnType<typeof buildJupiterSwap>>;
     try {
       built = await buildJupiterSwap({

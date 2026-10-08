@@ -9,40 +9,59 @@ const log = componentLogger('telegram');
 /**
  * Telegram delivery.
  *
- * Properties that matter for a trading bot:
- *  * Never throws into the trading path. A notification failure must not stop
- *    or delay a trade (spec §14: "If Telegram is disconnected, trading must
- *    continue").
- *  * Every message is redacted before sending, so a credential can never reach
- *    a chat (spec §22).
- *  * Every message is persisted to `notification_logs` with its delivery
- *    outcome, so "did the alert actually go out?" is answerable.
- *  * Rate limited to Telegram's ~1 message/second per chat, with a queue, so a
- *    burst of signals does not get dropped by the API.
+ * Routing (COPYRA bot token is shared; chat targets differ):
+ *  * Platform `TELEGRAM_CHAT_ID` — admin ops / backend alerts + admin-wallet trades only.
+ *  * Per-user `User.telegramChatId` — that account's BUY/SELL confirmed alerts only.
+ *  * Never throws into the trading path; every attempt is logged to `notification_logs`
+ *    so Recent Activity stays accurate per account.
  */
 
 const API_BASE = 'https://api.telegram.org';
 
-/** Kinds that must never spam the operator chat (still persisted if sendNow is used). */
+/** Kinds that must never spam any chat (no persist — pure noise). */
 const SUPPRESSED_KINDS = new Set([
   'skip',
   'detection',
-  'redeploy-finished', // legacy spam on every supervisor respawn
+  'redeploy-finished',
   'trailing-armed',
   'error:POSITION_TICK_FAILED',
 ]);
 
+/** Kinds delivered to a linked user chat (BUY/SELL fills + link confirmation). */
+const USER_CHAT_KINDS = new Set(['buy-confirmed', 'sell-confirmed', 'telegram-link']);
+
+/** Admin platform chat: technical / backend only (+ admin trade kinds below). */
+const ADMIN_OPS_KINDS = new Set([
+  'worker-online',
+  'emergency-stop',
+  'emergency-clear',
+  'kill-switch',
+]);
+
+/** Extra trade kinds that may reach the admin chat when the owner is an admin. */
+const ADMIN_TRADE_EXTRA_KINDS = new Set([
+  'buy-confirmed',
+  'sell-confirmed',
+  'buy-submitted',
+  'sell-submitted',
+  'buy-failed',
+  'sell-failed',
+]);
+
 function shouldSuppressTelegramKind(kind: string): boolean {
   if (SUPPRESSED_KINDS.has(kind)) return true;
-  // Transient infra noise from exit ticks / pool / locks.
   if (kind.startsWith('error:POSITION_')) return true;
   if (kind.startsWith('error:') && /pool|lock already held|connection/i.test(kind)) return true;
   return false;
 }
 
+function isOpsKind(kind: string): boolean {
+  return kind.startsWith('ops-') || kind.startsWith('ops-clear-') || ADMIN_OPS_KINDS.has(kind);
+}
+
 export interface SendOptions {
   kind: string;
-  /** Owning dashboard user — required for account-private notification lists. */
+  /** Owning dashboard user — required for account-private notification lists + user TG. */
   userId?: string;
   tradeId?: string;
   positionId?: string;
@@ -67,6 +86,13 @@ export function parseTelegramMigrateTo(error: unknown): string | null {
   }
 }
 
+/** Accept personal chat ids (123) and group ids (-100…). */
+export function normalizeTelegramChatId(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!/^-?\d{5,20}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 class TelegramNotifier {
   readonly enabled: boolean;
   readonly #token: string | undefined;
@@ -78,20 +104,23 @@ class TelegramNotifier {
   constructor() {
     this.#token = env.TELEGRAM_BOT_TOKEN;
     this.#chatId = env.TELEGRAM_CHAT_ID;
-    this.enabled = Boolean(this.#token && this.#chatId);
+    // Bot token alone is enough to DM users; platform chat is optional for ops.
+    this.enabled = Boolean(this.#token);
     if (!this.enabled) {
       log.warn(
         {},
-        'Telegram is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing). ' +
+        'Telegram is not configured (TELEGRAM_BOT_TOKEN missing). ' +
           'Notifications will be recorded in the database but not delivered.',
       );
     }
   }
 
+  get adminChatConfigured(): boolean {
+    return Boolean(this.#token && this.#chatId);
+  }
+
   /** Fire-and-forget. Returns immediately; delivery happens on the queue. */
   send(text: string, options: SendOptions): void {
-    // Drop noisy kinds by default — only buys/sells/emergency/ops reach the chat.
-    // Set TELEGRAM_NOTIFY_SKIPS=true / TELEGRAM_NOTIFY_ERRORS=true to opt back in.
     if (shouldSuppressTelegramKind(options.kind)) {
       log.debug({ kind: options.kind }, 'Telegram kind suppressed');
       return;
@@ -125,69 +154,116 @@ class TelegramNotifier {
     }
   }
 
+  /**
+   * Resolve destination chat ids.
+   * - Ops / backend → platform TELEGRAM_CHAT_ID only
+   * - buy-confirmed / sell-confirmed → user telegramChatId (if linked)
+   * - Admin-owned trades → also platform chat
+   */
+  async #resolveTargets(options: SendOptions): Promise<string[]> {
+    const targets = new Set<string>();
+    const kind = options.kind;
+    const adminChat = this.#chatId?.trim() || null;
+
+    if (isOpsKind(kind) && adminChat) {
+      targets.add(adminChat);
+    }
+
+    if (options.userId) {
+      const user = await prisma.user.findUnique({
+        where: { id: options.userId },
+        select: { telegramChatId: true, isAdmin: true },
+      });
+      const userChat = user?.telegramChatId?.trim() || null;
+
+      if (USER_CHAT_KINDS.has(kind) && userChat) {
+        targets.add(userChat);
+      }
+
+      // Admin wallet / admin account trades also land in the platform ops chat.
+      if (user?.isAdmin && adminChat && ADMIN_TRADE_EXTRA_KINDS.has(kind)) {
+        targets.add(adminChat);
+      }
+    }
+
+    return [...targets];
+  }
+
+  async #postToChat(chatId: string, text: string, disableNotification: boolean): Promise<void> {
+    const { data } = await fetchJson<{ ok: boolean; description?: string }>(
+      `${API_BASE}/bot${this.#token}/sendMessage`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+          parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
+          disable_notification: disableNotification,
+        }),
+        timeoutMs: 8_000,
+        label: 'telegram/sendMessage',
+      },
+    );
+    if (!data.ok) {
+      throw new Error(data.description ?? 'Telegram returned ok=false');
+    }
+  }
+
   async #deliver(rawText: string, options: SendOptions): Promise<boolean> {
     const text = redactString(rawText);
     let delivered = false;
     let error: string | null = null;
 
-    if (this.enabled) {
-      try {
-        const { data } = await fetchJson<{ ok: boolean; description?: string }>(
-          `${API_BASE}/bot${this.#token}/sendMessage`,
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: this.#chatId,
-              text,
-              parse_mode: 'HTML',
-              link_preview_options: { is_disabled: true },
-              disable_notification: options.disableNotification ?? false,
-            }),
-            timeoutMs: 8_000,
-            label: 'telegram/sendMessage',
-          },
-        );
-        delivered = data.ok;
-        if (!data.ok) error = data.description ?? 'Telegram returned ok=false';
-      } catch (caught) {
-        const migrated = parseTelegramMigrateTo(caught);
-        if (migrated && this.#token) {
-          this.#chatId = migrated;
-          log.warn({ from: env.TELEGRAM_CHAT_ID, to: migrated }, 'Telegram chat upgraded; retrying with migrate_to_chat_id');
-          try {
-            const retry = await fetchJson<{ ok: boolean; description?: string }>(
-              `${API_BASE}/bot${this.#token}/sendMessage`,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: migrated,
-                  text,
-                  parse_mode: 'HTML',
-                  link_preview_options: { is_disabled: true },
-                  disable_notification: options.disableNotification ?? false,
-                }),
-                timeoutMs: 8_000,
-                label: 'telegram/sendMessage-migrated',
-              },
-            );
-            delivered = retry.data.ok;
-            if (!retry.data.ok) error = retry.data.description ?? 'Telegram returned ok=false after migrate';
-          } catch (retryError) {
-            error = retryError instanceof Error ? retryError.message : String(retryError);
-            log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed after migrate');
-          }
-        } else {
-          error = caught instanceof Error ? caught.message : String(caught);
-          log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed');
-        }
-      }
-    } else {
+    if (!this.enabled) {
       error = 'Telegram not configured';
+    } else {
+      try {
+        const targets = await this.#resolveTargets(options);
+        if (targets.length === 0) {
+          // Persist for Recent Activity; no chat is supposed to receive this kind.
+          error = null;
+          delivered = false;
+          log.debug({ kind: options.kind, userId: options.userId ?? null }, 'Telegram: no target chat');
+        } else {
+          const errors: string[] = [];
+          for (const chatId of targets) {
+            try {
+              await this.#postToChat(chatId, text, options.disableNotification ?? false);
+              delivered = true;
+            } catch (caught) {
+              const migrated = parseTelegramMigrateTo(caught);
+              if (migrated && chatId === this.#chatId) {
+                this.#chatId = migrated;
+                log.warn(
+                  { from: env.TELEGRAM_CHAT_ID, to: migrated },
+                  'Telegram admin chat upgraded; retrying with migrate_to_chat_id',
+                );
+                try {
+                  await this.#postToChat(migrated, text, options.disableNotification ?? false);
+                  delivered = true;
+                  continue;
+                } catch (retryError) {
+                  errors.push(retryError instanceof Error ? retryError.message : String(retryError));
+                  continue;
+                }
+              }
+              errors.push(caught instanceof Error ? caught.message : String(caught));
+            }
+          }
+          if (!delivered && errors.length) error = errors.join('; ');
+          if (delivered && errors.length) {
+            log.warn({ kind: options.kind, err: errors.join('; ') }, 'Telegram partial delivery');
+          }
+        }
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+        log.warn({ kind: options.kind, err: error }, 'Telegram delivery failed');
+      }
     }
 
-    // Recorded regardless of outcome so the audit trail is complete.
+    // Always persist so per-account Recent Activity stays complete.
     try {
       await prisma.notificationLog.create({
         data: {
@@ -209,11 +285,7 @@ class TelegramNotifier {
   }
 
   /**
-   * Verifies the bot can actually post to the configured chat.
-   *
-   * `getMe` succeeding proves only that the token is valid. Posting is what
-   * proves the bot is a member of the group with permission to write, which is
-   * the thing that actually fails in practice.
+   * Verifies the bot can actually post to the configured admin chat.
    */
   async verify(): Promise<{
     tokenValid: boolean;
@@ -222,13 +294,13 @@ class TelegramNotifier {
     chatTitle: string | null;
     error: string | null;
   }> {
-    if (!this.enabled) {
+    if (!this.#token) {
       return {
         tokenValid: false,
         botUsername: null,
         canPostToChat: false,
         chatTitle: null,
-        error: 'TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set',
+        error: 'TELEGRAM_BOT_TOKEN is not set',
       };
     }
 
@@ -258,12 +330,22 @@ class TelegramNotifier {
       };
     }
 
+    if (!this.#chatId) {
+      return {
+        tokenValid: true,
+        botUsername,
+        canPostToChat: false,
+        chatTitle: null,
+        error: 'TELEGRAM_CHAT_ID is not set (admin ops chat). User BUY/SELL DMs still work when linked.',
+      };
+    }
+
     try {
       const { data } = await fetchJson<{
         ok: boolean;
         result?: { title?: string; type: string };
         description?: string;
-      }>(`${API_BASE}/bot${this.#token}/getChat?chat_id=${encodeURIComponent(this.#chatId as string)}`, {
+      }>(`${API_BASE}/bot${this.#token}/getChat?chat_id=${encodeURIComponent(this.#chatId)}`, {
         timeoutMs: 6_000,
         label: 'telegram/getChat',
       });
@@ -282,7 +364,7 @@ class TelegramNotifier {
         canPostToChat: false,
         chatTitle: null,
         error:
-          `Bot token is valid but the chat is not reachable: ${message}. ` +
+          `Bot token is valid but the admin chat is not reachable: ${message}. ` +
           `Add @${botUsername ?? 'the bot'} to the group and allow it to post.`,
       };
     }

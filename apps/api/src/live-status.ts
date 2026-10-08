@@ -196,11 +196,25 @@ async function getCachedTelegram(): Promise<TelegramStatus> {
 
 export type LiveStatusPayload = Record<string, unknown>;
 
+/** Short full-payload cache — stops CF/dashboard stampede from wedging basic-xxs → 504. */
+const STATUS_PAYLOAD_CACHE_MS = 5_000;
+const statusPayloadCache = new Map<string, { at: number; value: LiveStatusPayload }>();
+
 /**
  * Build /api/status payload quickly.
  * Chain RPC + Telegram are cached so dashboard / WS / snapshot cannot wedge the instance.
  */
 export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveStatusPayload> {
+  let activeUserId: string | undefined;
+  if (request) {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    activeUserId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+  }
+  const cacheKey = activeUserId ?? 'anon';
+  const hit = statusPayloadCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < STATUS_PAYLOAD_CACHE_MS) return hit.value;
+
   const settings = await getSettings();
   const signerAvailable =
     multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available;
@@ -210,13 +224,6 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
     getCachedTelegram(),
     prisma.workerHeartbeat.findMany(),
   ]);
-
-  let activeUserId: string | undefined;
-  if (request) {
-    const sessions = await readBothSessions(request);
-    const mode = authModeFromRequest(request);
-    activeUserId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
-  }
 
   const [openPositions, signals24h, confirmedTrades] = activeUserId
     ? await Promise.all([
@@ -256,7 +263,7 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
     )
     .filter((n): n is number => typeof n === 'number');
 
-  return jsonSafe({
+  const payload = jsonSafe({
     trading: {
       envGuard: env.TRADING_ENABLED,
       solTradingEnabled: env.SOL_TRADING_ENABLED,
@@ -292,5 +299,7 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
       domain: 'https://copyra.fun',
     },
     cachedAt: chainCache?.at ? new Date(chainCache.at).toISOString() : null,
-  });
+  }) as LiveStatusPayload;
+  statusPayloadCache.set(cacheKey, { at: Date.now(), value: payload });
+  return payload;
 }

@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { env } from '@copyra/core';
+import { env, normalizeTelegramChatId, telegram } from '@copyra/core';
 import { Chain, CustodyFamily, prisma } from '@copyra/db';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { verifyWalletSignature } from '../auth.js';
+import { authModeFromRequest, readSession, verifyWalletSignature } from '../auth.js';
 import { jsonSafe } from '../serialize.js';
 import { audit } from './audit.js';
 import { hashPassword, randomDigits, verifyPassword } from './crypto.js';
@@ -140,6 +140,88 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
         sol: request.cookies.copyra_session_sol ? view.wallets.sol : null,
         evm: request.cookies.copyra_session_evm ? view.wallets.evm : null,
       },
+    });
+  });
+
+  /**
+   * Link / unlink this account's Telegram chat for BUY/SELL alerts only.
+   * Ops / worker alerts stay on the platform TELEGRAM_CHAT_ID.
+   * Uses the active mode session (SOL vs EVM) so dual accounts stay isolated.
+   */
+  async function requireModeAccount(request: FastifyRequest, reply: FastifyReply) {
+    const mode = authModeFromRequest(request);
+    const session = (await readSession(request, mode)) ?? (await readAccountSession(request));
+    if (!session) {
+      reply.code(401).send({ error: 'Sign in to link Telegram for this account.' });
+      return null;
+    }
+    return session;
+  }
+
+  app.get('/api/account/telegram', async (request, reply) => {
+    const session = await requireModeAccount(request, reply);
+    if (!session) return;
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: session.user.id } });
+    const verify = await telegram.verify();
+    return jsonSafe({
+      linked: Boolean(user.telegramChatId),
+      chatIdMasked: user.telegramChatId
+        ? `${user.telegramChatId.slice(0, 3)}…${user.telegramChatId.slice(-3)}`
+        : null,
+      linkedAt: user.telegramLinkedAt,
+      botUsername: verify.botUsername,
+      botReady: verify.tokenValid,
+    });
+  });
+
+  app.patch('/api/account/telegram', async (request, reply) => {
+    const session = await requireModeAccount(request, reply);
+    if (!session) return;
+    const body = z
+      .object({
+        chatId: z.string().max(32).optional().nullable(),
+        disconnect: z.boolean().optional(),
+      })
+      .parse(request.body ?? {});
+
+    if (body.disconnect || body.chatId === null || body.chatId === '') {
+      await prisma.user.update({
+        where: { id: session.user.id },
+        data: { telegramChatId: null, telegramLinkedAt: null },
+      });
+      await audit('telegram_disconnect', { userId: session.user.id, request });
+      return jsonSafe({ ok: true, linked: false });
+    }
+
+    const chatId = normalizeTelegramChatId(String(body.chatId ?? ''));
+    if (!chatId) {
+      return reply.code(400).send({
+        error: 'Enter a valid Telegram chat ID (digits only, e.g. 123456789). Open @userinfobot to find yours.',
+      });
+    }
+    if (!telegram.enabled) {
+      return reply.code(503).send({ error: 'Telegram bot is not configured on the server.' });
+    }
+
+    await prisma.user.update({
+      where: { id: session.user.id },
+      data: { telegramChatId: chatId, telegramLinkedAt: new Date() },
+    });
+
+    const probeOk = await telegram.sendNow(
+      `✅ <b>COPYRA linked</b>\nThis chat will receive <b>BUY</b> and <b>SELL</b> alerts for your account only.\nOpen the bot and tap <b>Start</b> if this is your first message.`,
+      { kind: 'telegram-link', userId: session.user.id },
+    );
+    await audit('telegram_link', { userId: session.user.id, request });
+
+    return jsonSafe({
+      ok: true,
+      linked: true,
+      chatIdMasked: `${chatId.slice(0, 3)}…${chatId.slice(-3)}`,
+      probeOk,
+      hint: probeOk
+        ? null
+        : 'Saved. If you got no Telegram message, open the bot and tap Start, then save again.',
     });
   });
 

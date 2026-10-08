@@ -12,16 +12,22 @@ import { prisma } from '@copyra/db';
 
 const log = logger.child({ component: 'ops-watch' });
 
-/** Worker heartbeat older than this → treat as down. */
-const WORKER_STALE_MS = 2 * 60_000;
+/**
+ * Heartbeat is written every ~5s. Allow brief DB/pool blips and DO rolling
+ * deploys before paging — 2 min was false-alerting while status stayed "running".
+ */
+const WORKER_STALE_MS = 5 * 60_000;
+/** Require two consecutive stale checks (~90s apart) before alerting. */
+const STALE_STREAK_NEEDED = 2;
 const CHECK_MS = 45_000;
 
 let wasWorkerDown = false;
+let staleStreak = 0;
 let wasTradingBlocked: string | null = null;
 
 /**
  * API-side 24/7 watchdog. The worker can die without sending Telegram;
- * this loop watches the heartbeat + trading guards and pings the operator.
+ * this loop watches the heartbeat + trading guards and pings the admin ops chat.
  */
 export function startOpsWatch(): () => void {
   const tick = async () => {
@@ -32,7 +38,15 @@ export function startOpsWatch(): () => void {
       ]);
 
       const beatAge = hb?.beatAt ? Date.now() - hb.beatAt.getTime() : Number.POSITIVE_INFINITY;
-      const workerDown = !hb || hb.status === 'stopped' || beatAge > WORKER_STALE_MS;
+      const looksDown = !hb || hb.status === 'stopped' || beatAge > WORKER_STALE_MS;
+
+      if (looksDown) {
+        staleStreak += 1;
+      } else {
+        staleStreak = 0;
+      }
+
+      const workerDown = looksDown && staleStreak >= STALE_STREAK_NEEDED;
 
       if (workerDown && !wasWorkerDown) {
         const ageSec = Number.isFinite(beatAge) ? Math.round(beatAge / 1000) : 'unknown';
@@ -45,7 +59,7 @@ export function startOpsWatch(): () => void {
           { awaitDelivery: true },
         );
         wasWorkerDown = true;
-      } else if (!workerDown && wasWorkerDown) {
+      } else if (!looksDown && wasWorkerDown) {
         await alertOpsCleared(
           'worker-down',
           `Copy-trade worker is <b>back</b>.\nHeartbeat age: ${Math.round(beatAge / 1000)}s`,
@@ -83,7 +97,7 @@ export function startOpsWatch(): () => void {
   // does not page the operator with a false "worker down".
   const bootDelay = setTimeout(() => {
     void tick();
-  }, 90_000);
+  }, 120_000);
   const timer = setInterval(() => {
     void tick();
   }, CHECK_MS);

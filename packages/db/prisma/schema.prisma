@@ -223,6 +223,9 @@ model User {
   totpEnabled     Boolean   @default(false)
   totpEnabledAt   DateTime?
   isAdmin    Boolean  @default(false)
+  /// Personal Telegram chat id for BUY/SELL alerts only (never ops / other users).
+  telegramChatId  String?
+  telegramLinkedAt DateTime?
   /// When set, deposits and withdrawals are blocked for this user.
   custodyPausedAt DateTime?
   createdAt  DateTime @default(now())

@@ -145,6 +145,11 @@ export function publicUser(user: User) {
     google: Boolean(user.googleSub),
     twofa: user.totpEnabled,
     referralCode: user.referralCode,
+    /** Linked for BUY/SELL Telegram alerts (chat id itself is not exposed). */
+    telegramLinked: Boolean(user.telegramChatId),
+    telegramChatIdMasked: user.telegramChatId
+      ? `${user.telegramChatId.slice(0, 3)}…${user.telegramChatId.slice(-3)}`
+      : null,
     wallets: {
       sol: null as string | null,
       evm: null as string | null,

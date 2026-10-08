@@ -30,6 +30,7 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 #akhost appkit-button,#akhost w3m-button,#akhost w3m-core-button{display:block;width:100%}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
+.tg{background:#2AABEE;color:#fff;box-shadow:0 8px 24px rgba(42,171,238,.35)}.tg:hover{filter:brightness(1.06)}
 .red{background:var(--r);color:#fff}.sm{padding:7px 12px;border-radius:12px;font-size:13px}
 html{-webkit-text-size-adjust:100%}body{min-height:100dvh;overflow-x:hidden}
 main{max-width:1200px;margin:0 auto;padding:0 max(16px,env(safe-area-inset-left)) 60px max(16px,env(safe-area-inset-right))}.h{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
@@ -953,7 +954,8 @@ function settings(e){const s=S[e].set;
    return `<label>${l}</label><div class="row" style="gap:8px;align-items:center"><input id="s_${k}" type="number" step="any" value="${s[k]}" style="flex:1">${unitSel(id,u)}</div><p class="mu" style="margin:4px 0 0">${tip}</p>`;}
   return `<label>${l}${k=='min'?' ('+UI[e].u+')':k=='res'?' (%)':''}</label><input id="s_${k}" type="number" step="any" value="${s[k]}">`;
  };
- $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button>`;dr.classList.add('o');
+ const botUser=LIVE?.status?.telegram?.botUsername||'copyrafun_bot';
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" onclick="dr.classList.remove('o')">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)"><label>Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" style="margin:6px 0 0">1) Open <a href="https://t.me/${botUser}" target="_blank" rel="noopener">@${botUser}</a> and tap <b>Start</b>. 2) Get your chat ID from <a href="https://t.me/userinfobot" target="_blank" rel="noopener">@userinfobot</a>. 3) Save — you will only get <b>BUY</b> and <b>SELL</b> alerts for this account. Ops alerts stay on the admin chat.</p><p class="mu" id="tgStatus" style="margin:8px 0 0"></p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Save Telegram</button><button class="btn sm" id="tgDisconnect" type="button">Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;dr.classList.add('o');
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
   n.buyMode=n.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';
   n.minMcUnit=($('#s_minMcUnit')?.value==='M')?'M':'K';
@@ -972,7 +974,47 @@ function settings(e){const s=S[e].set;
     takeProfitPct:n.tp,stopLossPct:n.sl,trailingTriggerPct:n.trTp,trailingPartialSellPct:n.trFrac,trailingDropPct:n.trTrail,ui
    });
    dr.classList.remove('o');toast(`Settings saved. ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
-  }catch(err){$('#se').textContent=err.message}}}
+  }catch(err){$('#se').textContent=err.message}};
+ // Per-account Telegram BUY/SELL alerts (independent of strategy Save).
+ const loadTg=async()=>{
+  try{
+   const t=await api('GET','/api/account/telegram',null,{mode:e});
+   const st=$('#tgStatus');
+   if(!st)return;
+   st.textContent=t.linked?(`Linked${t.chatIdMasked?' · '+t.chatIdMasked:''}. BUY/SELL alerts on.`):'Not linked yet.';
+   if(t.botUsername){
+    const tip=$('#tgBox .mu a');
+    // keep static links; status text is enough
+   }
+  }catch(err){
+   const st=$('#tgStatus');
+   if(st)st.textContent=err.message||'Sign in to link Telegram.';
+  }
+ };
+ $('#tgConnect').onclick=()=>{
+  const box=$('#tgBox');
+  box.style.display=box.style.display==='none'?'block':'none';
+  if(box.style.display==='block')void loadTg();
+ };
+ $('#tgSave').onclick=async()=>{
+  $('#tgErr').textContent='';
+  try{
+   const chatId=($('#tgChat').value||'').trim();
+   const res=await api('PATCH','/api/account/telegram',{chatId},{mode:e});
+   toast(res.probeOk?'Telegram linked — check your chat for BUY/SELL alerts.':(res.hint||'Telegram chat saved.'));
+   $('#tgChat').value='';
+   await loadTg();
+  }catch(err){$('#tgErr').textContent=err.message}
+ };
+ $('#tgDisconnect').onclick=async()=>{
+  $('#tgErr').textContent='';
+  try{
+   await api('PATCH','/api/account/telegram',{disconnect:true},{mode:e});
+   toast('Telegram disconnected for this account.');
+   await loadTg();
+  }catch(err){$('#tgErr').textContent=err.message}
+ };
+}
 function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd,pnl_pct',...filteredHist().map(h=>[new Date(h.t).toISOString(),h.e,h.ch,h.sym,h.tr,h.why,Number(h.size||0).toFixed(2),Number(h.usd||0).toFixed(2),Number(h.pct||0).toFixed(2)].join(','))].join('\n');navigator.clipboard?.writeText(l).then(()=>toast('CSV copied'),()=>toast('Copy blocked by browser'))}
 $('#mc').onclick=()=>{
   M=M=='sol'?'evm':'sol';T='trading';
