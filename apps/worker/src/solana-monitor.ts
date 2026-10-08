@@ -54,6 +54,21 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
 /** Rebuild every onLogs subscription on this interval so a dead Helius WS cannot strand the worker. */
 const FORCE_RESUB_MS = 120_000;
 
+/** Latest Solana monitor stats — merged into worker heartbeat by main. */
+export const solanaMonitorStats: {
+  watching: number;
+  catchUpOk: number;
+  catchUpErr: number;
+  maxAgeMs: number;
+  catchUpAt: string | null;
+} = {
+  watching: 0,
+  catchUpOk: 0,
+  catchUpErr: 0,
+  maxAgeMs: 0,
+  catchUpAt: null,
+};
+
 export async function startSolanaMonitor(): Promise<() => void> {
   let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
@@ -130,25 +145,39 @@ export async function startSolanaMonitor(): Promise<() => void> {
         Date.now() < recoveryUntil || Date.now() - bootAt < 10 * 60_000
           ? CATCHUP_RECOVERY_AGE_MS
           : CATCHUP_MAX_AGE_MS;
-      // Catch up any signatures the live stream dropped (tx-not-found race, reconnect gaps).
-      let catchUpOk = 0;
-      let catchUpErr = 0;
-      await Promise.all(
-        traders.map(async (trader) => {
-          try {
-            await catchUpTrader(trader.id, trader.address, maxAgeMs);
-            catchUpOk += 1;
-          } catch (error) {
-            catchUpErr += 1;
-            log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
-          }
-        }),
-      );
 
-      log.info(
-        { watching: subscriptions.size, maxAgeMs, catchUpOk, catchUpErr },
-        'Solana wallet subscriptions are current',
-      );
+      solanaMonitorStats.watching = subscriptions.size;
+      solanaMonitorStats.maxAgeMs = maxAgeMs;
+      log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
+
+      // Catch-up OUTSIDE the subscription critical path, with a hard per-trader
+      // timeout. A hung getParsedTransaction used to hold `syncing` forever and
+      // permanently disable both catch-up and resubscribe.
+      const catchUpTraders = traders;
+      void (async () => {
+        let catchUpOk = 0;
+        let catchUpErr = 0;
+        await Promise.all(
+          catchUpTraders.map(async (trader) => {
+            try {
+              await Promise.race([
+                catchUpTrader(trader.id, trader.address, maxAgeMs),
+                sleep(12_000).then(() => {
+                  throw new Error('catch-up timed out after 12s');
+                }),
+              ]);
+              catchUpOk += 1;
+            } catch (error) {
+              catchUpErr += 1;
+              log.warn({ err: error, trader: trader.label }, 'Solana catch-up failed');
+            }
+          }),
+        );
+        solanaMonitorStats.catchUpOk = catchUpOk;
+        solanaMonitorStats.catchUpErr = catchUpErr;
+        solanaMonitorStats.catchUpAt = new Date().toISOString();
+        log.info({ catchUpOk, catchUpErr, maxAgeMs }, 'Solana catch-up tick finished');
+      })();
     } finally {
       syncing = false;
     }
@@ -183,9 +212,13 @@ async function catchUpTrader(
     return;
   }
 
-  const fetched = await solanaPool().call('getSignaturesForAddress', (client) =>
-    client.getSignaturesForAddress(pubkey, { limit: CATCHUP_LIMIT }),
-  );
+  const fetched = await Promise.race([
+    solanaPool().call('getSignaturesForAddress', (client) =>
+      client.getSignaturesForAddress(pubkey, { limit: CATCHUP_LIMIT }),
+    ),
+    sleep(8_000).then(() => null),
+  ]);
+  if (!fetched) throw new Error('getSignaturesForAddress timed out');
   const entries = fetched.value ?? [];
   if (entries.length === 0) return;
 
@@ -222,13 +255,20 @@ async function fetchParsedTransaction(
     // web3.js types only allow Finality (confirmed|finalized); Helius/Alchemy
     // also serve processed, which matches our log subscription and lands earlier.
     const commitment = (attempt === 1 ? 'processed' : 'confirmed') as 'confirmed';
-    const fetched = await solanaPool().call('getParsedTransaction', (client) =>
-      client.getParsedTransaction(signature, {
-        maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
-        commitment,
-      }),
-    );
-    if (fetched.value) return fetched.value;
+    try {
+      const fetched = await Promise.race([
+        solanaPool().call('getParsedTransaction', (client) =>
+          client.getParsedTransaction(signature, {
+            maxSupportedTransactionVersion: MAX_SUPPORTED_TX_VERSION,
+            commitment,
+          }),
+        ),
+        sleep(5_000).then(() => null),
+      ]);
+      if (fetched?.value) return fetched.value;
+    } catch (error) {
+      log.debug({ signature, attempt, err: error }, 'Parsed tx fetch error');
+    }
     if (attempt === TX_FETCH_ATTEMPTS) break;
     const delay = TX_FETCH_BASE_DELAY_MS * attempt;
     log.debug({ signature, attempt, delay, commitment }, 'Parsed tx not ready; retrying');
