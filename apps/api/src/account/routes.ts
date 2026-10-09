@@ -8,7 +8,7 @@ import { jsonSafe } from '../serialize.js';
 import { audit } from './audit.js';
 import { hashPassword, randomDigits, verifyPassword } from './crypto.js';
 import { sendAccountEmail } from './email.js';
-import { verifyGoogleIdToken } from './google.js';
+import { resolveGoogleClientId, verifyGoogleIdToken } from './google.js';
 import {
   claimReferralToTrading,
   referralSummary,
@@ -394,7 +394,8 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
     const body = z
       .object({ idToken: z.string().min(20), ref: z.string().optional() })
       .parse(request.body ?? {});
-    if (!env.GOOGLE_CLIENT_ID) {
+    const clientId = resolveGoogleClientId();
+    if (!clientId) {
       return reply.code(503).send({ error: 'Google sign-in is not configured (GOOGLE_CLIENT_ID).' });
     }
     const identity = await verifyGoogleIdToken(body.idToken);
@@ -421,10 +422,10 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
     }
   });
 
-  app.get('/api/account/google/config', async () => ({
-    clientId: env.GOOGLE_CLIENT_ID || null,
-    enabled: Boolean(env.GOOGLE_CLIENT_ID),
-  }));
+  app.get('/api/account/google/config', async () => {
+    const clientId = resolveGoogleClientId();
+    return { clientId: clientId || null, enabled: Boolean(clientId) };
+  });
 
   // ---- Wallet link / account wallet login (uses existing SIWE/SIWS) ------
   app.post('/api/account/wallet/link', async (request, reply) => {

@@ -8,8 +8,20 @@ export type GoogleIdentity = {
   name: string | null;
 };
 
+/**
+ * Public OAuth Web client id (embedded in the browser GIS button).
+ * Prefer `GOOGLE_CLIENT_ID` from the environment; this fallback keeps sign-in
+ * working if App Platform env sync lags. Never put the client secret here.
+ */
+export const COPYRA_GOOGLE_CLIENT_ID =
+  '262135154840-d5tr76fnjatnkg7qdjmptmj7jcbcjpbv.apps.googleusercontent.com';
+
+export function resolveGoogleClientId(): string {
+  return env.GOOGLE_CLIENT_ID?.trim() || COPYRA_GOOGLE_CLIENT_ID;
+}
+
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity | null> {
-  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  const clientId = resolveGoogleClientId();
   if (!clientId) return null;
   const client = new OAuth2Client(clientId);
   const ticket = await client.verifyIdToken({
