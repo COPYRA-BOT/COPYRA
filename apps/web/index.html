@@ -1449,16 +1449,22 @@ const ACCT_PATH={
   'passkeys/login/options':'account/passkeys/login/options','passkey/login':'account/passkeys/login',
   'step-up':'account/step-up'
 };
+function apiErr(j,status){
+  const e=j&&j.error, m=j&&j.message;
+  if(e&&e!=='Internal Server Error')return e;
+  if(typeof m==='string'&&m&&!m.startsWith('['))return m;
+  return e||m||('Request failed '+status);
+}
 async function call(p,b={},m='POST'){
   const path=ACCT_PATH[p];
   // Prefer real same-origin account API (empty COPYRA_API means same origin in production).
   if(path){
     const r=await fetch((BASE||'')+'/api/'+path,{method:m,credentials:'include',headers:{'content-type':'application/json','x-copyra-mode':M||'sol'},body:m=='GET'?undefined:JSON.stringify({...b,ref:b.ref??pref()})});
     const j=await r.json().catch(()=>({}));
-    if(!r.ok)throw E(j.error||'Request failed',r.status);
+    if(!r.ok)throw E(apiErr(j,r.status),r.status);
     return j;
   }
-  if(BASE){const r=await fetch(BASE+'/api/'+p,{method:m,credentials:'include',headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:m=='GET'?undefined:JSON.stringify({...b,deviceId:DID,ua:dn()})}),j=await r.json().catch(()=>({}));if(!r.ok)throw E(j.error||'Request failed',r.status);return j}
+  if(BASE){const r=await fetch(BASE+'/api/'+p,{method:m,credentials:'include',headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:m=='GET'?undefined:JSON.stringify({...b,deviceId:DID,ua:dn()})}),j=await r.json().catch(()=>({}));if(!r.ok)throw E(apiErr(j,r.status),r.status);return j}
   return L[p](b,tok,m);
 }
 async function sync(){/* live balances come from /api/snapshot, not account storage */}

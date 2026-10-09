@@ -1,5 +1,7 @@
 import { OAuth2Client } from 'google-auth-library';
-import { env } from '@copyra/core';
+import { env, componentLogger } from '@copyra/core';
+
+const log = componentLogger('google-auth');
 
 export type GoogleIdentity = {
   sub: string;
@@ -32,24 +34,42 @@ export function resolveGoogleClientId(): string {
   );
 }
 
+function audienceList(): string | string[] {
+  const primary = resolveGoogleClientId();
+  const fallback = normalizeGoogleClientId(COPYRA_GOOGLE_CLIENT_ID);
+  const list = [...new Set([primary, fallback].filter(Boolean))];
+  return list.length <= 1 ? primary : list;
+}
+
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity | null> {
   const clientId = resolveGoogleClientId();
   if (!clientId) return null;
-  const client = new OAuth2Client(clientId);
-  const ticket = await client.verifyIdToken({
-    idToken,
-    audience: clientId,
-  });
-  const payload = ticket.getPayload();
-  if (!payload?.sub || !payload.email) return null;
-  if (payload.iss !== 'accounts.google.com' && payload.iss !== 'https://accounts.google.com') {
+  try {
+    const client = new OAuth2Client(clientId);
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: audienceList(),
+    });
+    const payload = ticket.getPayload();
+    if (!payload?.sub || !payload.email) return null;
+    if (payload.iss !== 'accounts.google.com' && payload.iss !== 'https://accounts.google.com') {
+      return null;
+    }
+    // GIS normally sends boolean true; tolerate string forms just in case.
+    const verified =
+      payload.email_verified === true || String(payload.email_verified).toLowerCase() === 'true';
+    if (!verified) return null;
+    return {
+      sub: payload.sub,
+      email: payload.email.toLowerCase(),
+      emailVerified: true,
+      name: payload.name ?? null,
+    };
+  } catch (error) {
+    log.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'Google ID token verification failed',
+    );
     return null;
   }
-  if (payload.email_verified !== true) return null;
-  return {
-    sub: payload.sub,
-    email: payload.email.toLowerCase(),
-    emailVerified: true,
-    name: payload.name ?? null,
-  };
 }

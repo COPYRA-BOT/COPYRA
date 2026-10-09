@@ -1,5 +1,5 @@
-import { Chain, CustodyFamily, prisma, type User } from '@copyra/db';
 import { provisionUserCustody } from '@copyra/core';
+import { Chain, CustodyFamily, prisma, type User } from '@copyra/db';
 import { accountSentinelAddress, randomReferralCode } from './crypto.js';
 import { readReferralCookie } from './redis-codes.js';
 
@@ -50,24 +50,28 @@ export async function upsertGoogleUser(input: {
   name: string | null;
   referredById?: string | null;
 }): Promise<{ user: User; created: boolean }> {
+  const email = input.email.toLowerCase().trim();
+
+  // 1) Stable identity: Google subject → one COPYRA user forever.
   const existing = await prisma.user.findUnique({ where: { googleSub: input.sub } });
   if (existing) {
     const user = await prisma.user.update({
       where: { id: existing.id },
       data: {
-        googleEmail: input.email,
+        googleEmail: email,
         googleName: input.name,
-        email: existing.email ?? input.email,
+        email: existing.email ?? email,
         emailVerifiedAt: existing.emailVerifiedAt ?? new Date(),
         lastSeenAt: new Date(),
+        label: existing.label || input.name || email,
       },
     });
     await provisionUserCustody(user.id);
     return { user, created: false };
   }
 
-  // Email match: link only after Google proof (we have verified email_verified).
-  const byEmail = await prisma.user.findUnique({ where: { email: input.email } });
+  // 2) Email match: link Google to the existing account (same person).
+  const byEmail = await prisma.user.findUnique({ where: { email } });
   if (byEmail) {
     if (byEmail.googleSub && byEmail.googleSub !== input.sub) {
       throw new Error('This email is already linked to a different Google account.');
@@ -76,34 +80,48 @@ export async function upsertGoogleUser(input: {
       where: { id: byEmail.id },
       data: {
         googleSub: input.sub,
-        googleEmail: input.email,
+        googleEmail: email,
         googleName: input.name,
         emailVerifiedAt: byEmail.emailVerifiedAt ?? new Date(),
         lastSeenAt: new Date(),
+        label: byEmail.label || input.name || email,
       },
     });
     await provisionUserCustody(user.id);
     return { user, created: false };
   }
 
+  // 3) New Google account → new per-user row + custody wallets.
   const id = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-  const user = await prisma.user.create({
-    data: {
-      id,
-      address: accountSentinelAddress(id),
-      chain: Chain.SOLANA,
-      email: input.email,
-      emailVerifiedAt: new Date(),
-      googleSub: input.sub,
-      googleEmail: input.email,
-      googleName: input.name,
-      referralCode: randomReferralCode(),
-      referredById: input.referredById ?? null,
-      label: input.name,
-    },
-  });
-  await provisionUserCustody(user.id);
-  return { user, created: true };
+  try {
+    const user = await prisma.user.create({
+      data: {
+        id,
+        address: accountSentinelAddress(id),
+        chain: Chain.SOLANA,
+        email,
+        emailVerifiedAt: new Date(),
+        googleSub: input.sub,
+        googleEmail: email,
+        googleName: input.name,
+        referralCode: randomReferralCode(),
+        referredById: input.referredById ?? null,
+        label: input.name || email,
+      },
+    });
+    await provisionUserCustody(user.id);
+    return { user, created: true };
+  } catch (error) {
+    // Race: another request created the same googleSub/email — load and return it.
+    const raced =
+      (await prisma.user.findUnique({ where: { googleSub: input.sub } })) ||
+      (await prisma.user.findUnique({ where: { email } }));
+    if (raced) {
+      await provisionUserCustody(raced.id);
+      return { user: raced, created: false };
+    }
+    throw error;
+  }
 }
 
 export async function ensureReferralCode(user: User): Promise<string> {
@@ -139,10 +157,12 @@ export function publicUser(user: User) {
   return {
     id: user.id,
     email: user.email,
+    googleEmail: user.googleEmail,
     address: user.address?.startsWith('acct_') ? null : user.address,
     chain: user.chain,
-    label: user.label,
+    label: user.label || user.googleName || user.email,
     google: Boolean(user.googleSub),
+    googleSub: user.googleSub ? `${user.googleSub.slice(0, 6)}…` : null,
     twofa: user.totpEnabled,
     referralCode: user.referralCode,
     /** Linked for BUY/SELL Telegram alerts (chat id itself is not exposed). */
@@ -154,6 +174,31 @@ export function publicUser(user: User) {
       sol: null as string | null,
       evm: null as string | null,
     },
+    custody: {
+      sol: null as string | null,
+      evm: null as string | null,
+    },
     created: user.createdAt.getTime(),
   };
+}
+
+/** Attach login wallet links + custody deposit addresses for account recognition. */
+export async function publicAccount(user: User) {
+  const view = publicUser(user);
+  const [links, custody] = await Promise.all([
+    prisma.userWalletLink.findMany({ where: { userId: user.id } }),
+    prisma.userCustodyWallet.findMany({
+      where: { userId: user.id },
+      select: { family: true, address: true },
+    }),
+  ]);
+  for (const link of links) {
+    if (link.family === CustodyFamily.SOLANA) view.wallets.sol = link.address;
+    if (link.family === CustodyFamily.EVM) view.wallets.evm = link.address;
+  }
+  for (const row of custody) {
+    if (row.family === CustodyFamily.SOLANA) view.custody.sol = row.address;
+    if (row.family === CustodyFamily.EVM) view.custody.evm = row.address;
+  }
+  return view;
 }

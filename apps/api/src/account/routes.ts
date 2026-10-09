@@ -38,6 +38,7 @@ import {
   activateEmailUser,
   createEmailPendingUser,
   linkWalletToUser,
+  publicAccount,
   publicUser,
   resolveReferrerId,
   upsertGoogleUser,
@@ -125,15 +126,8 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
   app.get('/api/account/me', async (request, reply) => {
     const session = await readAccountSession(request);
     if (!session) return reply.code(401).send({ error: 'Sign in required.' });
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: session.user.id },
-      include: { walletLinks: true },
-    });
-    const view = publicUser(user);
-    for (const link of user.walletLinks) {
-      if (link.family === CustodyFamily.SOLANA) view.wallets.sol = link.address;
-      if (link.family === CustodyFamily.EVM) view.wallets.evm = link.address;
-    }
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: session.user.id } });
+    const view = await publicAccount(user);
     return jsonSafe({
       user: view,
       connected: {
@@ -391,17 +385,32 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
 
   // ---- Google OIDC ------------------------------------------------------
   app.post('/api/account/google', async (request, reply) => {
-    const body = z
-      .object({ idToken: z.string().min(20), ref: z.string().optional() })
-      .parse(request.body ?? {});
-    const clientId = resolveGoogleClientId();
-    if (!clientId) {
-      return reply.code(503).send({ error: 'Google sign-in is not configured (GOOGLE_CLIENT_ID).' });
-    }
-    const identity = await verifyGoogleIdToken(body.idToken);
-    if (!identity) return reply.code(401).send({ error: 'Google token verification failed.' });
-    const referredById = await resolveReferrerId(request.cookies, body.ref);
     try {
+      const parsed = z
+        .object({
+          idToken: z.string().min(20).optional(),
+          credential: z.string().min(20).optional(),
+          ref: z.string().optional(),
+        })
+        .safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Google sign-in requires a valid ID token.' });
+      }
+      const idToken = parsed.data.idToken || parsed.data.credential;
+      if (!idToken) {
+        return reply.code(400).send({ error: 'Google sign-in requires a valid ID token.' });
+      }
+      const clientId = resolveGoogleClientId();
+      if (!clientId) {
+        return reply.code(503).send({ error: 'Google sign-in is not configured (GOOGLE_CLIENT_ID).' });
+      }
+      const identity = await verifyGoogleIdToken(idToken);
+      if (!identity) {
+        return reply
+          .code(401)
+          .send({ error: 'Google token verification failed. Try again, or use another Google account.' });
+      }
+      const referredById = await resolveReferrerId(request.cookies, parsed.data.ref);
       const { user, created } = await upsertGoogleUser({
         sub: identity.sub,
         email: identity.email,
@@ -415,10 +424,26 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
         userAgent: request.headers['user-agent'],
         ip: clientIp(request),
       });
-      await audit(created ? 'google_create' : 'google_login', { userId: user.id, request });
-      return jsonSafe({ ok: true, created, user: publicUser(user) });
+      try {
+        await audit(created ? 'google_create' : 'google_login', {
+          userId: user.id,
+          request,
+          detail: { email: identity.email, googleSubPrefix: identity.sub.slice(0, 8) },
+        });
+      } catch {
+        /* audit must never block sign-in */
+      }
+      const view = await publicAccount(user);
+      return jsonSafe({ ok: true, created, user: view });
     } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      const message = error instanceof Error ? error.message : String(error);
+      // Unique / conflict → 409; everything else → 500 with a clear message (not bare Internal Server Error).
+      const conflict = /unique|already linked|already exists/i.test(message);
+      return reply.code(conflict ? 409 : 500).send({
+        error: conflict
+          ? message
+          : `Google sign-in failed: ${message.slice(0, 180)}`,
+      });
     }
   });
 
