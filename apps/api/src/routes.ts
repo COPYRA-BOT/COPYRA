@@ -680,33 +680,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const sessions = await readBothSessions(request);
     const mode = authModeFromRequest(request);
     const active = mode === 'evm' ? sessions.evm : sessions.sol;
+    const modeUser = (session: typeof sessions.sol) => {
+      if (!session) return null;
+      const addr = session.user.address?.startsWith('acct_') ? null : session.user.address;
+      return {
+        id: session.user.id,
+        /** Real login wallet only — email/Google sentinels are not wallets. */
+        address: addr,
+        chain: session.user.chain,
+        label: session.user.label,
+        email: session.user.email || session.user.googleEmail || null,
+        accountOnly: !addr,
+      };
+    };
     return {
       authenticated: Boolean(sessions.sol || sessions.evm),
       mode,
-      user: active
-        ? {
-            id: active.user.id,
-            address: active.user.address,
-            chain: active.user.chain,
-            label: active.user.label,
-          }
-        : null,
-      sol: sessions.sol
-        ? {
-            id: sessions.sol.user.id,
-            address: sessions.sol.user.address,
-            chain: sessions.sol.user.chain,
-            label: sessions.sol.user.label,
-          }
-        : null,
-      evm: sessions.evm
-        ? {
-            id: sessions.evm.user.id,
-            address: sessions.evm.user.address,
-            chain: sessions.evm.user.chain,
-            label: sessions.evm.user.label,
-          }
-        : null,
+      user: modeUser(active),
+      sol: modeUser(sessions.sol),
+      evm: modeUser(sessions.evm),
     };
   });
 
@@ -902,10 +894,22 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       })),
       auth: {
         sol: sessions.sol
-          ? { address: sessions.sol.user.address, chain: sessions.sol.user.chain, userId: sessions.sol.user.id }
+          ? {
+              address: sessions.sol.user.address?.startsWith('acct_') ? null : sessions.sol.user.address,
+              chain: sessions.sol.user.chain,
+              userId: sessions.sol.user.id,
+              email: sessions.sol.user.email || sessions.sol.user.googleEmail || null,
+              accountOnly: Boolean(sessions.sol.user.address?.startsWith('acct_')),
+            }
           : null,
         evm: sessions.evm
-          ? { address: sessions.evm.user.address, chain: sessions.evm.user.chain, userId: sessions.evm.user.id }
+          ? {
+              address: sessions.evm.user.address?.startsWith('acct_') ? null : sessions.evm.user.address,
+              chain: sessions.evm.user.chain,
+              userId: sessions.evm.user.id,
+              email: sessions.evm.user.email || sessions.evm.user.googleEmail || null,
+              accountOnly: Boolean(sessions.evm.user.address?.startsWith('acct_')),
+            }
           : null,
       },
       balances: {

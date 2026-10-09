@@ -25,8 +25,12 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .chip.evm .tile{background:#f3f4f6}
 .chip.evm .tile .ico.sol{opacity:0;transform:scale(.88)}
 .chip.evm .tile .ico.evm.on{opacity:1;transform:scale(1)}
-#cn-wrap{position:relative;display:inline-flex;align-items:center}
+#cn-wrap{position:relative;display:inline-flex;flex-direction:column;align-items:flex-end;gap:3px;max-width:min(220px,46vw)}
+#cn-wrap .cn-btn-row{position:relative;display:inline-flex;align-items:center}
 #cn-wrap appkit-button,#cn-wrap w3m-button,#cn-wrap w3m-core-button{position:absolute;inset:0;opacity:0.02;width:100%!important;height:100%!important;z-index:2;cursor:pointer}
+#acct-line{font-size:11px;line-height:1.25;color:var(--g);text-align:right;max-width:100%;word-break:break-all}
+#acct-line[hidden]{display:none!important}
+#acct-line button{background:none;border:0;padding:0;margin-left:6px;color:var(--g);font:inherit;text-decoration:underline;cursor:pointer;opacity:.85}
 #akhost appkit-button,#akhost w3m-button,#akhost w3m-core-button{display:block;width:100%}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
@@ -78,7 +82,7 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 <div class="logo"><img class="brand" src="/icons/copyra.webp" width="36" height="36" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
 <button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img class="ico sol on" src="/icons/solana.webp" width="34" height="34" alt="Solana" onerror="this.onerror=null;this.src='/icons/solana.png'"><img class="ico evm" src="/icons/evm.webp" width="34" height="34" alt="EVM" onerror="this.onerror=null;this.src='/icons/evm.png'"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
-<button class="ib" id="th" aria-label="Theme"></button><span id="cn-wrap"><button class="btn pri" id="cn" type="button">Connect Wallet</button></span></header>
+<button class="ib" id="th" aria-label="Theme"></button><span id="cn-wrap"><span class="cn-btn-row"><button class="btn pri" id="cn" type="button">Connect Wallet</button></span><span id="acct-line" hidden></span></span></header>
 <div id="nav"></div><div id="dr"></div><div id="sc" onclick="nav.classList.remove('o');dr.classList.remove('o')"></div><div id="md"><div></div></div><div id="ts"></div>
 <main><div class="eb">The Copyra ecosystem</div><h1>Follow the smart money<i>.</i></h1><p class="sub">Every wallet. Every chain. Your rules.</p>
 <button class="btn pri big" onclick="addT()">+&nbsp; Add trader</button>
@@ -136,6 +140,30 @@ const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp
 const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,balError:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
+/** Email/Google sentinel `acct_…` is not a real chain wallet — never treat as Connect Wallet. */
+const isRealWallet=(a,e)=>{
+  if(!a||typeof a!=='string')return false;
+  if(a.startsWith('acct_')||a.includes('@'))return false;
+  if(e==='sol')return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a);
+  return /^0x[0-9a-fA-F]{40}$/.test(a);
+};
+let acctEmailShow=false;
+function accountEmail(){
+  return (typeof user!=='undefined'&&user&&(user.email||user.googleEmail))
+    || LIVE?.auth?.[M]?.email
+    || LIVE?.auth?.sol?.email
+    || LIVE?.auth?.evm?.email
+    || null;
+}
+function paintAcctLine(){
+  const el=$('#acct-line'); if(!el)return;
+  const email=accountEmail();
+  if(!email){el.hidden=true;el.innerHTML='';return}
+  el.hidden=false;
+  const shown=acctEmailShow?email:(email.replace(/(.{2}).+(@.+)/,'$1…$2'));
+  el.innerHTML=`Account connected: ${shown} <button type="button" id="acct-vis">${acctEmailShow?'Hide':'View'}</button>`;
+  $('#acct-vis')&&($('#acct-vis').onclick=(ev)=>{ev.stopPropagation();acctEmailShow=!acctEmailShow;paintAcctLine()});
+}
 /** Trade history P&L filter: all | profit | loss */
 let histPnL='all';
 /** Pagination for activity / trade-history lists (10 rows per page). */
@@ -201,9 +229,11 @@ function hydrate(snap){
  LIVE=snap;ERR=null;
  // Keep last-good SOL/USD so the dashboard never flashes "*".
  if(snap.solUsd>0)UI.sol.usd=snap.solUsd;
- // Keep mode wallets aligned with independent sessions (never mix SOL/EVM accounts).
- if(snap.auth?.sol?.address)wallet.sol=snap.auth.sol.address;
- if(snap.auth?.evm?.address)wallet.evm=snap.auth.evm.address;
+ // Keep mode wallets aligned with real wallet sessions only (never email/Google acct_ sentinels).
+ if(isRealWallet(snap.auth?.sol?.address,'sol'))wallet.sol=snap.auth.sol.address;
+ else if(wallet.sol&&!isRealWallet(wallet.sol,'sol'))wallet.sol=null;
+ if(isRealWallet(snap.auth?.evm?.address,'evm'))wallet.evm=snap.auth.evm.address;
+ else if(wallet.evm&&!isRealWallet(wallet.evm,'evm'))wallet.evm=null;
  const st=snap.settings||{}, row=st.row||{}, ui=row.ui||{};
  const status=snap.status||{};
  const traders=snap.traders||[], positions=snap.positions||[], signals=snap.signals||[], trades=snap.trades||[];
@@ -598,10 +628,11 @@ function pnlv(){const H=filteredHist(),all=allHist(),s=stats(all),W=[...H].rever
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed trades.</p>'}</div>
 ${(()=>{const pg=pageSlice(H,histPage||1);return`<div class="card"><div class="row sp" style="gap:10px;flex-wrap:wrap"><h3 style="margin:0">Trade history</h3><div class="row" style="margin-left:auto;gap:8px;flex-wrap:wrap"><select id="histPnL" aria-label="Filter by profit or loss" style="width:auto;min-width:140px" onchange="histPnL=this.value;histPage=1;draw()">${filt.map(([v,l])=>`<option value="${v}" ${histPnL===v?'selected':''}>${l} trades</option>`).join('')}</select><button class="btn sm" onclick="csv()">Copy CSV</button></div></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${pg.rows.map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (half)':''}</td><td>${Number(h.size||0).toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||`<tr><td class="mu" colspan="9">${histPnL==='profit'?'No profit trades in this view.':histPnL==='loss'?'No loss trades in this view.':'No exits yet. Closed positions appear here.'}</td></tr>`}</table></div>${pagerHtml('hist',pg.page,pg.pages,'setHistPage(__P__)')}</div>`})()}`}
 function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
- {const a=wallet[M];const st=window.CopyraWallet?.getAccountStatus?.();
+ {const a=isRealWallet(wallet[M],M)?wallet[M]:null;const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting){$('#cn').textContent='Connecting…';$('#cn').title='EVM wallet connecting'}
   else if(a){$('#cn').textContent='● '+a.slice(0,4)+'…'+a.slice(-4);$('#cn').title=M.toUpperCase()+' wallet connected'}
-  else {$('#cn').textContent='Connect Wallet';$('#cn').title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}}
+  else {$('#cn').textContent='Connect Wallet';$('#cn').title='Connect your '+(M=='sol'?'Solana':'EVM')+' wallet'}
+  paintAcctLine()}
  $('#th').innerHTML=document.documentElement.dataset.theme=='dark'?'<svg viewBox="0 0 24 24" class="ib" style="width:26px"><circle cx="12" cy="12" r="4" stroke="currentColor" fill="none" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.8"/></svg>':'<svg viewBox="0 0 24 24" style="width:26px"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
  $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="switchMode('${x}')">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
 window.switchMode=(x)=>{if(M===x)return;M=x;T='trading';try{window.CopyraWallet?.setMode?.(M)}catch{};draw();refresh()};
@@ -646,7 +677,7 @@ function addT(){const e=M;md(`<h3>Add trader (${e.toUpperCase()})</h3><label>Tra
   try{await api('POST','/api/traders',{chain:e==='sol'?'SOLANA':(LIVE?.status?.chains||[]).find(c=>c.kind==='evm'&&c.canExecute)?.chain||'BASE',address:a,label:n});cl();toast(n+' added. The worker will subscribe within 15s.');await refresh()}catch(err){$('#ae').textContent=err.message||'Could not add trader.';if(/already copying this account/i.test(err.message||''))toast('You are already copying this account.')}}}
 const tg=async(id,on)=>{try{await api('PATCH','/api/traders/'+id,{enabled:!!on});await refresh()}catch(err){toast(err.message)}};
 const rm=(id,n)=>md(`<h3>Remove trader?</h3><p class="mu">Open positions stay monitored; no new trades will be copied from ${n}.</p><div class="row"><button class="btn red" onclick="api('DELETE','/api/traders/${id}').then(()=>{cl();refresh()}).catch(e=>toast(e.message))">Remove</button><button class="btn" onclick="cl()">Cancel</button></div>`);
-function dep(){const e=M,X=UI[e],addr=S[e].wa,a=wallet[e];
+function dep(){const e=M,X=UI[e],addr=S[e].wa,a=isRealWallet(wallet[e],e)?wallet[e]:null;
  const presets=e==='sol'?[0.01,0.02,0.05]:[1,2,5];
  const EVM_DEP={
   ethereum:{chain:'ETHEREUM',label:'Ethereum',gas:'ETH',hint:'Native Circle USDC (6 decimals). Gas paid in ETH'},
@@ -656,16 +687,17 @@ function dep(){const e=M,X=UI[e],addr=S[e].wa,a=wallet[e];
  };
  const defaultDepCh=e==='evm'?bestEvmChKey('total'):'solana';
  const chainOpts=e==='evm'?evmChainOptsHtml(defaultDepCh,'total'):'';
+ const emailOnly=!!accountEmail()&&!a;
  md(`<h3>Deposit ${X.u}</h3>
 ${e==='evm'?`<label>Network</label><select id="dc">${chainOpts}</select>
 <p class="mu" id="dchain">Deposit lands in <b>Trading</b> on the network you pick. A tiny native gas top-up follows automatically so Move/Withdraw work on that same chain.</p>`:''}
 <label>${e==='evm'?'Your custody wallet (receives USDC)':'Trading wallet (custody)'}</label><input readonly value="${addr||'Sign in to provision your custody wallet'}">
 <label>Amount (${X.u})</label><input id="da" type="number" step="any" min="0" placeholder="${presets[0]}">
 <div class="row" style="gap:6px;margin:8px 0;flex-wrap:wrap">${presets.map(p=>`<button type="button" class="btn sm" data-amt="${p}">${p} ${X.u}</button>`).join('')}</div>
-<p class="mu" id="dhelp">${addr?(e==='sol'?`Send real SOL from your connected wallet to your custody address. Confirmed on Solana RPC.`:`Sends USDC to custody, then funds a small ${EVM_DEP[defaultDepCh]?.gas||'native'} gas buffer so future withdraws do not fail.`):'Sign in and connect a wallet to deposit.'}</p>
+<p class="mu" id="dhelp">${!addr?'Sign in and connect a wallet to deposit.':!a?(emailOnly?`You are signed in with <b>${accountEmail()}</b>. Connect a real ${e==='sol'?'Solana':'EVM'} wallet to deposit on chain.`:`Connect a real ${e==='sol'?'Solana':'EVM'} wallet to deposit.`):(e==='sol'?`Send real SOL from your connected wallet to your custody address. Confirmed on Solana RPC.`:`Sends USDC to custody, then funds a small ${EVM_DEP[defaultDepCh]?.gas||'native'} gas buffer so future withdraws do not fail.`)}</p>
 <p class="rd" id="ae"></p>
 <div class="row" style="margin-top:12px">
-${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:a?'':'<button class="btn pri" onclick="cl();conn()">Connect Wallet first</button>'}
+${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button>`:`<button class="btn pri" onclick="cl();conn()">Connect Wallet to deposit</button>`}
 <button class="btn" onclick="cl();refresh();toast('Refreshing on chain balance')">Refresh balance</button>
 <button class="btn" onclick="cl()">Close</button></div>`);
  const syncChainHelp=()=>{
@@ -679,6 +711,7 @@ ${addr&&a?`<button class="btn pri" id="ds">Deposit from connected wallet</button
  const ds=$('#ds'); if(!ds)return;
  ds.onclick=async()=>{
   const amount=Number($('#da').value); if(!(amount>0))return $('#ae').textContent='Enter a positive amount.';
+  if(!isRealWallet(wallet[e],e))return $('#ae').textContent='Connect a real '+(e==='sol'?'Solana':'EVM')+' wallet to deposit. Email / Google sign-in alone cannot send funds.';
   ds.disabled=true; $('#ae').textContent='Building deposit…';
   try{
    if(!window.CopyraWallet?.ready)throw new Error('Connect a wallet first (Reown / WalletConnect).');
@@ -1222,15 +1255,19 @@ async function restoreWallets(){
     let stickySol=null,stickyEvm=null;
     try{stickySol=localStorage.getItem('cpy_wallet_sol');stickyEvm=localStorage.getItem('cpy_wallet_evm')}catch{}
     const me=await api('GET','/api/auth/me',null,{mode:M}).catch(()=>null);
-    if(me?.sol?.address)wallet.sol=me.sol.address;
-    else if(liveSol||stickySol)wallet.sol=liveSol||stickySol;
-    if(me?.evm?.address)wallet.evm=me.evm.address;
-    else if(liveEvm||stickyEvm)wallet.evm=liveEvm||stickyEvm;
+    if(isRealWallet(me?.sol?.address,'sol'))wallet.sol=me.sol.address;
+    else if(isRealWallet(liveSol,'sol')||isRealWallet(stickySol,'sol'))wallet.sol=isRealWallet(liveSol,'sol')?liveSol:stickySol;
+    else wallet.sol=null;
+    if(isRealWallet(me?.evm?.address,'evm'))wallet.evm=me.evm.address;
+    else if(isRealWallet(liveEvm,'evm')||isRealWallet(stickyEvm,'evm'))wallet.evm=isRealWallet(liveEvm,'evm')?liveEvm:stickyEvm;
+    else wallet.evm=null;
     if(liveEvm&&me?.evm?.address&&liveEvm.toLowerCase()===me.evm.address.toLowerCase())wallet.evm=liveEvm;
     if(liveSol&&me?.sol?.address&&liveSol===me.sol.address)wallet.sol=liveSol;
     try{
-      if(wallet.sol)localStorage.setItem('cpy_wallet_sol',wallet.sol);
-      if(wallet.evm)localStorage.setItem('cpy_wallet_evm',wallet.evm);
+      if(isRealWallet(wallet.sol,'sol'))localStorage.setItem('cpy_wallet_sol',wallet.sol);
+      else localStorage.removeItem('cpy_wallet_sol');
+      if(isRealWallet(wallet.evm,'evm'))localStorage.setItem('cpy_wallet_evm',wallet.evm);
+      else localStorage.removeItem('cpy_wallet_evm');
     }catch{}
   }catch{}
   draw();
@@ -1477,10 +1514,13 @@ setInterval(sync,3000);
 const pref=()=>new URLSearchParams(location.search).get('ref')||st.get('cpy_ref',null),er=m=>{const e=$('#ae');e&&(e.textContent=m)};
 async function onAuth(r,fresh,quiet){
   tok=r.token||'cookie';st.set('cpy_tok',tok);user=r.user;st.set('cpy_seen',1);
-  for(const k of['sol','evm'])if(user.wallets&&user.wallets[k])wallet[k]=user.wallets[k];
+  // Linked wallets only — never treat email/Google account as Connect Wallet.
+  for(const k of['sol','evm']){
+    if(user.wallets&&isRealWallet(user.wallets[k],k))wallet[k]=user.wallets[k];
+  }
   cl();
   if(!quiet)toast(r.needVerify?'Check your email for the verification code':r.created?'Account created':'Signed in');
-  draw();navUp();sync();
+  draw();navUp();sync();paintAcctLine();
 }
 async function out(expired){try{await call('logout')}catch{}tok=null;user=null;st.del('cpy_tok');if(expired)toast('Session ended. Please sign in again.');setTimeout(()=>location.reload(),expired?900:100)}
 const fail=e=>{er(e.message||'Something went wrong')};
@@ -1694,7 +1734,7 @@ ${feeNote}
 const info=k=>md(k=='sec'?`<h3>How we protect you</h3><p class="mu">Passwords are stored only as salted hashes. Email accounts use 2FA. Every device is listed and can be signed out. Passkeys let you skip passwords. Wallet sign in uses a signature, and COPYRA never asks for your seed phrase or private key.</p><button class="btn" onclick="cl()">Close</button>`:`<h3>Risk disclosure</h3><p class="mu">Copy trading digital assets carries a high risk of loss. You can lose some or all of your capital. Copied traders' past results do not predict future results. Only trade with funds you can afford to lose. COPYRA does not provide financial advice.</p><button class="btn" onclick="cl()">Close</button>`);
 const navUp=()=>{const b=$('#cpso');if(b)b.textContent=user?'Sign out':'Sign in / Create account'};
 window.CPY={auth,addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:async id=>{try{await call('devices/revoke',{id});toast('Device signed out');dev()}catch(e){toast(e.message)}},
- syncSession:async()=>{try{const r=await call('me',{},'GET');tok='cookie';st.set('cpy_tok','cookie');user=r.user;st.set('cpy_seen',1);for(const k of['sol','evm'])if(user.wallets&&user.wallets[k])wallet[k]=user.wallets[k];navUp()}catch{}},
+ syncSession:async()=>{try{const r=await call('me',{},'GET');tok='cookie';st.set('cpy_tok','cookie');user=r.user;st.set('cpy_seen',1);for(const k of['sol','evm']){if(user.wallets&&isRealWallet(user.wallets[k],k))wallet[k]=user.wallets[k]}navUp();paintAcctLine()}catch{}},
  copy:()=>navigator.clipboard?navigator.clipboard.writeText(window.__rl).then(()=>toast('Referral link copied'),()=>toast('Press and hold the link to copy')):toast('Press and hold the link to copy'),
  share:()=>navigator.share?navigator.share({title:'COPYRA',text:'Copy top Solana and EVM traders automatically with COPYRA.',url:window.__rl}).catch(()=>{}):CPY.copy(),
  claim:async()=>{try{const r=await call('referral/claim',{mode:M});if(!r.claimed){toast(r.reason==='PLATFORM_FEES_NOT_COLLECTED'?'Referral payouts wait until platform fees are collected on chain.':'Nothing to claim yet');ref();return}toast(`$${Number(r.amount).toFixed(2)} claimed to trading balance`);await refresh();ref()}catch(e){toast(e.message)}},

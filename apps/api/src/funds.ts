@@ -146,6 +146,14 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     if (!session) return;
 
     try {
+      // Email/Google accounts use sentinel `acct_…` addresses — not a real wallet.
+      // Deposits must be signed by a connected Solana/EVM wallet.
+      if (session.user.address.startsWith('acct_')) {
+        return reply.code(400).send({
+          error:
+            'Connect a real wallet to deposit. Email / Google sign-in alone cannot send on-chain funds.',
+        });
+      }
       if (body.mode === 'sol') {
         if (session.user.chain !== Chain.SOLANA) {
           return reply.code(400).send({ error: 'Sign in with a Solana wallet to deposit SOL.' });

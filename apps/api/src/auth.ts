@@ -50,7 +50,14 @@ function cookieSecure(override?: boolean): boolean {
 
 export type SessionView = {
   id: string;
-  user: { id: string; address: string; chain: Chain; label: string | null };
+  user: {
+    id: string;
+    address: string;
+    chain: Chain;
+    label: string | null;
+    email?: string | null;
+    googleEmail?: string | null;
+  };
 };
 
 /** Issue a one-time nonce in Redis (10 minute TTL). */
