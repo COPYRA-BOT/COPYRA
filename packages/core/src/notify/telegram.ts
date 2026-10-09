@@ -9,54 +9,58 @@ const log = componentLogger('telegram');
 /**
  * Telegram delivery.
  *
- * Routing (COPYRA bot token is shared; chat targets differ):
- *  * Platform `TELEGRAM_CHAT_ID` — admin ops / backend alerts + admin-wallet trades only.
- *  * Per-user `User.telegramChatId` — that account's BUY/SELL confirmed alerts only.
+ * Routing (shared COPYRA bot token; chat targets differ):
+ *  * Platform `TELEGRAM_CHAT_ID` (admin) — EVERY worker/backend notification:
+ *    detections, skips, buys, sells, failures, ops/watchdog, worker-online, etc.
+ *  * Per-user `User.telegramChatId` — that account's BUY/SELL confirmed alerts only
+ *    (+ telegram-link ack when they connect their chat).
  *  * Never throws into the trading path; every attempt is logged to `notification_logs`
  *    so Recent Activity stays accurate per account.
  */
 
 const API_BASE = 'https://api.telegram.org';
 
-/** Kinds that must never spam any chat (no persist — pure noise). */
+/**
+ * Pure noise — never Telegram (still may be skipped before queue).
+ * Skips/detections/failures MUST reach the admin chat.
+ */
 const SUPPRESSED_KINDS = new Set([
-  'skip',
-  'detection',
   'redeploy-finished',
-  'trailing-armed',
   'error:POSITION_TICK_FAILED',
 ]);
 
-/** Kinds delivered to a linked user chat (BUY/SELL fills + link confirmation). */
+/** Linked end-user chats: confirmed fills + link confirmation only. */
 const USER_CHAT_KINDS = new Set(['buy-confirmed', 'sell-confirmed', 'telegram-link']);
 
-/** Admin platform chat: technical / backend only (+ admin trade kinds below). */
-const ADMIN_OPS_KINDS = new Set([
-  'worker-online',
-  'emergency-stop',
-  'emergency-clear',
-  'kill-switch',
-]);
-
-/** Extra trade kinds that may reach the admin chat when the owner is an admin. */
-const ADMIN_TRADE_EXTRA_KINDS = new Set([
-  'buy-confirmed',
-  'sell-confirmed',
-  'buy-submitted',
-  'sell-submitted',
-  'buy-failed',
-  'sell-failed',
-]);
-
-function shouldSuppressTelegramKind(kind: string): boolean {
+export function shouldSuppressTelegramKind(kind: string): boolean {
   if (SUPPRESSED_KINDS.has(kind)) return true;
   if (kind.startsWith('error:POSITION_')) return true;
   if (kind.startsWith('error:') && /pool|lock already held|connection/i.test(kind)) return true;
   return false;
 }
 
-function isOpsKind(kind: string): boolean {
-  return kind.startsWith('ops-') || kind.startsWith('ops-clear-') || ADMIN_OPS_KINDS.has(kind);
+/**
+ * Pure routing helper (unit-tested).
+ * Admin gets all non-suppressed kinds; users only buy/sell(+link).
+ */
+export function resolveTelegramTargets(input: {
+  kind: string;
+  adminChat: string | null | undefined;
+  userChat: string | null | undefined;
+}): string[] {
+  const targets = new Set<string>();
+  const admin = input.adminChat?.trim() || null;
+  const user = input.userChat?.trim() || null;
+
+  if (shouldSuppressTelegramKind(input.kind)) return [];
+
+  if (admin) targets.add(admin);
+
+  if (user && USER_CHAT_KINDS.has(input.kind)) {
+    targets.add(user);
+  }
+
+  return [...targets];
 }
 
 export interface SendOptions {
@@ -156,37 +160,24 @@ class TelegramNotifier {
 
   /**
    * Resolve destination chat ids.
-   * - Ops / backend → platform TELEGRAM_CHAT_ID only
-   * - buy-confirmed / sell-confirmed → user telegramChatId (if linked)
-   * - Admin-owned trades → also platform chat
+   * - Admin TELEGRAM_CHAT_ID ← all worker/backend kinds (skip, detect, buy, sell, ops, errors)
+   * - User telegramChatId ← buy-confirmed / sell-confirmed / telegram-link only
    */
   async #resolveTargets(options: SendOptions): Promise<string[]> {
-    const targets = new Set<string>();
-    const kind = options.kind;
-    const adminChat = this.#chatId?.trim() || null;
-
-    if (isOpsKind(kind) && adminChat) {
-      targets.add(adminChat);
-    }
-
-    if (options.userId) {
+    let userChat: string | null = null;
+    if (options.userId && USER_CHAT_KINDS.has(options.kind)) {
       const user = await prisma.user.findUnique({
         where: { id: options.userId },
-        select: { telegramChatId: true, isAdmin: true },
+        select: { telegramChatId: true },
       });
-      const userChat = user?.telegramChatId?.trim() || null;
-
-      if (USER_CHAT_KINDS.has(kind) && userChat) {
-        targets.add(userChat);
-      }
-
-      // Admin wallet / admin account trades also land in the platform ops chat.
-      if (user?.isAdmin && adminChat && ADMIN_TRADE_EXTRA_KINDS.has(kind)) {
-        targets.add(adminChat);
-      }
+      userChat = user?.telegramChatId?.trim() || null;
     }
 
-    return [...targets];
+    return resolveTelegramTargets({
+      kind: options.kind,
+      adminChat: this.#chatId,
+      userChat,
+    });
   }
 
   async #postToChat(chatId: string, text: string, disableNotification: boolean): Promise<void> {
