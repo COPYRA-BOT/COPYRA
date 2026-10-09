@@ -7,7 +7,7 @@ import {
   telegram,
 } from '@copyra/core';
 import { prisma, type Prisma } from '@copyra/db';
-import { workerActivity } from './activity.js';
+import { workerActivity, writeWorkerStatusFile } from './activity.js';
 import { startEvmMonitor } from './evm-monitor.js';
 import { solanaMonitorStats, startSolanaMonitor } from './solana-monitor.js';
 
@@ -18,6 +18,26 @@ initSentry('copyra-worker');
  *  and DO rolling deploys (two containers briefly share the DB). */
 const WATCHDOG_SILENCE_MS = 5 * 60_000;
 const WATCHDOG_CHECK_MS = 30_000;
+/** Quiet-market notice only — never respawn solely because no trades were processed. */
+const QUIET_MARKET_MS = 45 * 60_000;
+const EXIT_TICK_MS = 250;
+let lastQuietNoticeAt = 0;
+
+function beatDetail(): Record<string, unknown> {
+  return {
+    monitor: 'solana+evm+exits',
+    pid: process.pid,
+    exitTickMs: EXIT_TICK_MS,
+    alwaysOn: true,
+    lastSolanaSyncAt: workerActivity.lastSolanaSyncAt || null,
+    lastSolanaProcessedAt: workerActivity.lastSolanaProcessedAt || null,
+    lastSolanaWsEventAt: workerActivity.lastSolanaWsEventAt || null,
+    lastSolanaSlot: workerActivity.lastSolanaSlot || null,
+    lastEvmTickAt: workerActivity.lastEvmTickAt || null,
+    lastEvmProcessedAt: workerActivity.lastEvmProcessedAt || null,
+    ...solanaMonitorStats,
+  };
+}
 
 async function heartbeat(status: string, detail: Record<string, unknown> = {}): Promise<void> {
   // Short retries — a frozen beatAt makes ops-watch page "worker down" even when
@@ -35,6 +55,7 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
         },
         update: { status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
       });
+      writeWorkerStatusFile({ status, ...detail });
       return;
     } catch (error) {
       lastErr = error;
@@ -45,6 +66,11 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
 }
 
 async function fatalExit(kind: string, detail: string, code = 1): Promise<never> {
+  try {
+    await heartbeat('stopping', { ...beatDetail(), fatalKind: kind });
+  } catch {
+    /* ignore */
+  }
   try {
     await alertOps(kind, detail, { awaitDelivery: true, cooldownSec: 5 * 60 });
   } catch {
@@ -94,26 +120,10 @@ if (isColdStart) {
   );
 }
 
-/** TP/SL / trailing marks — sub-second so exits stay inside the 1s budget. */
-const EXIT_TICK_MS = 250;
 /** Dedicated heartbeat — never share a timer with reconcile (that caused false "worker stale"). */
 const HEARTBEAT_MS = 5_000;
 /** Pending-tx reconcile (not on the buy/exit critical path). */
 const MAINT_TICK_MS = 8_000;
-
-function beatDetail(): Record<string, unknown> {
-  return {
-    monitor: 'solana+evm+exits',
-    pid: process.pid,
-    exitTickMs: EXIT_TICK_MS,
-    alwaysOn: true,
-    lastSolanaSyncAt: workerActivity.lastSolanaSyncAt || null,
-    lastSolanaProcessedAt: workerActivity.lastSolanaProcessedAt || null,
-    lastEvmTickAt: workerActivity.lastEvmTickAt || null,
-    lastEvmProcessedAt: workerActivity.lastEvmProcessedAt || null,
-    ...solanaMonitorStats,
-  };
-}
 
 /** Never overlap exit ticks — 250ms interval + slow marks was stacking pool waits. */
 let exitInFlight = false;
@@ -157,33 +167,65 @@ const maintTimer = setInterval(() => {
 }, MAINT_TICK_MS);
 
 /**
- * 24/7 watchdog: if Solana sync or EVM poll loops stop updating, exit so
- * scripts/start-production.sh respawns a fresh worker. Heartbeat alone is not
- * enough — that kept ticking during the prior silent stall.
+ * 24/7 watchdog: respawn only when the monitor LOOPS stall (sync/tick clocks).
+ * Absence of buys/skips is NOT a stall — quiet markets stay up and keep listening.
+ * Heartbeat alone is not enough — that kept ticking during the prior silent stall.
  */
 const watchdogTimer = setInterval(() => {
   const now = Date.now();
   const solAge = workerActivity.lastSolanaSyncAt ? now - workerActivity.lastSolanaSyncAt : now;
   const evmAge = workerActivity.lastEvmTickAt ? now - workerActivity.lastEvmTickAt : now;
   const watching = solanaMonitorStats.watching;
+  const processedAge = workerActivity.lastSolanaProcessedAt
+    ? now - workerActivity.lastSolanaProcessedAt
+    : null;
+  const wsAge = workerActivity.lastSolanaWsEventAt
+    ? now - workerActivity.lastSolanaWsEventAt
+    : null;
 
   if (watching > 0 && solAge > WATCHDOG_SILENCE_MS) {
     logger.error(
-      { solAgeMs: solAge, watching, stats: solanaMonitorStats },
-      'Watchdog: Solana monitor silent — exiting for 24/7 respawn',
+      { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge },
+      'Watchdog: Solana sync loop silent — exiting for 24/7 respawn',
     );
     void fatalExit(
       'worker-watchdog-solana',
-      `Solana monitor <b>silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders. Respawning copy-trade worker.`,
+      `Solana <b>sync loop silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders` +
+        `${wsAge != null ? ` · last WS event ${Math.round(wsAge / 1000)}s ago` : ' · no WS events yet'}` +
+        `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ''}.` +
+        `\nThis is a monitor stall (not "no trades"). Respawning copy-trade worker.`,
     );
     return;
   }
 
   if (evmAge > WATCHDOG_SILENCE_MS) {
-    logger.error({ evmAgeMs: evmAge }, 'Watchdog: EVM monitor silent — exiting for 24/7 respawn');
+    logger.error({ evmAgeMs: evmAge }, 'Watchdog: EVM poll loop silent — exiting for 24/7 respawn');
     void fatalExit(
       'worker-watchdog-evm',
-      `EVM monitor <b>silent ${Math.round(evmAge / 1000)}s</b>. Respawning copy-trade worker.`,
+      `EVM <b>poll loop silent ${Math.round(evmAge / 1000)}s</b>. Respawning copy-trade worker.`,
+    );
+    return;
+  }
+
+  // Quiet market notice — sync healthy, but nothing processed for a long time.
+  if (
+    watching > 0 &&
+    solAge < 60_000 &&
+    processedAge != null &&
+    processedAge > QUIET_MARKET_MS &&
+    now - lastQuietNoticeAt > QUIET_MARKET_MS
+  ) {
+    lastQuietNoticeAt = now;
+    logger.warn(
+      { processedAgeMs: processedAge, watching, wsAgeMs: wsAge },
+      'Solana monitor healthy but quiet — no signatures processed recently',
+    );
+    void alertOps(
+      'solana-quiet',
+      `Solana monitor is <b>healthy</b> (sync ok, watching ${watching}) but <b>no signatures processed for ${Math.round(processedAge / 60000)}m</b>.\n` +
+        `This usually means tracked wallets had no qualifying activity — not a stalled worker.\n` +
+        `Catch-up ok/err: ${solanaMonitorStats.catchUpOk}/${solanaMonitorStats.catchUpErr}.`,
+      { cooldownSec: QUIET_MARKET_MS / 1000 },
     );
   }
 }, WATCHDOG_CHECK_MS);

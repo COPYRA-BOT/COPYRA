@@ -32,6 +32,13 @@ envs:
   - key: MULTI_USER_CUSTODY
     value: "true"
     scope: RUN_TIME
+  # Must be App-Level so worker Telegram alerts never footer localhost defaults.
+  - key: PUBLIC_WEB_URL
+    value: "https://copyra.fun"
+    scope: RUN_TIME
+  - key: PUBLIC_API_URL
+    value: "https://copyra.fun"
+    scope: RUN_TIME
   # Public OAuth client id (safe in frontend). Secret stays encrypted App-Level only.
   - key: GOOGLE_CLIENT_ID
     value: "262135154840-d5tr76fnjatnkg7qdjmptmj7jcbcjpbv.apps.googleusercontent.com"

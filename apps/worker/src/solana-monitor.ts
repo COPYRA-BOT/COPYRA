@@ -19,7 +19,12 @@ import {
 } from '@copyra/core';
 import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
 import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
-import { touchSolanaProcessed, touchSolanaSync } from './activity.js';
+import {
+  touchSolanaProcessed,
+  touchSolanaSync,
+  touchSolanaWsEvent,
+  workerActivity,
+} from './activity.js';
 
 const log = componentLogger('solana-monitor');
 
@@ -33,11 +38,13 @@ const CATCHUP_MAX_AGE_MS = 120_000;
 /** First sync after boot / forced WS resub — recover activity missed during a stall. */
 const CATCHUP_RECOVERY_AGE_MS = 3 * 60_000;
 /** Minimum gap between catch-up passes (subscriptions still refresh every sync). */
-const CATCHUP_MIN_GAP_MS = 60_000;
+const CATCHUP_MIN_GAP_MS = 45_000;
 /** Traders per catch-up pass — round-robin so each pass finishes fast and /health stays green. */
-const CATCHUP_PER_PASS = 4;
+const CATCHUP_PER_PASS = 3;
+/** Per-trader catch-up budget (must exceed getSignatures timeout inside catchUpTrader). */
+const CATCHUP_TRADER_TIMEOUT_MS = 20_000;
 /** Hard cap for one catch-up pass (must always clear `catchingUp`). */
-const CATCHUP_PASS_TIMEOUT_MS = 45_000;
+const CATCHUP_PASS_TIMEOUT_MS = 60_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -59,7 +66,9 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
  * (processed log → confirmed fetch returns null) are not permanently lost.
  */
 /** Rebuild every onLogs subscription on this interval so a dead Helius WS cannot strand the worker. */
-const FORCE_RESUB_MS = 300_000;
+const FORCE_RESUB_MS = 180_000;
+/** If WS delivers nothing while we are watching traders, force a fresh socket sooner. */
+const WS_QUIET_RESUB_MS = 120_000;
 
 /** Latest Solana monitor stats — merged into worker heartbeat by main. */
 export const solanaMonitorStats: {
@@ -68,12 +77,16 @@ export const solanaMonitorStats: {
   catchUpErr: number;
   maxAgeMs: number;
   catchUpAt: string | null;
+  lastForceResubAt: string | null;
+  wsBound: boolean;
 } = {
   watching: 0,
   catchUpOk: 0,
   catchUpErr: 0,
   maxAgeMs: 0,
   catchUpAt: null,
+  lastForceResubAt: null,
+  wsBound: false,
 };
 
 export async function startSolanaMonitor(): Promise<() => void> {
@@ -86,9 +99,33 @@ export async function startSolanaMonitor(): Promise<() => void> {
   /** Round-robin offset so all wallets get catch-up without one long blocking pass. */
   let catchUpCursor = 0;
   let lastForceResub = 0;
+  let forceResubSoon = false;
   const bootAt = Date.now();
   /** Keep the wide recovery window for a few minutes after boot / forced resub. */
   let recoveryUntil = Date.now() + 3 * 60_000;
+
+  const bindWsLifecycle = (conn: typeof connection) => {
+    try {
+      const ws = (conn as unknown as { _rpcWebSocket?: { on?: (ev: string, fn: () => void) => void } })
+        ._rpcWebSocket;
+      if (!ws?.on) {
+        solanaMonitorStats.wsBound = false;
+        return;
+      }
+      ws.on('close', () => {
+        log.warn({}, 'Solana subscription WebSocket closed — scheduling force resub');
+        forceResubSoon = true;
+      });
+      ws.on('error', () => {
+        log.warn({}, 'Solana subscription WebSocket error — scheduling force resub');
+        forceResubSoon = true;
+      });
+      solanaMonitorStats.wsBound = true;
+    } catch {
+      solanaMonitorStats.wsBound = false;
+    }
+  };
+  bindWsLifecycle(connection);
 
   const dropAll = async () => {
     for (const [traderId, sub] of subscriptions) {
@@ -104,19 +141,31 @@ export async function startSolanaMonitor(): Promise<() => void> {
   const sync = async () => {
     if (syncing) return;
     syncing = true;
+    touchSolanaSync();
     try {
-      const force = Date.now() - lastForceResub >= FORCE_RESUB_MS;
+      const wsQuietMs = workerActivityAgeMs();
+      const quietForce =
+        subscriptions.size > 0 &&
+        wsQuietMs > WS_QUIET_RESUB_MS &&
+        Date.now() - lastForceResub > 60_000;
+      const force =
+        forceResubSoon || Date.now() - lastForceResub >= FORCE_RESUB_MS || quietForce;
       if (force) {
+        forceResubSoon = false;
         await dropAll();
+        touchSolanaSync();
         connection = solanaSubscriptionConnection(true);
+        bindWsLifecycle(connection);
         lastForceResub = Date.now();
+        solanaMonitorStats.lastForceResubAt = new Date().toISOString();
         recoveryUntil = Date.now() + 3 * 60_000;
-        log.info({}, 'Forced Solana log resubscribe (fresh WS)');
+        log.info({ quietForce, wsQuietMs }, 'Forced Solana log resubscribe (fresh WS)');
       }
 
       const traders = await prisma.trader.findMany({
         where: { chain: Chain.SOLANA, enabled: true },
       });
+      touchSolanaSync();
       const wanted = new Set(traders.map((trader) => trader.id));
 
       for (const [traderId, sub] of subscriptions) {
@@ -143,6 +192,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
         const id = connection.onLogs(
           pubkey,
           (logs, ctx) => {
+            touchSolanaWsEvent(ctx.slot);
             void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
               log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
             });
@@ -161,6 +211,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
       solanaMonitorStats.watching = subscriptions.size;
       solanaMonitorStats.maxAgeMs = maxAgeMs;
       log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
+      touchSolanaSync();
 
       // Catch-up OUTSIDE the subscription critical path. Never stack passes —
       // overlapping catch-ups exhausted the Prisma pool (api+worker share the
@@ -197,8 +248,8 @@ export async function startSolanaMonitor(): Promise<() => void> {
               try {
                 await Promise.race([
                   catchUpTrader(trader.id, trader.address, maxAgeMs),
-                  sleep(5_000).then(() => {
-                    throw new Error('catch-up timed out after 5s');
+                  sleep(CATCHUP_TRADER_TIMEOUT_MS).then(() => {
+                    throw new Error(`catch-up timed out after ${CATCHUP_TRADER_TIMEOUT_MS}ms`);
                   }),
                 ]);
                 catchUpOk += 1;
@@ -208,7 +259,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
               }
               // Keep watchdog clock alive mid-pass; yield for heartbeat/API.
               touchSolanaSync();
-              if (i + 1 < slice.length) await sleep(300);
+              if (i + 1 < slice.length) await sleep(250);
             }
           } finally {
             solanaMonitorStats.catchUpOk = catchUpOk;
@@ -224,6 +275,10 @@ export async function startSolanaMonitor(): Promise<() => void> {
         })();
       }
       touchSolanaSync();
+    } catch (error) {
+      log.error({ err: error }, 'Solana sync failed — will retry next tick');
+      forceResubSoon = true;
+      touchSolanaSync();
     } finally {
       syncing = false;
     }
@@ -233,6 +288,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
   const timer = setInterval(() => {
     void sync().catch((error: unknown) => {
       log.error({ err: error }, 'Failed to refresh trader subscriptions');
+      touchSolanaSync();
     });
   }, 15_000);
 
@@ -240,6 +296,14 @@ export async function startSolanaMonitor(): Promise<() => void> {
     clearInterval(timer);
     void dropAll();
   };
+}
+
+function workerActivityAgeMs(): number {
+  if (!workerActivity.lastSolanaWsEventAt) {
+    // No WS event yet after boot — do not force-resub until FORCE_RESUB_MS.
+    return 0;
+  }
+  return Date.now() - workerActivity.lastSolanaWsEventAt;
 }
 
 /**
@@ -337,7 +401,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
 
   const trader = await prisma.trader.findUnique({ where: { id: traderId } });
   if (!trader || !trader.enabled) return;
-  touchSolanaProcessed();
+  touchSolanaProcessed(slot);
 
   const tx = await fetchParsedTransaction(signature);
   if (!tx) {

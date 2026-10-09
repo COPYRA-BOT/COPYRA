@@ -23,8 +23,11 @@ loadRootEnv();
 
 /**
  * Accept SOL_TRADING_ENABLED / EVM_TRADING_ENABLED from App Platform.
- * Master TRADING_ENABLED stays the hard host kill switch; if it is unset,
- * it defaults to true only when at least one chain trading flag is true.
+ * Master TRADING_ENABLED stays the hard host kill switch.
+ *
+ * Empty strings (common DO UI glitch) are treated as unset — never as false.
+ * In production, unset TRADING_ENABLED defaults to true so a missing injection
+ * cannot silently disable the whole engine (explicit "false" still wins).
  */
 function normalizeTradingFlags(): void {
   const truthy = (v: string | undefined) => {
@@ -32,15 +35,27 @@ function normalizeTradingFlags(): void {
     const n = v.trim().toLowerCase();
     return n === 'true' || n === '1' || n === 'yes' || n === 'on';
   };
+  const isPresent = (v: string | undefined) => v !== undefined && v.trim() !== '';
+
+  // Blank App Platform values → unset (do not coerce "" to false).
+  for (const key of ['TRADING_ENABLED', 'SOL_TRADING_ENABLED', 'EVM_TRADING_ENABLED'] as const) {
+    if (process.env[key] !== undefined && !isPresent(process.env[key])) {
+      delete process.env[key];
+    }
+  }
+
   const sol = process.env.SOL_TRADING_ENABLED;
   const evm = process.env.EVM_TRADING_ENABLED;
-  if (process.env.TRADING_ENABLED === undefined && (sol !== undefined || evm !== undefined)) {
+  if (!isPresent(process.env.TRADING_ENABLED) && (isPresent(sol) || isPresent(evm))) {
     process.env.TRADING_ENABLED = truthy(sol) || truthy(evm) ? 'true' : 'false';
+  }
+  if (!isPresent(process.env.TRADING_ENABLED) && process.env.NODE_ENV === 'production') {
+    process.env.TRADING_ENABLED = 'true';
   }
   // DigitalOcean / UI sometimes stores TRUE / True — normalize before Zod.
   for (const key of ['TRADING_ENABLED', 'SOL_TRADING_ENABLED', 'EVM_TRADING_ENABLED'] as const) {
     const raw = process.env[key];
-    if (raw !== undefined) process.env[key] = truthy(raw) ? 'true' : 'false';
+    if (isPresent(raw)) process.env[key] = truthy(raw) ? 'true' : 'false';
   }
 }
 normalizeTradingFlags();
@@ -49,7 +64,7 @@ const bool = z
   .string()
   .optional()
   .transform((v) => {
-    if (v === undefined) return false;
+    if (v === undefined || v.trim() === '') return false;
     const n = v.trim().toLowerCase();
     return n === 'true' || n === '1' || n === 'yes' || n === 'on';
   });

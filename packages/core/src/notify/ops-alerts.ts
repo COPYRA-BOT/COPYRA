@@ -8,6 +8,13 @@ const log = componentLogger('ops-alerts');
 /** Default: do not re-send the same alert kind more than once per 15 minutes. */
 const DEFAULT_COOLDOWN_SEC = 15 * 60;
 
+/** Never footer localhost defaults — those confused ops when PUBLIC_WEB_URL was missing on a component. */
+function publicWebFooter(): string {
+  const raw = (env.PUBLIC_WEB_URL || '').trim();
+  if (!raw || /127\.0\.0\.1|localhost/i.test(raw)) return 'https://copyra.fun';
+  return raw.replace(/\/+$/, '');
+}
+
 /**
  * Operator Telegram alerts for outages / stops.
  * Uses Redis NX cooldown so a flapping fault cannot spam the chat.
@@ -30,7 +37,7 @@ export async function alertOps(
     log.warn({ kind, err: error }, 'Ops alert cooldown check failed; sending anyway');
   }
 
-  const body = `🚨 <b>COPYRA ALERT</b>\n${text}\n<i>${env.PUBLIC_WEB_URL}</i>`;
+  const body = `🚨 <b>COPYRA ALERT</b>\n${text}\n<i>${publicWebFooter()}</i>`;
 
   if (opts.awaitDelivery) {
     return telegram.sendNow(body, { kind: `ops-${kind}` });
@@ -45,7 +52,7 @@ export async function alertOpsCleared(kind: string, text: string): Promise<void>
   } catch {
     /* ignore */
   }
-  telegram.send(`✅ <b>COPYRA RECOVERED</b>\n${text}\n<i>${env.PUBLIC_WEB_URL}</i>`, {
+  telegram.send(`✅ <b>COPYRA RECOVERED</b>\n${text}\n<i>${publicWebFooter()}</i>`, {
     kind: `ops-clear-${kind}`,
   });
 }
