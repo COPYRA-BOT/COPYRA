@@ -16,6 +16,15 @@ Set these as **encrypted App-Level** variables on the `copyra` app (RUN_AND_BUIL
 
 Already required for the live app (unchanged): `DATABASE_URL`, `REDIS_URL`, RPC URLs, bot keys, `TELEGRAM_*`, Reown project id.
 
+## Telegram routing
+
+| Target | Env / field | Receives |
+|---|---|---|
+| Admin ops chat | `TELEGRAM_CHAT_ID` (App-Level, e.g. `-5389164510`) | **All** worker/backend alerts: detection, skip, buy/sell submitted/confirmed/failed, ops/watchdog, worker-online |
+| Linked end-user | `User.telegramChatId` (Connect Telegram in account) | **Buy confirmed** and **sell confirmed** only (+ link ack) |
+
+`TELEGRAM_BOT_TOKEN` stays encrypted App-Level. Keep the admin chat id on App-Level so both `api` and `worker` can post.
+
 ## Referral earnings
 
 Platform fees are **not** collected on trades yet. Referral **links, attribution, friends list, and claim API** are real; **claimable stays 0** with reason `PLATFORM_FEES_NOT_COLLECTED` until a separate fee-ledger change lands.
