@@ -27,7 +27,7 @@ import { computeExitLevels } from './exits.js';
 import { executionGate, wholeUnits } from './execution-gate.js';
 import { buildPortfolioState, getPnlSummary, NoTradingWalletError, snapshotBalance } from './portfolio.js';
 import { calculatePositionSize } from './sizing.js';
-import { getSettings, getStrategyConfig } from './settings.js';
+import { getStrategyConfigFor } from './settings.js';
 import { TelemetryTracker } from './telemetry.js';
 import type { DecodedTransaction, MarketCapTier } from './types.js';
 
@@ -144,10 +144,9 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
   telemetry.mark('decoded');
   telemetry.mark('qualified');
 
-  // Overlap settings + book lookups so sizing starts sooner on the hot path.
-  const [settings, config, open, firstBuy] = await Promise.all([
-    getSettings(),
-    getStrategyConfig(),
+  // Per-user + per-mode settings (SOL/EVM independent) + book lookups.
+  const [{ config, modeRow, host: settings }, open, firstBuy] = await Promise.all([
+    getStrategyConfigFor(ownerUserId, input.chain),
     prisma.position.findFirst({
       where: {
         userId: ownerUserId,
@@ -188,10 +187,9 @@ async function runQualifiedCopy(input: QualifiedCopyInput): Promise<QualifiedCop
     return { status: SignalStatus.SKIPPED, signalId: signal.id, positionId: null, tradeId: null, txHash: null };
   }
 
-  // Per-mode kill switch / pause (dashboard ui.sol / ui.evm) — independent of the other mode.
-  const modeKey = input.chain === Chain.SOLANA ? 'sol' : 'evm';
-  const modeUi = (settings.ui as Record<string, { engine?: string } | undefined> | null)?.[modeKey];
-  const modeStopped = modeUi?.engine === 'STOPPED' || modeUi?.engine === 'PAUSED';
+  // Per-user mode engine (ON/PAUSED/STOPPED) — independent of the other mode / other users.
+  const modeEngine = (modeRow.engine || '').toUpperCase();
+  const modeStopped = modeEngine === 'STOPPED' || modeEngine === 'PAUSED';
   // Host-level per-family guards (DO App env). Master TRADING_ENABLED alone is not enough.
   const chainTradingEnabled =
     input.chain === Chain.SOLANA ? env.SOL_TRADING_ENABLED : env.EVM_TRADING_ENABLED;

@@ -69,6 +69,11 @@ export interface StrategyConfig {
    * additional buys of the same token may be copied (including scale-in).
    */
   firstBuyOnly: boolean;
+  /**
+   * % of available (post-reserve) balance allowed as a per-trade ceiling.
+   * Dashboard "Trade allocation". Does not change tier math — only adds a cap.
+   */
+  tradeAllocationPct: number;
   enabledChains: Chain[];
 }
 

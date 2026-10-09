@@ -4,7 +4,7 @@ import {
   componentLogger,
   decodeSolanaTransaction,
   getMarketSnapshot,
-  getStrategyConfig,
+  getStrategyConfigFor,
   handleQualifiedCopy,
   isSolanaQuoteAsset,
   markSeenOnce,
@@ -505,7 +505,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
   }
 
   // Parallelize market + DB lookups — sequential awaits were eating the 1s budget.
-  const [token, market, firstBuy, open, config, openPositionCount, traderAlreadyBought] =
+  const [token, market, firstBuy, open, strategyBundle, openPositionCount, traderAlreadyBought] =
     await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain: Chain.SOLANA, address: tokenAddress } },
@@ -531,7 +531,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
       },
     }),
-    getStrategyConfig(),
+    getStrategyConfigFor(trader.userId, Chain.SOLANA),
     prisma.position.count({
       where: {
         userId: trader.userId,
@@ -546,6 +546,7 @@ async function handleSignature(traderId: string, signature: string, slot: number
       excludeTxHash: signature,
     }),
   ]);
+  const config = strategyBundle.config;
   if (!market.missing) {
     void prisma.token
       .update({

@@ -60,8 +60,12 @@ export function calculatePositionSize(input: SizingInput): SizingResult {
   const strengthScale = Math.min(1, (2 / 3) * Math.min(1.5, Math.max(1, input.signalStrength)));
   const strengthAdjustedTierUsd = tierCapUsd * strengthScale;
 
+  const allocPct = Math.min(100, Math.max(1, config.tradeAllocationPct || 100));
+  const allocationCapUsd = availableUsd * (allocPct / 100);
+
   const candidates: Array<{ label: string; value: number }> = [
     { label: 'available balance after reserve', value: availableUsd },
+    { label: `trade allocation (${allocPct}% of available)`, value: allocationCapUsd },
     { label: 'max deployment headroom (80%)', value: deploymentHeadroomUsd },
     { label: `tier ${tier} cap (${pct}%)`, value: strengthAdjustedTierUsd },
     { label: 'absolute max trade size', value: input.absoluteMaxUsd },

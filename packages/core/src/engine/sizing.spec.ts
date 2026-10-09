@@ -30,6 +30,30 @@ describe('calculatePositionSize', () => {
     }
   });
 
+  it('caps by trade allocation % of available balance', () => {
+    // $1000 balance, 20% reserve → $800 available; 25% alloc → $200 ceiling.
+    const result = size({
+      portfolio: portfolio({ tradingBalanceQuote: 10, quotePriceUsd: 100, deployedUsd: 0 }),
+      config: strategyConfig({
+        reservePct: 20,
+        tradeAllocationPct: 25,
+        maxDeploymentPct: 100,
+        tier1MaxPct: 100,
+        tier2MaxPct: 100,
+        tier3MaxPct: 100,
+        tier4MaxPct: 100,
+        minTradeUsd: 1,
+      }),
+      absoluteMaxUsd: 10_000,
+      signalStrength: 1.5,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizeUsd).toBeLessThanOrEqual(200.0001);
+      expect(result.basis.bindingConstraint).toMatch(/trade allocation/i);
+    }
+  });
+
   it('skips when the entire balance sits inside the reserve', () => {
     const result = size({
       portfolio: portfolio({ tradingBalanceQuote: 0.05, quotePriceUsd: 120 }),

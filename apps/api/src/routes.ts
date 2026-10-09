@@ -5,10 +5,14 @@ import {
   explorerTxUrl,
   getDexscreenerMarket,
   getQuoteAssetPriceUsd,
+  ensureUserModeSettings,
   getSettings,
   getSolanaBalances,
   getStrategyConfig,
+  getStrategyConfigFor,
+  getUserModeSettings,
   invalidateSettingsCache,
+  invalidateUserModeSettingsCache,
   killSwitchSellAll,
   multiUserCustodyEnabled,
   publicReownProjectId,
@@ -16,6 +20,7 @@ import {
   solanaSigner,
   telegram,
   tradingBlockedReason,
+  tradingModeFromAuth,
 } from '@copyra/core';
 import { Chain, prisma, type Prisma } from '@copyra/db';
 import { PublicKey } from '@solana/web3.js';
@@ -77,28 +82,45 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/api/status', async (request) => buildLiveStatus(request));
 
-  app.get('/api/settings', async () => {
-    const row = await getSettings();
-    const config = await getStrategyConfig();
+  app.get('/api/settings', async (request, reply) => {
+    const mode = authModeFromRequest(request);
+    const session = await requireAuthed(request, reply, mode);
+    if (!session) return;
+
+    const host = await getSettings();
+    const modeRow = await ensureUserModeSettings(session.user.id, mode);
+    const { config } = await getStrategyConfigFor(session.user.id, mode);
+    const signerAvailable =
+      multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available;
+
     return jsonSafe({
-      row,
+      mode,
+      host: {
+        tradingEnabled: host.tradingEnabled,
+        emergencyStop: host.emergencyStop,
+        emergencyStopReason: host.emergencyStopReason,
+        enabledChains: host.enabledChains,
+        pnlResetAt: host.pnlResetAt,
+      },
+      // `row` is the per-user per-mode strategy the worker reads for this account.
+      row: modeRow,
       effective: config,
-      blockedReason: tradingBlockedReason(
-        row,
-        multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available,
-      ),
+      blockedReason: tradingBlockedReason(host, signerAvailable, modeRow),
     });
   });
 
   app.patch('/api/settings', async (request, reply) => {
     const body = z
       .object({
-        tradingEnabled: z.boolean().optional(),
+        mode: z.enum(['sol', 'evm']).optional(),
+        engine: z.enum(['ON', 'PAUSED', 'STOPPED']).optional(),
         exitStrategy: z.enum(['MANUAL', 'TRAILING']).optional(),
         minMarketCapUsd: z.number().positive().optional(),
         maxMarketCapUsd: z.number().positive().optional(),
         maxDeploymentPct: z.number().positive().max(100).optional(),
         maxOpenPositions: z.number().int().positive().max(50).optional(),
+        tradeAllocationPct: z.number().positive().max(100).optional(),
+        maxCapitalPerTokenPct: z.number().positive().max(100).optional(),
         reservePct: z.number().min(0).max(99).optional(),
         minTradeUsd: z.number().positive().optional(),
         maxSlippageBps: z.number().int().positive().max(5000).optional(),
@@ -111,10 +133,20 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         trailingDropPct: z.number().positive().lt(100).optional(),
         followTraderSells: z.boolean().optional(),
         firstBuyOnly: z.boolean().optional(),
-        enabledChains: z.array(chainSchema).optional(),
+        /** Dashboard extras for this mode only (units, blacklist). */
         ui: z.record(z.unknown()).optional(),
+        /**
+         * Host-level only (admin). Ignored for normal users — per-mode pause
+         * uses `engine` on UserModeSettings instead.
+         */
+        tradingEnabled: z.boolean().optional(),
+        enabledChains: z.array(chainSchema).optional(),
       })
       .parse(request.body);
+
+    const mode = (body.mode ?? authModeFromRequest(request)) as AuthMode;
+    const session = await requireAuthed(request, reply, mode);
+    if (!session) return;
 
     if (
       body.minMarketCapUsd !== undefined &&
@@ -126,13 +158,47 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const updated = await prisma.strategySettings.update({
-      where: { id: 1 },
-      data: { ...body, ui: body.ui as Prisma.InputJsonValue | undefined, updatedBy: 'dashboard' },
+    await ensureUserModeSettings(session.user.id, mode);
+    const tradingMode = tradingModeFromAuth(mode);
+
+    const {
+      mode: _mode,
+      tradingEnabled: _tradingEnabled,
+      enabledChains: _enabledChains,
+      ui,
+      ...risk
+    } = body;
+
+    const updated = await prisma.userModeSettings.update({
+      where: { userId_mode: { userId: session.user.id, mode: tradingMode } },
+      data: {
+        ...risk,
+        ...(ui !== undefined ? { ui: ui as Prisma.InputJsonValue } : {}),
+        updatedBy: session.user.id,
+      },
     });
-    invalidateSettingsCache();
-    // Worker reads settings with a short cache; invalidate so the next tick is fresh.
-    return jsonSafe({ row: updated, effective: await getStrategyConfig() });
+    invalidateUserModeSettingsCache(session.user.id, tradingMode);
+
+    if (body.engine === 'ON') {
+      // Resuming a mode ensures the host master switch is not stuck off from legacy UI.
+      await prisma.strategySettings.update({
+        where: { id: 1 },
+        data: { tradingEnabled: true, updatedBy: session.user.id },
+      });
+      invalidateSettingsCache();
+    }
+
+    const { config, host } = await getStrategyConfigFor(session.user.id, mode);
+    return jsonSafe({
+      mode,
+      row: updated,
+      effective: config,
+      host: {
+        tradingEnabled: host.tradingEnabled,
+        emergencyStop: host.emergencyStop,
+        enabledChains: host.enabledChains,
+      },
+    });
   });
 
   app.post('/api/settings/emergency-stop', async (request) => {
@@ -180,28 +246,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     const session = await requireAuthed(request, reply, body.mode);
     if (!session) return;
 
-    const row = await getSettings();
+    await ensureUserModeSettings(session.user.id, body.mode);
+    const tradingMode = tradingModeFromAuth(body.mode);
+    const prev = await getUserModeSettings(session.user.id, body.mode);
     const prevUi =
-      row.ui && typeof row.ui === 'object' && !Array.isArray(row.ui)
-        ? (row.ui as Record<string, unknown>)
+      prev.ui && typeof prev.ui === 'object' && !Array.isArray(prev.ui)
+        ? (prev.ui as Record<string, unknown>)
         : {};
-    const prevMode =
-      prevUi[body.mode] && typeof prevUi[body.mode] === 'object' && !Array.isArray(prevUi[body.mode])
-        ? (prevUi[body.mode] as Record<string, unknown>)
-        : {};
-    const nextUi = {
-      ...prevUi,
-      [body.mode]: {
-        ...prevMode,
+    await prisma.userModeSettings.update({
+      where: { userId_mode: { userId: session.user.id, mode: tradingMode } },
+      data: {
         engine: 'STOPPED',
-        killSwitchAt: new Date().toISOString(),
+        ui: {
+          ...prevUi,
+          engine: 'STOPPED',
+          killSwitchAt: new Date().toISOString(),
+        } as Prisma.InputJsonValue,
+        updatedBy: session.user.id,
       },
-    };
-    await prisma.strategySettings.update({
-      where: { id: 1 },
-      data: { ui: nextUi as Prisma.InputJsonValue, updatedBy: 'dashboard' },
     });
-    invalidateSettingsCache();
+    invalidateUserModeSettingsCache(session.user.id, tradingMode);
 
     const result = await killSwitchSellAll({
       userId: session.user.id,
@@ -763,20 +827,47 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       closedCount: 0,
     };
 
+    const signerAvailable =
+      multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available;
+
+    const loadModeSettings = async (userId: string | undefined, mode: AuthMode) => {
+      if (!userId) return null;
+      const { config, modeRow, host } = await getStrategyConfigFor(userId, mode);
+      return {
+        mode,
+        userId,
+        row: modeRow,
+        effective: config,
+        blockedReason: tradingBlockedReason(host, signerAvailable, modeRow),
+      };
+    };
+
     const [status, settingsRes, traders, positions, signals, trades, solBal, evmBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
       await Promise.all([
         buildLiveStatus(request),
-        getSettings().then(async (row) => {
-          const config = await getStrategyConfig();
+        (async () => {
+          const host = await getSettings();
+          const [sol, evm] = await Promise.all([
+            loadModeSettings(solUserId, 'sol'),
+            loadModeSettings(evmUserId, 'evm'),
+          ]);
+          const activeMode = authModeFromRequest(request);
+          const active = activeMode === 'evm' ? evm : sol;
           return {
-            row,
-            effective: config,
-            blockedReason: tradingBlockedReason(
-              row,
-              multiUserCustodyEnabled() || solanaSigner.available || evmSigner.available,
-            ),
+            host: {
+              tradingEnabled: host.tradingEnabled,
+              emergencyStop: host.emergencyStop,
+              emergencyStopReason: host.emergencyStopReason,
+              enabledChains: host.enabledChains,
+              pnlResetAt: host.pnlResetAt,
+            },
+            modes: { sol, evm },
+            // Backward-compatible fields for the active mode session.
+            row: active?.row ?? null,
+            effective: active?.effective ?? (await getStrategyConfig()),
+            blockedReason: active?.blockedReason ?? tradingBlockedReason(host, signerAvailable),
           };
-        }),
+        })(),
         userIds.length
           ? prisma.trader.findMany({ where: { userId: { in: userIds } }, orderBy: { createdAt: 'desc' } })
           : Promise.resolve([]),

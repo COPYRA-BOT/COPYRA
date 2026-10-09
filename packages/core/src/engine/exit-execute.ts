@@ -33,7 +33,7 @@ import {
   readOnChainBalanceForAddress,
   resolveTradingAddress,
 } from './portfolio.js';
-import { getSettings, getStrategyConfig } from './settings.js';
+import { getSettings, getStrategyConfigFor } from './settings.js';
 import { TelemetryTracker } from './telemetry.js';
 import type { StrategyConfig } from './types.js';
 
@@ -58,11 +58,12 @@ export async function monitorOpenPositions(): Promise<void> {
     include: { token: true },
   });
   if (positions.length === 0) return;
-  // Shared settings for the tick — avoid N sequential DB reads before marks.
-  const [config, settings] = await Promise.all([getStrategyConfig(), getSettings()]);
+  // Host emergency stop once; each position uses that owner's mode settings.
+  const host = await getSettings();
   await mapPool(positions, EXIT_TICK_CONCURRENCY, async (position) => {
     try {
-      await markAndMaybeExit(position, config, settings);
+      const { config } = await getStrategyConfigFor(position.userId, position.chain);
+      await markAndMaybeExit(position, config, host);
     } catch (error) {
       // Lock contention / pool blips are expected under load — log, don't Telegram.
       if (isTransientExitTickError(error)) {
@@ -241,7 +242,7 @@ export async function killSwitchSellAll(input: {
       status: { in: [...LIVE] },
     },
   });
-  const [settings, config] = await Promise.all([getSettings(), getStrategyConfig()]);
+  const settings = await getSettings();
   const results: Array<{
     positionId: string;
     chain: Chain;
@@ -255,6 +256,7 @@ export async function killSwitchSellAll(input: {
   for (const position of positions) {
     const token = position.tokenSymbol ?? position.tokenAddress.slice(0, 8);
     try {
+      const { config } = await getStrategyConfigFor(input.userId, position.chain);
       await withLock(`exit:${position.id}`, 180_000, async () => {
         const fresh = await prisma.position.findUnique({ where: { id: position.id } });
         if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) {

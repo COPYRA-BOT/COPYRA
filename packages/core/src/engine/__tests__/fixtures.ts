@@ -38,6 +38,7 @@ export function strategyConfig(overrides: Partial<StrategyConfig> = {}): Strateg
     trailingDropPct: 15,
     followTraderSells: true,
     firstBuyOnly: true,
+    tradeAllocationPct: 50,
     enabledChains: [Chain.SOLANA, Chain.BASE],
     ...overrides,
   };

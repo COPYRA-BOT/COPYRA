@@ -252,12 +252,19 @@ async function api(method,path,body,opts){
 const modeOf=c=>c==='SOLANA'?'sol':'evm';
 const chOf=c=>({SOLANA:'solana',BASE:'base',ARBITRUM:'arb',BSC:'bnb',ETHEREUM:'ethereum'}[c]||String(c).toLowerCase());
 function botFrom(status,settings,e){
-  const modeUi=(settings?.row?.ui||{})[e]||{};
+  const modeRow=settings?.modes?.[e]?.row||(settings?.row?.mode?(String(settings.row.mode).toLowerCase()===e?settings.row:null):null);
+  const eng=String(modeRow?.engine||(settings?.modes?.[e]?.row?.ui?.engine)||'').toUpperCase();
+  if(eng==='STOPPED')return'STOPPED';
+  if(eng==='PAUSED')return'PAUSED';
+  if(settings?.host?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';
+  const blocked=settings?.modes?.[e]?.blockedReason;
+  if(blocked&&!/paused/i.test(blocked))return'PAUSED';
+  if(eng==='ON'&&status?.trading?.envGuard!==false)return'ON';
+  // Legacy fallback while older snapshots still ship ui.sol / ui.evm on host row.
+  const modeUi=(settings?.host?.ui||settings?.row?.ui||{})[e]||{};
   if(modeUi.engine==='STOPPED')return'STOPPED';
   if(modeUi.engine==='PAUSED')return'PAUSED';
-  if(settings?.row?.emergencyStop||status?.trading?.emergencyStop)return'STOPPED';
-  if(status?.trading?.blockedReason)return'PAUSED';
-  if(settings?.row?.tradingEnabled&&status?.trading?.envGuard)return'ON';
+  if(settings?.host?.tradingEnabled&&status?.trading?.envGuard)return'ON';
   return'PAUSED';
 }
 function hydrate(snap){
@@ -269,35 +276,44 @@ function hydrate(snap){
  else if(wallet.sol&&!isRealWallet(wallet.sol,'sol'))wallet.sol=null;
  if(isRealWallet(snap.auth?.evm?.address,'evm'))wallet.evm=snap.auth.evm.address;
  else if(wallet.evm&&!isRealWallet(wallet.evm,'evm'))wallet.evm=null;
- const st=snap.settings||{}, row=st.row||{}, ui=row.ui||{};
+ const st=snap.settings||{};
  const status=snap.status||{};
  const traders=snap.traders||[], positions=snap.positions||[], signals=snap.signals||[], trades=snap.trades||[];
  for(const e of['sol','evm']){
   const prev=S[e];
   const next=empty(e);
   next.bot=botFrom(status,st,e);
-  next.set={...dflt(e),...(ui[e]||{})};
-  // Absolute USD from the strategy row is source of truth; each field has its own K/M unit.
+  // Per-user + per-mode strategy row (SOL and EVM are independent).
+  const modePack=st.modes?.[e];
+  const row=modePack?.row||null;
+  const modeUi=(row?.ui&&typeof row.ui==='object'?row.ui:null)||{};
+  next.set={...dflt(e),...modeUi};
+  // Absolute USD from this mode's strategy row is source of truth.
   if(next.set.liqUnit!=='M')next.set.liqUnit='K';
   if(next.set.minMcUnit!=='M'&&next.set.minMcUnit!=='K')next.set.minMcUnit=next.set.mcUnit==='M'?'M':'K';
   if(next.set.maxMcUnit!=='M'&&next.set.maxMcUnit!=='K')next.set.maxMcUnit=next.set.minMcUnit;
   const liqDiv=unitMul(next.set.liqUnit),minMcDiv=unitMul(next.set.minMcUnit),maxMcDiv=unitMul(next.set.maxMcUnit);
-  if(row.minMarketCapUsd!=null)next.set.minMc=Number(row.minMarketCapUsd)/minMcDiv;
-  if(row.maxMarketCapUsd!=null)next.set.maxMc=Number(row.maxMarketCapUsd)/maxMcDiv;
-  if(row.maxDeploymentPct!=null)next.set.maxDep=Number(row.maxDeploymentPct);
-  if(row.maxOpenPositions!=null)next.set.maxPos=Number(row.maxOpenPositions);
-  if(row.reservePct!=null)next.set.res=Number(row.reservePct);
-  if(row.minTradeUsd!=null)next.set.min=e==='sol'&&UI.sol.usd?Number(row.minTradeUsd)/UI.sol.usd:Number(row.minTradeUsd);
-  if(row.maxSlippageBps!=null)next.set.slip=Number(row.maxSlippageBps)/100;
-  if(row.maxPriceImpactPct!=null)next.set.impact=Number(row.maxPriceImpactPct);
-  if(row.minLiquidityUsd!=null)next.set.minLiq=Number(row.minLiquidityUsd)/liqDiv;
-  if(row.takeProfitPct!=null)next.set.tp=Number(row.takeProfitPct);
-  if(row.stopLossPct!=null)next.set.sl=Number(row.stopLossPct);
-  if(row.trailingTriggerPct!=null)next.set.trTp=Number(row.trailingTriggerPct);
-  if(row.trailingPartialSellPct!=null)next.set.trFrac=Number(row.trailingPartialSellPct);
-  if(row.trailingDropPct!=null)next.set.trTrail=Number(row.trailingDropPct);
-  if(row.exitStrategy)next.set.tpMode=row.exitStrategy;
-  if(typeof row.firstBuyOnly==='boolean')next.set.buyMode=row.firstBuyOnly?'FIRST_ONLY':'EVERY_BUY';
+  if(row){
+   if(row.minMarketCapUsd!=null)next.set.minMc=Number(row.minMarketCapUsd)/minMcDiv;
+   if(row.maxMarketCapUsd!=null)next.set.maxMc=Number(row.maxMarketCapUsd)/maxMcDiv;
+   if(row.maxDeploymentPct!=null)next.set.maxDep=Number(row.maxDeploymentPct);
+   if(row.maxOpenPositions!=null)next.set.maxPos=Number(row.maxOpenPositions);
+   if(row.tradeAllocationPct!=null)next.set.alloc=Number(row.tradeAllocationPct);
+   if(row.maxCapitalPerTokenPct!=null)next.set.maxTok=Number(row.maxCapitalPerTokenPct);
+   if(row.reservePct!=null)next.set.res=Number(row.reservePct);
+   if(row.minTradeUsd!=null)next.set.min=e==='sol'&&UI.sol.usd?Number(row.minTradeUsd)/UI.sol.usd:Number(row.minTradeUsd);
+   if(row.maxSlippageBps!=null)next.set.slip=Number(row.maxSlippageBps)/100;
+   if(row.maxPriceImpactPct!=null)next.set.impact=Number(row.maxPriceImpactPct);
+   if(row.minLiquidityUsd!=null)next.set.minLiq=Number(row.minLiquidityUsd)/liqDiv;
+   if(row.takeProfitPct!=null)next.set.tp=Number(row.takeProfitPct);
+   if(row.stopLossPct!=null)next.set.sl=Number(row.stopLossPct);
+   if(row.trailingTriggerPct!=null)next.set.trTp=Number(row.trailingTriggerPct);
+   if(row.trailingPartialSellPct!=null)next.set.trFrac=Number(row.trailingPartialSellPct);
+   if(row.trailingDropPct!=null)next.set.trTrail=Number(row.trailingDropPct);
+   if(row.exitStrategy)next.set.tpMode=row.exitStrategy;
+   if(typeof row.firstBuyOnly==='boolean')next.set.buyMode=row.firstBuyOnly?'FIRST_ONLY':'EVERY_BUY';
+   if(typeof modeUi.bl==='string')next.set.bl=modeUi.bl;
+  }
   // Prefer mode-scoped balance payload so SOL/EVM accounts never cross-contaminate.
   const modeBal=snap.balances?.[e];
   const multiCust=!!(modeBal?.multiUserCustody??snap.balances?.multiUserCustody);
@@ -674,10 +690,9 @@ window.switchMode=(x)=>{if(M===x)return;M=x;T='trading';try{window.CopyraWallet?
 const md=(h)=>{const s=$('#md');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow='';box.innerHTML=h}s.classList.add('o')};
 const cl=()=>{const s=$('#md');s.classList.remove('o');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow=''}};
 async function patchModeEngine(e,engine){
-  const row=LIVE?.settings?.row||{};
-  const ui={...(row.ui&&typeof row.ui==='object'?row.ui:{})};
-  ui[e]={...(ui[e]&&typeof ui[e]==='object'?ui[e]:{}),engine, ...(engine==='ON'?{killSwitchAt:null}:{})};
-  await api('PATCH','/api/settings',{ui, tradingEnabled: engine==='ON' ? true : row.tradingEnabled});
+  const prevUi=LIVE?.settings?.modes?.[e]?.row?.ui;
+  const ui={...(prevUi&&typeof prevUi==='object'?prevUi:{}),engine, ...(engine==='ON'?{killSwitchAt:null}:{})};
+  await api('PATCH','/api/settings',{mode:e, engine, ui},{mode:e});
 }
 async function bot(e,v){
  try{
@@ -1076,7 +1091,7 @@ function settings(e){const s=S[e].set;
 <li style="margin:0 0 6px">Enter your Chat ID below to receive alerts for this wallet.</li>
 <li style="margin:0">Click <b>Connect</b> to complete the setup.</li>
 </ol>`;
- $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes buy mode, TP/SL (manual + trailing), reserve, MC/liquidity window, slippage, max positions and deployment to the same strategy row the worker reads for live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><div id="tgGuide">${tgGuideHtml}</div><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Connect</button><button class="btn sm" id="tgDisconnect" type="button" hidden>Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+`<p class="mu">Save writes to <b>your ${e.toUpperCase()} mode only</b> — independent from the other mode and from other accounts. Buy mode, TP/SL, allocation, reserve, MC/liquidity, slippage, max positions and deployment are what the worker reads for your live copy + exits. Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><div id="tgGuide">${tgGuideHtml}</div><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Connect</button><button class="btn sm" id="tgDisconnect" type="button" hidden>Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
  dr.classList.add('o');
  $('#drClose')&&($('#drClose').onclick=()=>dr.classList.remove('o'));
  $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
@@ -1090,13 +1105,17 @@ function settings(e){const s=S[e].set;
   if(!(minLiqUsd>0))return $('#se').textContent='Min liquidity must be greater than zero.';
   if(!(n.alloc>=1&&n.alloc<=100))n.alloc=50;n.maxDep=Math.min(n.maxDep,100);n.maxTok=Math.min(n.maxTok,100);n.sl=Math.min(Math.max(n.sl,1),99);
   try{
-   const ui={...(LIVE?.settings?.row?.ui||{}),[e]:n};
+   // Persist only this mode for this signed-in account (never overwrites the other mode).
    await api('PATCH','/api/settings',{
-    exitStrategy:n.tpMode,firstBuyOnly:n.buyMode!=='EVERY_BUY',minMarketCapUsd:minMcUsd,maxMarketCapUsd:maxMcUsd,maxDeploymentPct:n.maxDep,maxOpenPositions:n.maxPos,reservePct:n.res,
+    mode:e,
+    exitStrategy:n.tpMode,firstBuyOnly:n.buyMode!=='EVERY_BUY',
+    tradeAllocationPct:n.alloc,maxCapitalPerTokenPct:n.maxTok,
+    minMarketCapUsd:minMcUsd,maxMarketCapUsd:maxMcUsd,maxDeploymentPct:n.maxDep,maxOpenPositions:n.maxPos,reservePct:n.res,
     minTradeUsd:e==='sol'&&UI.sol.usd?n.min*UI.sol.usd:n.min,maxSlippageBps:Math.round(n.slip*100),maxPriceImpactPct:n.impact,minLiquidityUsd:minLiqUsd,
-    takeProfitPct:n.tp,stopLossPct:n.sl,trailingTriggerPct:n.trTp,trailingPartialSellPct:n.trFrac,trailingDropPct:n.trTrail,ui
-   });
-   dr.classList.remove('o');toast(`Settings saved. ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
+    takeProfitPct:n.tp,stopLossPct:n.sl,trailingTriggerPct:n.trTp,trailingPartialSellPct:n.trFrac,trailingDropPct:n.trTrail,
+    ui:{...n,engine:S[e].bot||'PAUSED'}
+   },{mode:e});
+   dr.classList.remove('o');toast(`${e.toUpperCase()} settings saved for this account. ${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
   }catch(err){$('#se').textContent=err.message}};
  // Paint Connect / Connected + Disconnect from link state (BUY/SELL alerts only).
  const paintTg=(linked,masked)=>{

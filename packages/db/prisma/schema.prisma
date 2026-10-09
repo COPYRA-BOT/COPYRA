@@ -162,6 +162,12 @@ enum CustodyFamily {
   EVM
 }
 
+/// Dashboard / copy-engine mode. SOL and EVM settings are independent per user.
+enum TradingMode {
+  SOL
+  EVM
+}
+
 enum BalanceBucket {
   TRADING
   SAVINGS
@@ -246,6 +252,7 @@ model User {
   positions       Position[]
   trades          Trade[]
   notifications   NotificationLog[]
+  modeSettings    UserModeSettings[]
 
   @@index([referredById])
   @@map("users")
@@ -864,13 +871,14 @@ model Transfer {
 }
 
 // ============================================================================
-// Strategy settings — single authoritative row, editable from the dashboard
+// Strategy settings — host/global row (emergency stop, chain allow-list, seed defaults)
+// Per-user SOL/EVM risk settings live in UserModeSettings.
 // ============================================================================
 
 model StrategySettings {
   id Int @id @default(1)
 
-  /// Master kill switch, independent of the TRADING_ENABLED env guard.
+  /// Host-level master kill switch, independent of the TRADING_ENABLED env guard.
   tradingEnabled Boolean @default(false)
   emergencyStop  Boolean @default(false)
   emergencyStopReason String?
@@ -878,7 +886,7 @@ model StrategySettings {
 
   exitStrategy ExitStrategy @default(MANUAL)
 
-  // --- market-cap window (spec §4) ---
+  // --- market-cap window (spec §4) — also used as seed defaults for new users ---
   minMarketCapUsd Decimal @default(1000000) @db.Decimal(30, 4)
   maxMarketCapUsd Decimal @default(20000000) @db.Decimal(30, 4)
 
@@ -923,13 +931,72 @@ model StrategySettings {
   /// Running P&L baseline for the Telegram "Total P&L" line (spec §"Total P&L").
   pnlResetAt DateTime @default(now())
 
-  /// Dashboard-only extras from the original COPYRA UI (alloc %, blacklist).
+  /// Legacy dashboard extras (pre per-user settings). Kept for migration seed only.
   ui Json?
 
   updatedAt DateTime @updatedAt
   updatedBy String?
 
   @@map("strategy_settings")
+}
+
+/// Per-user, per-mode (SOL / EVM) copy-trading strategy. Each mode is independent.
+model UserModeSettings {
+  id     String      @id @default(cuid())
+  userId String
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode   TradingMode
+
+  /// ON | PAUSED | STOPPED — pause/resume/kill for this mode only.
+  engine String @default("PAUSED")
+
+  exitStrategy ExitStrategy @default(MANUAL)
+
+  minMarketCapUsd Decimal @default(1000000) @db.Decimal(30, 4)
+  maxMarketCapUsd Decimal @default(20000000) @db.Decimal(30, 4)
+
+  maxDeploymentPct Decimal @default(80) @db.Decimal(6, 3)
+  tier1MaxPct      Decimal @default(20) @db.Decimal(6, 3)
+  tier2MaxPct      Decimal @default(30) @db.Decimal(6, 3)
+  tier3MaxPct      Decimal @default(40) @db.Decimal(6, 3)
+  tier4MaxPct      Decimal @default(50) @db.Decimal(6, 3)
+
+  maxOpenPositions Int @default(5)
+
+  /// % of available (post-reserve) balance used as a per-trade allocation ceiling.
+  tradeAllocationPct Decimal @default(50) @db.Decimal(6, 3)
+
+  /// Soft UI cap (also stored for dashboard); engine uses maxDeploymentPct + tiers.
+  maxCapitalPerTokenPct Decimal @default(50) @db.Decimal(6, 3)
+
+  reservePct   Decimal @default(20) @db.Decimal(6, 3)
+  minTradeUsd  Decimal @default(10) @db.Decimal(20, 4)
+  autoTransferFromSavings Boolean @default(false)
+
+  maxSlippageBps     Int     @default(100)
+  maxPriceImpactPct  Decimal @default(3) @db.Decimal(10, 6)
+  minLiquidityUsd    Decimal @default(50000) @db.Decimal(30, 4)
+  quoteMaxAgeMs      Int     @default(3000)
+  confirmTimeoutMs   Int     @default(60000)
+  maxExecutionAttempts Int   @default(3)
+
+  takeProfitPct      Decimal @default(20) @db.Decimal(8, 4)
+  stopLossPct        Decimal @default(10) @db.Decimal(8, 4)
+  trailingTriggerPct Decimal @default(20) @db.Decimal(8, 4)
+  trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
+  trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
+  followTraderSells  Boolean @default(true)
+  firstBuyOnly       Boolean @default(true)
+
+  /// Dashboard extras: unit prefs (K/M), blacklist string, etc.
+  ui Json?
+
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@unique([userId, mode])
+  @@index([userId])
+  @@map("user_mode_settings")
 }
 
 // ============================================================================

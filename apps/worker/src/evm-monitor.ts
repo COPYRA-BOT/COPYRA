@@ -5,7 +5,7 @@ import {
   decodeEvmTransaction,
   evmPool,
   getMarketSnapshot,
-  getStrategyConfig,
+  getStrategyConfigFor,
   handleQualifiedCopy,
   isEvmQuoteAsset,
   markSeenOnce,
@@ -277,7 +277,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     return;
   }
 
-  const [token, market, firstBuy, open, config, openPositionCount, traderAlreadyBought] =
+  const [token, market, firstBuy, open, strategyBundle, openPositionCount, traderAlreadyBought] =
     await Promise.all([
     prisma.token.upsert({
       where: { chain_address: { chain, address: tokenAddress } },
@@ -301,7 +301,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         status: { in: ['PENDING_OPEN', 'OPEN', 'PARTIALLY_CLOSED', 'CLOSING'] },
       },
     }),
-    getStrategyConfig(),
+    getStrategyConfigFor(trader.userId, chain),
     prisma.position.count({
       where: {
         userId: trader.userId,
@@ -316,6 +316,7 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
       excludeTxHash: hash,
     }),
   ]);
+  const config = strategyBundle.config;
   if (!market.missing) {
     void prisma.token
       .update({
