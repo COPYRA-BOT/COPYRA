@@ -25,22 +25,31 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .chip.evm .tile{background:#f3f4f6}
 .chip.evm .tile .ico.sol{opacity:0;transform:scale(.88)}
 .chip.evm .tile .ico.evm.on{opacity:1;transform:scale(1)}
-#cn-wrap{position:relative;display:inline-flex;align-items:center;max-width:min(240px,52vw)}
-#cn-wrap .cn-btn-row{position:relative;display:inline-flex;align-items:center}
+#cn-wrap{position:relative;display:inline-flex;align-items:center;max-width:min(200px,48vw);flex-shrink:1;min-width:0}
+#cn-wrap .cn-btn-row{position:relative;display:inline-flex;align-items:center;max-width:100%}
 #cn-wrap appkit-button,#cn-wrap w3m-button,#cn-wrap w3m-core-button{position:absolute;inset:0;opacity:0.02;width:100%!important;height:100%!important;z-index:2;cursor:pointer}
-#cn.cn-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;padding:10px 16px;min-height:44px;font:600 14px/1 Figtree,system-ui,sans-serif;letter-spacing:-.01em;box-shadow:var(--gl);white-space:nowrap}
-#cn.cn-btn .cn-ico,#cn.cn-btn .cn-chev{display:inline-flex;width:18px;height:18px;flex-shrink:0;color:inherit}
-#cn.cn-btn .cn-ico svg,#cn.cn-btn .cn-chev svg{width:100%;height:100%;display:block}
-#cn.cn-btn .cn-label{font-weight:700}
-#cn.cn-btn.on{padding-left:14px;padding-right:14px}
-#acct-line{position:absolute;top:calc(100% + 3px);right:0;z-index:21;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:2px 2px 0;font:500 11px/1.2 Figtree,system-ui,sans-serif;color:var(--g);letter-spacing:-.005em;pointer-events:auto;background:linear-gradient(to bottom,var(--bg) 70%,transparent);border-radius:0 0 8px 8px}
-#acct-line[hidden]{display:none!important}
-#acct-line .acct-mail,#acct-line .acct-eye{display:inline-flex;width:13px;height:13px;flex-shrink:0;opacity:.95}
-#acct-line .acct-mail svg,#acct-line .acct-eye svg{width:100%;height:100%;display:block;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-#acct-line .acct-email{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:12ch}
-#acct-line .acct-email.full{max-width:min(200px,46vw);white-space:normal;word-break:break-all}
-#acct-line button.acct-vis{display:inline-flex;align-items:center;gap:4px;background:none;border:0;padding:0;margin:0;color:var(--g);font:600 11px/1 Figtree,system-ui,sans-serif;cursor:pointer;opacity:.95;flex-shrink:0}
-#acct-line button.acct-vis:hover{opacity:1;text-decoration:underline}
+#cn.cn-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:999px;padding:9px 14px;min-height:40px;max-width:100%;font:700 13.5px/1 Figtree,system-ui,sans-serif;letter-spacing:-.01em;box-shadow:var(--gl);white-space:nowrap}
+#cn.cn-btn .cn-ico{display:inline-flex;width:17px;height:17px;flex-shrink:0;color:inherit}
+#cn.cn-btn .cn-ico svg{width:100%;height:100%;display:block}
+#cn.cn-btn .cn-label{font-weight:700;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#cn.cn-btn.on{padding-left:12px;padding-right:12px}
+.nav-head{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+.nav-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.nav-title{font:800 18px/1.1 'Inter Tight',system-ui,sans-serif;letter-spacing:-.02em;margin:0;flex-shrink:0}
+.nav-close{display:grid;place-items:center;width:100%;min-height:48px;border:1px solid var(--ln);border-radius:999px;background:var(--sf);color:var(--mu);padding:0;cursor:pointer}
+.nav-close:hover{color:var(--tx);background:var(--sf2)}
+.nav-close svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round}
+#nav-acct{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;padding:5px 6px 5px 5px;border-radius:999px;background:#0B0B0D;border:1px solid rgba(213,118,88,.45);color:#F2F1EC;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+#nav-acct[hidden]{display:none!important}
+#nav-acct .nav-acct-ico{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--ac);color:#1A1410;flex-shrink:0}
+#nav-acct .nav-acct-ico svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+#nav-acct .nav-acct-email{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:12ch;font:600 12.5px/1 Figtree,system-ui,sans-serif;color:#F2F1EC}
+#nav-acct .nav-acct-email.full{max-width:min(160px,42vw);white-space:normal;word-break:break-all}
+#nav-acct .nav-acct-div{width:1px;height:18px;background:rgba(255,255,255,.22);flex-shrink:0}
+#nav-acct button.nav-acct-vis{display:inline-flex;align-items:center;gap:5px;margin:0;border:0;border-radius:10px;padding:7px 10px;background:var(--ac);color:#1A1410;font:700 12px/1 Figtree,system-ui,sans-serif;cursor:pointer;flex-shrink:0;min-height:0;width:auto}
+#nav-acct button.nav-acct-vis:hover{filter:brightness(1.06)}
+#nav-acct button.nav-acct-vis .nav-acct-eye{display:inline-flex;width:14px;height:14px}
+#nav-acct button.nav-acct-vis .nav-acct-eye svg{width:100%;height:100%;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
 #akhost appkit-button,#akhost w3m-button,#akhost w3m-core-button{display:block;width:100%}
 .btn{border:0;border-radius:16px;padding:11px 18px;font-weight:600;background:var(--sf2);color:var(--tx)}
 .pri{background:var(--ac);color:#1A1410;box-shadow:var(--gl)}.pri:hover{filter:brightness(1.08)}.big{border-radius:20px;padding:18px 26px;font-size:18px}
@@ -72,7 +81,7 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 .act div{padding:7px 0;border-bottom:1px solid var(--ln);font-size:14px}.act time{color:var(--mu);margin-right:8px}
 .act a{color:var(--evm);text-decoration:underline;font-weight:600}.act a:hover{opacity:.85}
 #dr{position:fixed;top:0;bottom:0;right:0;width:min(400px,100%);background:var(--sf);border-left:1px solid var(--ln);z-index:40;padding:20px;overflow:auto;transform:translateX(100%);transition:.25s}#dr.o{transform:none}
-#nav{position:fixed;top:0;bottom:0;left:0;width:min(300px,86%);background:var(--sf);z-index:40;padding:20px;transform:translateX(-100%);transition:.25s}#nav.o{transform:none}#nav button{display:block;width:100%;text-align:left;background:none;border:0;padding:14px 8px;font-size:17px;border-bottom:1px solid var(--ln)}
+#nav{position:fixed;top:0;bottom:0;left:0;width:min(300px,86%);background:var(--sf);z-index:40;padding:20px;transform:translateX(-100%);transition:.25s;overflow:auto}#nav.o{transform:none}#nav>.nav-item{display:block;width:100%;text-align:left;background:none;border:0;padding:14px 8px;font-size:17px;border-bottom:1px solid var(--ln);color:var(--tx);cursor:pointer;border-radius:0;min-height:0}
 #sc{position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.5);display:none}#nav.o~#sc,#dr.o~#sc{display:block}
 #md{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;padding:16px}#md.o{display:flex}#md>div{background:var(--sf);border-radius:20px;padding:22px;width:min(440px,100%);max-height:90vh;overflow:auto}
 #ts{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--tx);color:var(--bg);padding:10px 18px;border-radius:99px;z-index:60;display:none}
@@ -82,7 +91,7 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);height:6px;cursor:pointer}
 .amt-meta{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--mu);margin-bottom:8px}
 .amt-meta b{color:var(--tx);font-weight:600}
-@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}#cn.cn-btn{padding:9px 12px;font-size:13px;gap:6px;min-height:40px;border-radius:999px}#cn.cn-btn .cn-ico,#cn.cn-btn .cn-chev{width:16px;height:16px}#acct-line{font-size:10px;gap:5px}#acct-line .acct-email{max-width:10ch}
+@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}#cn.cn-btn{padding:7px 11px;font-size:12.5px;gap:6px;min-height:36px;border-radius:999px;box-shadow:0 4px 14px rgba(213,118,88,.28)}#cn.cn-btn .cn-ico{width:15px;height:15px}#cn-wrap{max-width:min(150px,42vw)}
 .eb{margin:28px 0 8px}.sub{font-size:17px;margin:12px 0 20px}.big{width:100%;padding:16px}.tabs{gap:20px}.tab{font-size:16px}.card{padding:16px;border-radius:18px}.n{font-size:32px}table{font-size:13px}td,th{padding:8px 6px}
 .seg button{padding:10px 6px;font-size:15px}#md{align-items:flex-end;padding:0}#md>div{width:100%;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0))}#dr{width:100%}.row>.btn{flex:1 1 auto}#ts{width:max-content;max-width:90vw;text-align:center}}
 @media(max-width:380px){#ml{display:none}.logo{font-size:21px}}
@@ -92,7 +101,7 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 <div class="logo"><img class="brand" src="/icons/copyra.webp" width="36" height="36" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div>
 <span style="flex:1"></span><button class="ib" id="sb" aria-label="Search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg></button>
 <button class="chip" id="mc" title="Switch chain mode" aria-label="Switch SOL / EVM"><span class="tile"><img class="ico sol on" src="/icons/solana.webp" width="34" height="34" alt="Solana" onerror="this.onerror=null;this.src='/icons/solana.png'"><img class="ico evm" src="/icons/evm.webp" width="34" height="34" alt="EVM" onerror="this.onerror=null;this.src='/icons/evm.png'"></span><span id="ml" style="font-weight:600;color:var(--tx)">SOL</span></button>
-<button class="ib" id="th" aria-label="Theme"></button><span id="cn-wrap"><span class="cn-btn-row"><button class="btn pri cn-btn" id="cn" type="button" aria-haspopup="dialog"><span class="cn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5h17a1.5 1.5 0 0 1 1.5 1.5v8A2.5 2.5 0 0 1 19.5 20.5h-15A2.5 2.5 0 0 1 2 18V7.5A2.5 2.5 0 0 1 4.5 5H16"/><path d="M17 13.5h.01"/></svg></span><span class="cn-label">Connect Wallet</span><span class="cn-chev" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span></button></span><span id="acct-line" hidden></span></span></header>
+<button class="ib" id="th" aria-label="Theme"></button><span id="cn-wrap"><span class="cn-btn-row"><button class="btn pri cn-btn" id="cn" type="button" aria-haspopup="dialog"><span class="cn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5h17a1.5 1.5 0 0 1 1.5 1.5v8A2.5 2.5 0 0 1 19.5 20.5h-15A2.5 2.5 0 0 1 2 18V7.5A2.5 2.5 0 0 1 4.5 5H16"/><path d="M17 13.5h.01"/></svg></span><span class="cn-label">Connect Wallet</span></button></span></span></header>
 <div id="nav"></div><div id="dr"></div><div id="sc" onclick="nav.classList.remove('o');dr.classList.remove('o')"></div><div id="md"><div></div></div><div id="ts"></div>
 <main><div class="eb">The Copyra ecosystem</div><h1>Follow the smart money<i>.</i></h1><p class="sub">Every wallet. Every chain. Your rules.</p>
 <button class="btn pri big" onclick="addT()">+&nbsp; Add trader</button>
@@ -159,7 +168,6 @@ const isRealWallet=(a,e)=>{
 };
 let acctEmailShow=false;
 const CN_ICO=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5h17a1.5 1.5 0 0 1 1.5 1.5v8A2.5 2.5 0 0 1 19.5 20.5h-15A2.5 2.5 0 0 1 2 18V7.5A2.5 2.5 0 0 1 4.5 5H16"/><path d="M17 13.5h.01"/></svg>`;
-const CN_CHEV=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`;
 const ACCT_MAIL=`<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 7 9-7"/></svg>`;
 const ACCT_EYE=`<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg>`;
 const ACCT_EYE_OFF=`<svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 10.7a2.5 2.5 0 0 0 3.5 3.5"/><path d="M9.4 5.2A10.4 10.4 0 0 1 12 5c6.5 0 10 7 10 7a17.3 17.3 0 0 1-4.2 4.8"/><path d="M6.1 6.1A17.5 17.5 0 0 0 2 12s3.5 6 10 6c1.2 0 2.3-.2 3.3-.5"/></svg>`;
@@ -175,20 +183,24 @@ function maskEmail(email){
   if(!m)return email;
   return m[1]+'…'+m[3];
 }
+function connectBtnLabel(label){
+  if(label==='Connect Wallet'&&typeof matchMedia==='function'&&matchMedia('(max-width:480px)').matches)return 'Wallet';
+  return label;
+}
 function paintConnectBtn(label,title,connected){
   const cn=$('#cn'); if(!cn)return;
   cn.classList.toggle('on',!!connected);
   cn.title=title||'';
-  cn.innerHTML=`<span class="cn-ico" aria-hidden="true">${CN_ICO}</span><span class="cn-label"></span><span class="cn-chev" aria-hidden="true">${CN_CHEV}</span>`;
-  const lab=cn.querySelector('.cn-label'); if(lab)lab.textContent=label;
+  cn.innerHTML=`<span class="cn-ico" aria-hidden="true">${CN_ICO}</span><span class="cn-label"></span>`;
+  const lab=cn.querySelector('.cn-label'); if(lab)lab.textContent=connectBtnLabel(label);
 }
 function paintAcctLine(){
-  const el=$('#acct-line'); if(!el)return;
+  const el=$('#nav-acct'); if(!el)return;
   const email=accountEmail();
   if(!email){el.hidden=true;el.innerHTML='';return}
   el.hidden=false;
   const shown=acctEmailShow?email:maskEmail(email);
-  el.innerHTML=`<span class="acct-mail" aria-hidden="true">${ACCT_MAIL}</span><span class="acct-email${acctEmailShow?' full':''}" title="Account connected">${shown}</span><button type="button" class="acct-vis" id="acct-vis" aria-label="${acctEmailShow?'Hide email':'View email'}"><span class="acct-eye" aria-hidden="true">${acctEmailShow?ACCT_EYE_OFF:ACCT_EYE}</span><span>${acctEmailShow?'Hide':'View'}</span></button>`;
+  el.innerHTML=`<span class="nav-acct-ico" aria-hidden="true">${ACCT_MAIL}</span><span class="nav-acct-email${acctEmailShow?' full':''}" title="Account connected">${shown}</span><span class="nav-acct-div" aria-hidden="true"></span><button type="button" class="nav-acct-vis" id="acct-vis" aria-label="${acctEmailShow?'Hide email':'View email'}"><span class="nav-acct-eye" aria-hidden="true">${acctEmailShow?ACCT_EYE_OFF:ACCT_EYE}</span><span>${acctEmailShow?'Hide':'View'}</span></button>`;
   $('#acct-vis')&&($('#acct-vis').onclick=(ev)=>{ev.preventDefault();ev.stopPropagation();acctEmailShow=!acctEmailShow;paintAcctLine()});
 }
 /** Trade history P&L filter: all | profit | loss */
@@ -1412,14 +1424,12 @@ function beginConnectFromClick(){
   });
 }
 // Capture on the wrap so the overlaid <appkit-button> click still starts our wait loop.
-// Account-line View/Hide must not open the wallet modal.
-$('#cn-wrap')?.addEventListener('click',(ev)=>{
-  if(ev.target&&ev.target.closest&&ev.target.closest('#acct-line'))return;
-  beginConnectFromClick();
-},{capture:true});
+$('#cn-wrap')?.addEventListener('click',()=>{beginConnectFromClick()},{capture:true});
 $('#cn').onclick=()=>{beginConnectFromClick()};
+try{matchMedia('(max-width:480px)').addEventListener('change',()=>draw())}catch{}
 
-$('#nav').innerHTML='<div class="row sp" style="margin-bottom:8px"><b style="font-size:18px">Menu</b><button class="ib" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button onclick="wd2()">Security (2FA)</button><button onclick="sysHealth()">System health</button>';
+$('#nav').innerHTML='<div class="nav-head"><div class="nav-title-row"><b class="nav-title">Menu</b><div id="nav-acct" hidden></div></div><button type="button" class="nav-close" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button type="button" class="nav-item" onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button type="button" class="nav-item" onclick="wd2()">Security (2FA)</button><button type="button" class="nav-item" onclick="sysHealth()">System health</button>';
+paintAcctLine();
 const wd2=()=>{nav.classList.remove('o');const a=wallet[M];md(`<h3>Security (2FA)</h3><p class="mu">Wallet sign in proves you control the key for this mode (${M.toUpperCase()}). Sessions last 7 days. Withdrawals use your signed in custody wallet. COPYRA never asks for a seed phrase.</p><p class="mu">${a?'Signed in: <b style="color:var(--tx)">'+a.slice(0,6)+'…'+a.slice(-4)+'</b>':'Not signed in. Connect a wallet to open your private account.'}</p><div class="row"><button class="btn" onclick="cl();CPY.go('acct')">Account &amp; 2FA</button><button class="btn" onclick="cl();CPY.go('dev')">Devices</button><button class="btn" onclick="cl()">Close</button></div>`)};
 const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){refresh();toast('Refreshing live status…');return}
  const chains=(st.chains||[]).map(c=>`${c.label}: ${c.error||('head '+(c.head||'*')+(c.latencyMs!=null?' · '+c.latencyMs+'ms':''))+(c.canExecute?'':' · monitor only')}`).join('<br>');
@@ -1452,8 +1462,8 @@ restoreWallets();
 #ft .bt{max-width:1200px;margin:24px auto 0;padding-top:18px;border-top:1px solid var(--ln);color:var(--mu);font-size:13px;display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between}
 .dv{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--ln)}.pill{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--sf2);color:var(--mu)}.pill.g{background:rgba(61,220,151,.15);color:var(--g)}
 .cd{font-family:ui-monospace,Menlo,monospace;word-break:break-all;background:var(--bg);border:1px solid var(--ln);border-radius:12px;padding:10px;font-size:13px}
-@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo img.brand{width:26px!important;height:26px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#cn.cn-btn{padding:8px 11px!important;font-size:12.5px!important;min-height:40px;border-radius:999px!important;gap:5px}#cn.cn-btn .cn-ico,#cn.cn-btn .cn-chev{width:15px;height:15px}#acct-line{gap:4px;font-size:10px}#acct-line .acct-email{max-width:9ch}#ml{font-size:13px}}
-@media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}#cn.cn-btn .cn-label{max-width:9.5ch;overflow:hidden;text-overflow:ellipsis}}
+@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo img.brand{width:26px!important;height:26px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#cn.cn-btn{padding:6px 10px!important;font-size:12px!important;min-height:34px!important;border-radius:999px!important;gap:5px;box-shadow:0 3px 12px rgba(213,118,88,.26)}#cn.cn-btn .cn-ico{width:14px;height:14px}#cn-wrap{max-width:min(118px,38vw)}#ml{font-size:13px}#nav-acct{gap:6px;padding:4px 5px 4px 4px}#nav-acct .nav-acct-ico{width:24px;height:24px}#nav-acct .nav-acct-ico svg{width:13px;height:13px}#nav-acct .nav-acct-email{font-size:11.5px;max-width:10ch}#nav-acct button.nav-acct-vis{padding:6px 8px;font-size:11px;border-radius:9px}}
+@media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}#cn.cn-btn{padding:6px 8px!important;font-size:11.5px!important;min-height:32px!important}#cn-wrap{max-width:min(96px,34vw)}}
 @media(max-width:760px){#ft .fw{grid-template-columns:1fr 1fr}#ft .fw>div:first-child{grid-column:1/-1}}
 </style>
 <footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.webp" width="28" height="28" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
@@ -1762,7 +1772,7 @@ ${feeNote}
 <div class="tw" style="margin-top:14px"><table><tr><th>Friend</th><th>Joined</th><th>Window</th><th>Volume</th><th>You earned</th></tr>${r.refs.map(x=>`<tr><td>${x.n}</td><td>${new Date(x.joined).toLocaleDateString()}</td><td>${x.daysLeft?x.daysLeft+' d left':'<span class="mu">ended</span>'}</td><td>$${x.vol.toFixed(0)}</td><td class="g">$${x.earn.toFixed(2)}</td></tr>`).join('')||'<tr><td class="mu" colspan=5>No referrals yet. Share your link to get started.</td></tr>'}</table></div>
 `)}catch(e){toast(e.message)}})}
 const info=k=>md(k=='sec'?`<h3>How we protect you</h3><p class="mu">Passwords are stored only as salted hashes. Email accounts use 2FA. Every device is listed and can be signed out. Passkeys let you skip passwords. Wallet sign in uses a signature, and COPYRA never asks for your seed phrase or private key.</p><button class="btn" onclick="cl()">Close</button>`:`<h3>Risk disclosure</h3><p class="mu">Copy trading digital assets carries a high risk of loss. You can lose some or all of your capital. Copied traders' past results do not predict future results. Only trade with funds you can afford to lose. COPYRA does not provide financial advice.</p><button class="btn" onclick="cl()">Close</button>`);
-const navUp=()=>{const b=$('#cpso');if(b)b.textContent=user?'Sign out':'Sign in / Create account'};
+const navUp=()=>{const b=$('#cpso');if(b)b.textContent=user?'Sign out':'Sign in / Create account';paintAcctLine()};
 window.CPY={auth,addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:async id=>{try{await call('devices/revoke',{id});toast('Device signed out');dev()}catch(e){toast(e.message)}},
  syncSession:async()=>{try{const r=await call('me',{},'GET');tok='cookie';st.set('cpy_tok','cookie');user=r.user;st.set('cpy_seen',1);for(const k of['sol','evm']){if(user.wallets&&isRealWallet(user.wallets[k],k))wallet[k]=user.wallets[k]}navUp();paintAcctLine()}catch{}},
  copy:()=>navigator.clipboard?navigator.clipboard.writeText(window.__rl).then(()=>toast('Referral link copied'),()=>toast('Press and hold the link to copy')):toast('Press and hold the link to copy'),
@@ -1770,7 +1780,8 @@ window.CPY={auth,addEmail,link:wLink,tfOn,tfOff,addPk,info,out:()=>out(),rev:asy
  claim:async()=>{try{const r=await call('referral/claim',{mode:M});if(!r.claimed){toast(r.reason==='PLATFORM_FEES_NOT_COLLECTED'?'Referral payouts wait until platform fees are collected on chain.':'Nothing to claim yet');ref();return}toast(`$${Number(r.amount).toFixed(2)} claimed to trading balance`);await refresh();ref()}catch(e){toast(e.message)}},
  go:k=>{nav.classList.remove('o');({acct,dev,ref})[k]()},
  skip:()=>{st.set('cpy_seen',1);const r=pref();if(r)fetch('/api/account/ref',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({code:r})}).catch(()=>{});cl();toast('Browsing as guest. Public stats only — sign in to trade.')}};
-$('#nav').insertAdjacentHTML('beforeend','<button onclick="CPY.go(\'acct\')">Account &amp; 2FA</button><button onclick="CPY.go(\'dev\')">Devices &amp; passkeys</button><button onclick="CPY.go(\'ref\')">Referrals</button><button id="cpso" onclick="nav.classList.remove(\'o\');user?CPY.out():CPY.auth(\'in\')"></button>');
+$('#nav').insertAdjacentHTML('beforeend','<button type="button" class="nav-item" onclick="CPY.go(\'acct\')">Account &amp; 2FA</button><button type="button" class="nav-item" onclick="CPY.go(\'dev\')">Devices &amp; passkeys</button><button type="button" class="nav-item" onclick="CPY.go(\'ref\')">Referrals</button><button type="button" class="nav-item" id="cpso" onclick="nav.classList.remove(\'o\');user?CPY.out():CPY.auth(\'in\')"></button>');
+paintAcctLine();
 document.querySelector('main').insertAdjacentElement('afterend',$('#ft'));
 const rf=new URLSearchParams(location.search).get('ref');if(rf){st.set('cpy_ref',rf);fetch('/api/account/ref',{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({code:rf})}).catch(()=>{})}
 Object.defineProperty(window,'user',{get:()=>user});
