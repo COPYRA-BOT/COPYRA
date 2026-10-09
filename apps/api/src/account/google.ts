@@ -16,8 +16,20 @@ export type GoogleIdentity = {
 export const COPYRA_GOOGLE_CLIENT_ID =
   '262135154840-d5tr76fnjatnkg7qdjmptmj7jcbcjpbv.apps.googleusercontent.com';
 
+/** Strip accidental `https://` / quotes pasted into DO env (causes invalid_client). */
+export function normalizeGoogleClientId(raw: string | undefined | null): string {
+  let v = String(raw ?? '').trim().replace(/^["']|["']$/g, '');
+  if (!v) return '';
+  v = v.replace(/^https?:\/\//i, '').replace(/\/+$/, '').trim();
+  const match = v.match(/(\d+[a-z0-9-]*\.apps\.googleusercontent\.com)/i);
+  return match?.[1] || v;
+}
+
 export function resolveGoogleClientId(): string {
-  return env.GOOGLE_CLIENT_ID?.trim() || COPYRA_GOOGLE_CLIENT_ID;
+  return (
+    normalizeGoogleClientId(env.GOOGLE_CLIENT_ID) ||
+    normalizeGoogleClientId(COPYRA_GOOGLE_CLIENT_ID)
+  );
 }
 
 export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdentity | null> {

@@ -50,10 +50,13 @@ h1{font:800 clamp(40px,9vw,64px)/1.02 'Inter Tight',system-ui;letter-spacing:-.0
 .tw{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th{color:var(--mu);font-weight:500;text-align:left;position:sticky;top:0}td,th{padding:9px 8px;border-bottom:1px solid var(--ln);white-space:nowrap}
 .sw{width:64px;height:32px;border-radius:99px;border:0;background:var(--sf2);position:relative}.sw:after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.2s}.sw.on{background:var(--g)}.sw.on:after{left:36px}
 .ban{padding:12px 16px;border-radius:14px;background:rgba(245,185,66,.14);color:var(--w);margin:16px 0}.ban.live{background:rgba(255,107,107,.14);color:var(--r)}
-.btn-google{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;margin-bottom:8px;padding:12px 18px;border-radius:12px;border:1px solid #dadce0;background:#fff;color:#1f1f1f;font-weight:600;box-shadow:none}
-.btn-google:hover{filter:none;background:#f7f8f8;border-color:#c6c6c6}
+.google-wrap{position:relative;width:100%;margin-bottom:8px;min-height:48px}
+.btn-google{display:flex;align-items:center;justify-content:center;gap:12px;width:100%;padding:12px 18px;border-radius:14px;border:1px solid #dadce0;background:#fff;color:#1f1f1f;font:600 15px/1.2 Figtree,system-ui,sans-serif;box-shadow:none;pointer-events:none}
 .btn-google img{width:20px;height:20px;object-fit:contain;flex-shrink:0;display:block}
-#gbtn{display:none!important}
+/* Invisible GIS hit-target over our styled button — one visual control, full Google auth. */
+.google-hit{position:absolute;inset:0;z-index:2;overflow:hidden;opacity:.02;cursor:pointer}
+.google-hit>div{width:100%!important;height:100%!important}
+.google-hit iframe,.google-hit div[role=button]{width:100%!important;height:100%!important;min-width:100%!important}
 input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;padding:10px 12px;width:100%}label{display:block;margin:10px 0 4px;color:var(--mu);font-size:13px}
 .act div{padding:7px 0;border-bottom:1px solid var(--ln);font-size:14px}.act time{color:var(--mu);margin-right:8px}
 .act a{color:var(--evm);text-decoration:underline;font-weight:600}.act a:hover{opacity:.85}
@@ -1491,15 +1494,16 @@ const wLink=k=>{(async()=>{
 function auth(tab='up'){md(`<div class="seg" style="margin-top:0"><button class="${tab=='up'?'on':''}" onclick="CPY.auth('up')">Create account</button><button class="${tab=='in'?'on':''}" onclick="CPY.auth('in')">Sign in</button></div>
 <label>Email</label><input id="ae1" type="email" autocomplete="email" autocapitalize="off"><label>Password${tab=='up'?' (8+ characters)':''}</label><input id="ap" type="password" autocomplete="${tab=='up'?'new':'current'}-password"><div id="a2" style="display:none"><label>Verification / 2FA code</label><input id="ac" maxlength="6" inputmode="numeric" autocomplete="one-time-code"></div><p class="rd" id="ae"></p>
 <button class="btn pri" id="ago" style="width:100%">${tab=='up'?'Create account':'Sign in'}</button><div class="mu" style="text-align:center;margin:14px 0 8px">or continue with</div>
-<button type="button" class="btn-google" id="agoogle"><img src="/icons/google.png" width="20" height="20" alt="" aria-hidden="true">${tab=='up'?'Sign up with Google':'Sign in with Google'}</button>
-<div id="gbtn" hidden aria-hidden="true"></div>
+<div class="google-wrap" id="gwrap">
+<button type="button" class="btn-google" id="agoogle" tabindex="-1" aria-hidden="true"><img src="/icons/google.png" width="20" height="20" alt="" aria-hidden="true"><span id="agoogle-label">${tab=='up'?'Sign up with Google':'Sign in with Google'}</span></button>
+<div class="google-hit" id="gbtn" role="button" aria-label="${tab=='up'?'Sign up with Google':'Sign in with Google'}"></div>
+</div>
 <div class="row"><button class="btn" id="aws">Solana wallet</button><button class="btn" id="awe">EVM wallet</button><button class="btn" id="apk">Passkey</button></div>
 <p class="mu" style="font-size:13px">Email accounts are protected by 2FA. Wallet accounts sign in with a wallet signature, with no 2FA needed. The same wallet always opens the same account, on any device.${LS?'':' (This browser cannot persist the account layer; sign in lasts this session only.)'}</p><button class="btn" style="width:100%" onclick="cl();CPY.skip()">Continue without an account</button>`);
  $('#aws').onclick=()=>{cl();window.switchMode('sol');beginConnectFromClick()};
  $('#awe').onclick=()=>{cl();window.switchMode('evm');beginConnectFromClick()};
  $('#apk').onclick=pkLogin;
- $('#agoogle').onclick=()=>googleSignIn(tab);
- // Auto-mount Google Identity button when Create account / Sign in opens (real OIDC ID token).
+ // One control: our Figtree/white button visually, GIS hit-target on top for account picker + ID token.
  void mountGoogleButton(tab);
  $('#ago').onclick=async()=>{
   const b={email:$('#ae1').value,password:$('#ap').value,code:$('#ac').value.trim(),ref:pref()};
@@ -1531,63 +1535,63 @@ async function loadGis(){
     document.head.appendChild(s);
   });
 }
+function normalizeGoogleClientId(raw){
+  let v=String(raw||'').trim().replace(/^["']|["']$/g,'');
+  if(!v)return'';
+  v=v.replace(/^https?:\/\//i,'').replace(/\/+$/,'').trim();
+  const m=v.match(/(\d+[a-z0-9-]*\.apps\.googleusercontent\.com)/i);
+  return m?m[1]:v;
+}
 async function mountGoogleButton(tab='in'){
   try{
    const cfg=await call('google/config',{},'GET');
+   const clientId=normalizeGoogleClientId(cfg.clientId);
+   const wrap=$('#gwrap');
    const b=$('#agoogle');
-   if(!cfg.enabled||!cfg.clientId){
-     if(b){b.title='Set GOOGLE_CLIENT_ID on the server to enable Google sign-in';b.disabled=true;b.style.opacity='.7'}
+   const host=$('#gbtn');
+   if(!cfg.enabled||!clientId){
+     if(b){b.style.opacity='.7'}
+     if(host){host.style.pointerEvents='none';host.title='Google sign-in is not configured'}
      return null;
    }
-   if(b){b.disabled=false;b.style.opacity='1';b.title=tab==='up'?'Create your COPYRA account with Google':'Sign in to COPYRA with Google'}
+   if(b)b.style.opacity='1';
    await loadGis();
-   // Official GIS button stays hidden — our branded #agoogle is the visible control.
-   let host=$('#gbtn');
-   if(!host){
-     host=document.createElement('div');
-     host.id='gbtn';
-     host.hidden=true;
-     host.setAttribute('aria-hidden','true');
-     if(b)b.insertAdjacentElement('afterend',host);
-   }
+   if(!host||!wrap)return clientId;
    host.innerHTML='';
+   host.style.pointerEvents='auto';
    google.accounts.id.initialize({
-    client_id:cfg.clientId,
+    client_id:clientId,
     auto_select:false,
     cancel_on_tap_outside:true,
-    use_fedcm_for_prompt:true,
+    itp_support:true,
+    // Account chooser — user picks which Google email to connect.
     callback:async(resp)=>{
      try{const r=await call('google',{idToken:resp.credential,ref:pref()});await onAuth(r,!!r.created)}catch(e){fail(e)}
     }
    });
-   return cfg.clientId;
-  }catch{return null}
+   // Stretch official GIS control to cover our styled button (invisible hit target).
+   const width=Math.max(240,Math.floor(wrap.clientWidth||($('#md>div')?.clientWidth||320)-44));
+   google.accounts.id.renderButton(host,{
+    type:'standard',
+    theme:'outline',
+    size:'large',
+    shape:'pill',
+    text:tab==='up'?'signup_with':'signin_with',
+    width,
+    logo_alignment:'left'
+   });
+   return clientId;
+  }catch(e){console.warn('Google button mount failed',e);return null}
 }
 async function googleSignIn(tab='in'){
+  // Kept for any legacy callers — primary path is the overlay hit-target.
   try{
    const clientId=await mountGoogleButton(tab);
-   if(!clientId)return er('Google sign-in is not configured yet. Add GOOGLE_CLIENT_ID and authorize JavaScript origin https://copyra.fun in Google Cloud Console.');
-   await loadGis();
-   google.accounts.id.prompt((notification)=>{
-     if(notification.isNotDisplayed()||notification.isSkippedMoment()){
-      // Fallback: briefly show the official GIS button so the user can still authorize.
-      const host=$('#gbtn');
-      if(host){
-        host.hidden=false;
-        host.removeAttribute('aria-hidden');
-        host.style.cssText='display:flex!important;justify-content:center;width:100%;margin:8px 0 10px';
-        host.innerHTML='';
-        google.accounts.id.renderButton(host,{
-          theme:'outline',size:'large',shape:'rectangular',
-          text:tab==='up'?'signup_with':'signin_with',
-          width:Math.min(360,Math.max(280,($('#md')?.clientWidth||320)-48)),
-          logo_alignment:'left'
-        });
-        host.scrollIntoView({block:'nearest'});
-        er('Complete Google authorization with the button below.');
-      }else er('Google prompt was blocked. Allow popups / third-party sign-in and try again.');
-     }
-   });
+   if(!clientId)return er('Google sign-in is not configured yet. In Google Cloud Console authorize JavaScript origin https://copyra.fun (Web client).');
+   const host=$('#gbtn');
+   const hit=host?.querySelector('div[role=button],iframe,div');
+   if(hit)hit.click();
+   else er('Google button is still loading — try again in a moment.');
   }catch(e){fail(e)}
 }
 function b64urlToBuf(s){const p=s.replace(/-/g,'+').replace(/_/g,'/');const pad=p+'==='.slice((p.length+3)%4);const bin=atob(pad);const u=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)u[i]=bin.charCodeAt(i);return u.buffer}

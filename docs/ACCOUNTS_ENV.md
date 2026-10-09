@@ -4,8 +4,8 @@ Set these as **encrypted App-Level** variables on the `copyra` app (RUN_AND_BUIL
 
 | Variable | Required for | Notes |
 |---|---|---|
-| `GOOGLE_CLIENT_ID` | Google Sign in / Create account | OAuth 2.0 **Web** client. **Authorized JavaScript origins** (required): `https://copyra.fun`, `https://www.copyra.fun`, and `https://copyra-nl7kz.ondigitalocean.app`. COPYRA uses Google Identity Services **ID tokens** (`POST /api/account/google`) — not a server redirect callback. |
-| `GOOGLE_CLIENT_SECRET` | optional | Not required for ID-token verification; keep encrypted App-Level if set. Do **not** point redirect URIs at `api.copyra.fun` for this flow (that host is not the App Platform API). |
+| `GOOGLE_CLIENT_ID` | Google Sign in / Create account | OAuth 2.0 **Web** client id only — e.g. `123-abc.apps.googleusercontent.com` (**no** `https://` prefix; that causes `invalid_client`). **Authorized JavaScript origins**: `https://copyra.fun`, `https://www.copyra.fun`, `https://copyra-nl7kz.ondigitalocean.app`. COPYRA uses GIS **ID tokens** (`POST /api/account/google`), not a server redirect callback. |
+| `GOOGLE_CLIENT_SECRET` | optional | Not required for ID-token verification; keep encrypted App-Level if set. Redirect URI `api.copyra.fun` is unused for this flow. |
 | `RESEND_API_KEY` | Email verification codes | [Resend](https://resend.com) API key. Without this, register still creates the pending user but email delivery fails (no code in production responses). |
 | `ACCOUNT_EMAIL_FROM` | Email From header | Must be a domain verified in Resend, e.g. `COPYRA <noreply@copyra.fun>`. `ALERT_EMAIL_FROM` is used as fallback. |
 | `WEBAUTHN_RP_ID` | Passkeys | Use `copyra.fun` (no scheme). |
