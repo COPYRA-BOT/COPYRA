@@ -32,6 +32,16 @@ envs:
   - key: MULTI_USER_CUSTODY
     value: "true"
     scope: RUN_TIME
+  # Public OAuth client id (safe in frontend). Secret stays encrypted App-Level only.
+  - key: GOOGLE_CLIENT_ID
+    value: "262135154840-d5tr76fnjatnkg7qdjmptmj7jcbcjpbv.apps.googleusercontent.com"
+    scope: RUN_TIME
+  - key: WEBAUTHN_RP_ID
+    value: "copyra.fun"
+    scope: RUN_TIME
+  - key: WEBAUTHN_RP_NAME
+    value: "COPYRA"
+    scope: RUN_TIME
 
 domains:
   - domain: copyra.fun
@@ -110,14 +120,19 @@ services:
         value: "true"
       - key: MULTI_USER_CUSTODY
         value: "true"
+      - key: GOOGLE_CLIENT_ID
+        value: "262135154840-d5tr76fnjatnkg7qdjmptmj7jcbcjpbv.apps.googleusercontent.com"
+      - key: WEBAUTHN_RP_ID
+        value: "copyra.fun"
+      - key: WEBAUTHN_RP_NAME
+        value: "COPYRA"
       # App-Level encrypted secrets (scope ALL components / RUN_AND_BUILD_TIME):
       # DATABASE_URL, DIRECT_URL, PGBOUNCER, REDIS_URL, SESSION_SECRET,
       # SOLANA_BOT_PRIVATE_KEY, EVM_BOT_PRIVATE_KEY,
       # SOLANA_RPC_URL, SOLANA_WS_URL, SOLANA_RPC_FALLBACK_URLS, JUPITER_API_KEY,
       # EVM_*_RPC_URL, EVM_*_WS_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
       # VITE_REOWN_PROJECT_ID / REOWN_PROJECT_ID,
-      # GOOGLE_CLIENT_ID, RESEND_API_KEY, ACCOUNT_EMAIL_FROM,
-      # WEBAUTHN_RP_ID, WEBAUTHN_RP_NAME
+      # GOOGLE_CLIENT_SECRET, RESEND_API_KEY, ACCOUNT_EMAIL_FROM
 
 # ---------------------------------------------------------------------------
 # Dedicated 24/7 copy-trade worker (not HTTP-routable)
