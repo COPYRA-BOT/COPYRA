@@ -25,7 +25,7 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .chip.evm .tile{background:#f3f4f6}
 .chip.evm .tile .ico.sol{opacity:0;transform:scale(.88)}
 .chip.evm .tile .ico.evm.on{opacity:1;transform:scale(1)}
-#cn-wrap{position:relative;display:inline-flex;align-items:center;max-width:min(200px,48vw);flex-shrink:1;min-width:0}
+#cn-wrap{position:relative;display:inline-flex;align-items:center;max-width:min(220px,56vw);flex-shrink:1;min-width:0}
 #cn-wrap .cn-btn-row{position:relative;display:inline-flex;align-items:center;max-width:100%}
 #cn-wrap appkit-button,#cn-wrap w3m-button,#cn-wrap w3m-core-button{position:absolute;inset:0;opacity:0.02;width:100%!important;height:100%!important;z-index:2;cursor:pointer}
 #cn.cn-btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:999px;padding:9px 14px;min-height:40px;max-width:100%;font:700 13.5px/1 Figtree,system-ui,sans-serif;letter-spacing:-.01em;box-shadow:var(--gl);white-space:nowrap}
@@ -91,7 +91,7 @@ input,select{background:var(--bg);border:1px solid var(--ln);border-radius:14px;
 input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);height:6px;cursor:pointer}
 .amt-meta{display:flex;justify-content:space-between;gap:8px;font-size:13px;color:var(--mu);margin-bottom:8px}
 .amt-meta b{color:var(--tx);font-weight:600}
-@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}#cn.cn-btn{padding:7px 11px;font-size:12.5px;gap:6px;min-height:36px;border-radius:999px;box-shadow:0 4px 14px rgba(213,118,88,.28)}#cn.cn-btn .cn-ico{width:15px;height:15px}#cn-wrap{max-width:min(150px,42vw)}
+@media(max-width:640px){.h{gap:2px;padding:0 8px}.ib{width:40px;height:40px}.logo{font-size:24px}.logo img.brand{width:30px;height:30px}.chip{padding:4px 10px 4px 5px;gap:6px}.tile{width:30px;height:30px}.h .btn.pri{padding:9px 12px;font-size:14px;border-radius:14px}#cn.cn-btn{padding:7px 11px;font-size:12.5px;gap:6px;min-height:36px;border-radius:999px;box-shadow:0 4px 14px rgba(213,118,88,.28)}#cn.cn-btn .cn-ico{width:15px;height:15px}#cn-wrap{max-width:min(168px,52vw)}
 .eb{margin:28px 0 8px}.sub{font-size:17px;margin:12px 0 20px}.big{width:100%;padding:16px}.tabs{gap:20px}.tab{font-size:16px}.card{padding:16px;border-radius:18px}.n{font-size:32px}table{font-size:13px}td,th{padding:8px 6px}
 .seg button{padding:10px 6px;font-size:15px}#md{align-items:flex-end;padding:0}#md>div{width:100%;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0))}#dr{width:100%}.row>.btn{flex:1 1 auto}#ts{width:max-content;max-width:90vw;text-align:center}}
 @media(max-width:380px){#ml{display:none}.logo{font-size:21px}}
@@ -183,16 +183,12 @@ function maskEmail(email){
   if(!m)return email;
   return m[1]+'…'+m[3];
 }
-function connectBtnLabel(label){
-  if(label==='Connect Wallet'&&typeof matchMedia==='function'&&matchMedia('(max-width:480px)').matches)return 'Wallet';
-  return label;
-}
 function paintConnectBtn(label,title,connected){
   const cn=$('#cn'); if(!cn)return;
   cn.classList.toggle('on',!!connected);
   cn.title=title||'';
   cn.innerHTML=`<span class="cn-ico" aria-hidden="true">${CN_ICO}</span><span class="cn-label"></span>`;
-  const lab=cn.querySelector('.cn-label'); if(lab)lab.textContent=connectBtnLabel(label);
+  const lab=cn.querySelector('.cn-label'); if(lab)lab.textContent=label;
 }
 function paintAcctLine(){
   const el=$('#nav-acct'); if(!el)return;
@@ -1426,7 +1422,6 @@ function beginConnectFromClick(){
 // Capture on the wrap so the overlaid <appkit-button> click still starts our wait loop.
 $('#cn-wrap')?.addEventListener('click',()=>{beginConnectFromClick()},{capture:true});
 $('#cn').onclick=()=>{beginConnectFromClick()};
-try{matchMedia('(max-width:480px)').addEventListener('change',()=>draw())}catch{}
 
 $('#nav').innerHTML='<div class="nav-head"><div class="nav-title-row"><b class="nav-title">Menu</b><div id="nav-acct" hidden></div></div><button type="button" class="nav-close" aria-label="Close menu" onclick="nav.classList.remove(\'o\')"><svg viewBox="0 0 24 24"><path d="M5 5l14 14M19 5L5 19"/></svg></button></div>'+[['Trading','trading'],['Monitor','monitor'],['Leaderboard','board'],['PnL History','pnl']].map(([l,k])=>`<button type="button" class="nav-item" onclick="T='${k}';nav.classList.remove('o');draw()">${l}</button>`).join('')+'<button type="button" class="nav-item" onclick="wd2()">Security (2FA)</button><button type="button" class="nav-item" onclick="sysHealth()">System health</button>';
 paintAcctLine();
@@ -1462,8 +1457,8 @@ restoreWallets();
 #ft .bt{max-width:1200px;margin:24px auto 0;padding-top:18px;border-top:1px solid var(--ln);color:var(--mu);font-size:13px;display:flex;gap:12px;flex-wrap:wrap;justify-content:space-between}
 .dv{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--ln)}.pill{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--sf2);color:var(--mu)}.pill.g{background:rgba(61,220,151,.15);color:var(--g)}
 .cd{font-family:ui-monospace,Menlo,monospace;word-break:break-all;background:var(--bg);border:1px solid var(--ln);border-radius:12px;padding:10px;font-size:13px}
-@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo img.brand{width:26px!important;height:26px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#cn.cn-btn{padding:6px 10px!important;font-size:12px!important;min-height:34px!important;border-radius:999px!important;gap:5px;box-shadow:0 3px 12px rgba(213,118,88,.26)}#cn.cn-btn .cn-ico{width:14px;height:14px}#cn-wrap{max-width:min(118px,38vw)}#ml{font-size:13px}#nav-acct{gap:6px;padding:4px 5px 4px 4px}#nav-acct .nav-acct-ico{width:24px;height:24px}#nav-acct .nav-acct-ico svg{width:13px;height:13px}#nav-acct .nav-acct-email{font-size:11.5px;max-width:10ch}#nav-acct button.nav-acct-vis{padding:6px 8px;font-size:11px;border-radius:9px}}
-@media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}#cn.cn-btn{padding:6px 8px!important;font-size:11.5px!important;min-height:32px!important}#cn-wrap{max-width:min(96px,34vw)}}
+@media(max-width:480px){.h{gap:0!important;padding-left:4px!important;padding-right:6px!important}.h .ib{width:34px;height:40px}.logo{font-size:21px!important;gap:3px}.logo img.brand{width:26px!important;height:26px!important}.chip{padding:3px 8px 3px 4px!important;gap:5px!important}.tile{width:28px!important;height:28px!important}.h .btn.pri{padding:8px 9px!important;font-size:12.5px!important;min-height:40px}#cn.cn-btn{padding:6px 10px!important;font-size:11.5px!important;min-height:34px!important;border-radius:999px!important;gap:5px;box-shadow:0 3px 12px rgba(213,118,88,.26)}#cn.cn-btn .cn-ico{width:14px;height:14px}#cn-wrap{max-width:min(148px,48vw)}#ml{font-size:13px}#nav-acct{gap:6px;padding:4px 5px 4px 4px}#nav-acct .nav-acct-ico{width:24px;height:24px}#nav-acct .nav-acct-ico svg{width:13px;height:13px}#nav-acct .nav-acct-email{font-size:11.5px;max-width:10ch}#nav-acct button.nav-acct-vis{padding:6px 8px;font-size:11px;border-radius:9px}}
+@media(max-width:340px){.h .ib{width:30px}.logo{font-size:18px!important}.h .btn.pri{padding:8px 7px!important;font-size:12px!important}#cn.cn-btn{padding:6px 8px!important;font-size:11px!important;min-height:32px!important}#cn-wrap{max-width:min(132px,46vw)}}
 @media(max-width:760px){#ft .fw{grid-template-columns:1fr 1fr}#ft .fw>div:first-child{grid-column:1/-1}}
 </style>
 <footer id="ft"><div class="fw"><div><div class="logo" style="font-size:26px"><img class="brand" src="/icons/copyra.webp" width="28" height="28" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div><p class="mu" style="max-width:34ch">Copy the smartest wallets on Solana and EVM. Simple, fast, and yours to control.</p>
