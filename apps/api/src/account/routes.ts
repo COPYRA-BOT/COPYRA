@@ -397,11 +397,14 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
           credential: z.string().min(20).optional(),
           /** GIS oauth2 popup auth code (ux_mode: popup → redirect_uri postmessage). */
           code: z.string().min(10).optional(),
-          ref: z.string().optional(),
+          // Frontend often sends ref:null when no invite — must accept null.
+          ref: z.string().nullish(),
         })
         .safeParse(request.body ?? {});
       if (!parsed.success) {
-        return reply.code(400).send({ error: 'Google sign-in requires a valid Google credential.' });
+        return reply.code(400).send({
+          error: 'Google sign-in payload was invalid. Click Sign in with Google again.',
+        });
       }
       const clientId = resolveGoogleClientId();
       if (!clientId) {
