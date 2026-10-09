@@ -70,6 +70,7 @@ export * from './evm/clients.js';
 export * from './evm/tokens.js';
 export * from './evm/decoder.js';
 export * from './evm/kyberswap.js';
+export * from './evm/zeroex.js';
 export * from './evm/executor.js';
 
 // Notifications

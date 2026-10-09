@@ -20,9 +20,11 @@ import {
   getKyberRoute,
   isNativeSentinel,
   NATIVE_SENTINEL,
+  type KyberBuildResult,
   type KyberRouteResult,
 } from './kyberswap.js';
 import { getErc20Allowance, getErc20Metadata, getNativeBalance } from './tokens.js';
+import { getZeroExSwap, zeroExConfigured } from './zeroex.js';
 import type { AttemptRecord, ExecutionOutcome } from '../solana/executor.js';
 
 const log = componentLogger('evm-executor');
@@ -217,7 +219,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
     networkFeeRaw: null,
     blockhash: null,
     lastValidBlockHeight: null,
-    routeProvider: 'kyberswap',
+    routeProvider: extra.routeProvider ?? 'kyberswap',
     routeSummary: null,
     attempts: Math.max(
       attemptLog.filter((a) => a.stage === 'broadcast').length,
@@ -259,27 +261,117 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
 
   for (let attempt = 1; attempt <= request.maxAttempts; attempt += 1) {
     // --- route ------------------------------------------------------------
-    let route: KyberRouteResult;
+    // KyberSwap is primary. Optional 0x fallback only when Kyber quote fails
+    // and ZERO_EX_API_KEY is set — sizing / impact / slippage guards stay identical.
+    let routeProvider: 'kyberswap' | 'zeroex' = 'kyberswap';
+    let route: {
+      amountOutRaw: string;
+      amountInUsd: number;
+      amountOutUsd: number;
+      priceImpactPct: number;
+      receivedAt: Date;
+      latencyMs: number;
+      routeSummary: KyberRouteResult['routeSummary'] | null;
+    };
+    let built: KyberBuildResult | null = null;
+    let allowanceSpender: `0x${string}` | null = null;
+
     try {
-      route = await getKyberRoute({
+      const kyber = await getKyberRoute({
         chain,
         tokenIn: request.tokenIn,
         tokenOut: request.tokenOut,
         amountInRaw: request.amountInRaw,
       });
+      route = {
+        amountOutRaw: kyber.amountOutRaw,
+        amountInUsd: kyber.amountInUsd,
+        amountOutUsd: kyber.amountOutUsd,
+        priceImpactPct: kyber.priceImpactPct,
+        receivedAt: kyber.receivedAt,
+        latencyMs: kyber.latencyMs,
+        routeSummary: kyber.routeSummary,
+      };
       telemetry.mark('quoted');
       record(
         attempt,
         'quote',
         'ok',
-        `out=${route.amountOutRaw} inUsd=${route.amountInUsd} outUsd=${route.amountOutUsd} impact=${route.priceImpactPct.toFixed(4)}%`,
+        `provider=kyberswap out=${route.amountOutRaw} inUsd=${route.amountInUsd} outUsd=${route.amountOutUsd} impact=${route.priceImpactPct.toFixed(4)}%`,
       );
-    } catch (error) {
-      lastError = error;
-      record(attempt, 'quote', 'error', describe(error));
-      if (attempt === request.maxAttempts) return failure('QUOTE_FAILED', describe(error));
-      await sleep(40 * attempt);
-      continue;
+
+      built = await buildKyberSwap({
+        chain,
+        route: kyber,
+        sender,
+        recipient: sender,
+        slippageBps: request.slippageBps,
+        deadline: Math.floor(Date.now() / 1000) + 300,
+      });
+      telemetry.mark('built');
+      record(attempt, 'build', 'ok', `router=${built.routerAddress} minOut=${built.amountOutMin}`);
+      allowanceSpender = built.routerAddress;
+    } catch (kyberError) {
+      if (!zeroExConfigured()) {
+        lastError = kyberError;
+        record(attempt, 'quote', 'error', describe(kyberError));
+        if (attempt === request.maxAttempts) return failure('QUOTE_FAILED', describe(kyberError));
+        await sleep(40 * attempt);
+        continue;
+      }
+      try {
+        const zerox = await getZeroExSwap({
+          chain,
+          tokenIn: request.tokenIn,
+          tokenOut: request.tokenOut,
+          amountInRaw: request.amountInRaw,
+          taker: sender,
+          slippageBps: request.slippageBps,
+        });
+        routeProvider = 'zeroex';
+        route = {
+          amountOutRaw: zerox.amountOut,
+          amountInUsd: zerox.amountInUsd,
+          amountOutUsd: zerox.amountOutUsd,
+          priceImpactPct: zerox.priceImpactPct,
+          receivedAt: zerox.receivedAt,
+          latencyMs: zerox.latencyMs,
+          routeSummary: null,
+        };
+        built = {
+          routerAddress: zerox.routerAddress,
+          data: zerox.data,
+          value: zerox.value,
+          gas: 0n,
+          amountIn: zerox.amountIn,
+          amountOut: zerox.amountOut,
+          amountOutMin: zerox.amountOutMin,
+          latencyMs: zerox.latencyMs,
+        };
+        allowanceSpender = zerox.allowanceTarget ?? zerox.routerAddress;
+        telemetry.mark('quoted');
+        telemetry.mark('built');
+        record(
+          attempt,
+          'quote',
+          'ok',
+          `provider=zeroex (kyber failed: ${describe(kyberError)}) out=${route.amountOutRaw} impact=${route.priceImpactPct.toFixed(4)}%`,
+        );
+        record(attempt, 'build', 'ok', `router=${built.routerAddress} minOut=${built.amountOutMin}`);
+      } catch (zeroExError) {
+        lastError = zeroExError;
+        record(
+          attempt,
+          'quote',
+          'error',
+          `kyber=${describe(kyberError)}; zeroex=${describe(zeroExError)}`,
+        );
+        if (attempt === request.maxAttempts) {
+          return failure('QUOTE_FAILED', describe(kyberError));
+        }
+        await sleep(40 * attempt);
+        continue;
+      }
     }
 
     // Sells/exits (token → native) use a higher ceiling so TP/SL can land on thin books.
@@ -293,6 +385,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       return failure('PRICE_IMPACT_TOO_HIGH', message, {
         priceImpactPct: route.priceImpactPct,
         quotedAmountRaw: route.amountOutRaw,
+        routeProvider,
       });
     }
 
@@ -302,26 +395,8 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       continue;
     }
 
-    // --- build ------------------------------------------------------------
-    let built: Awaited<ReturnType<typeof buildKyberSwap>>;
-    try {
-      built = await buildKyberSwap({
-        chain,
-        route,
-        sender,
-        recipient: sender,
-        slippageBps: request.slippageBps,
-        deadline: Math.floor(Date.now() / 1000) + 300,
-      });
-      telemetry.mark('built');
-      record(attempt, 'build', 'ok', `router=${built.routerAddress} minOut=${built.amountOutMin}`);
-    } catch (error) {
-      lastError = error;
-      record(attempt, 'build', 'error', describe(error));
-      if (attempt === request.maxAttempts) {
-        return failure('BUILD_FAILED', describe(error), { quotedAmountRaw: route.amountOutRaw });
-      }
-      continue;
+    if (!built || !allowanceSpender) {
+      return failure('BUILD_FAILED', 'No executable route after quote');
     }
 
     // --- allowance --------------------------------------------------------
@@ -330,7 +405,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
         chain,
         request.tokenIn,
         sender,
-        built.routerAddress,
+        allowanceSpender,
         BigInt(request.amountInRaw),
         request.confirmTimeoutMs,
         account,
@@ -339,7 +414,10 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
     } catch (error) {
       lastError = error;
       record(attempt, 'approve', 'error', describe(error));
-      return failure('APPROVAL_FAILED', describe(error), { quotedAmountRaw: route.amountOutRaw });
+      return failure('APPROVAL_FAILED', describe(error), {
+        quotedAmountRaw: route.amountOutRaw,
+        routeProvider,
+      });
     }
 
     // --- gas + native balance guard ---------------------------------------
@@ -457,7 +535,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
       priceImpactPct: route.priceImpactPct,
       blockhash: null,
       lastValidBlockHeight: null,
-      routeProvider: 'kyberswap',
+      routeProvider,
       routeSummary: {
         router: built.routerAddress,
         amountIn: built.amountIn,
@@ -468,6 +546,7 @@ export async function executeEvmSwap(request: EvmSwapRequest): Promise<Execution
         gasLimit: gasLimit.toString(),
         gasPrice: gasPrice.toString(),
         routeLatencyMs: route.latencyMs,
+        provider: routeProvider,
       } as Record<string, unknown>,
       attempts: attempt,
       attemptLog,

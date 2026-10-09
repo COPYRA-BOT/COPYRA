@@ -71,9 +71,11 @@ const bool = z
 
 const optionalUrl = z
   .string()
-  .trim()
   .optional()
-  .transform((v) => (v && v.length > 0 ? v : undefined));
+  .transform((v) => {
+    const t = (v ?? '').trim();
+    return t.length > 0 ? t : undefined;
+  });
 
 const csv = z
   .string()
@@ -132,6 +134,9 @@ const schema = z.object({
 
   SOLANA_RPC_URL: optionalUrl,
   SOLANA_WS_URL: optionalUrl,
+  /** QuickNode (or other) paid backup — preferred over public fallbacks. */
+  SOLANA_BACKUP_RPC_URL: optionalUrl,
+  SOLANA_BACKUP_WS_URL: optionalUrl,
   SOLANA_RPC_FALLBACK_URLS: csv,
   JUPITER_API_KEY: z.string().trim().optional(),
   JUPITER_API_BASE: z.string().default('https://api.jup.ag'),
@@ -146,6 +151,8 @@ const schema = z.object({
   EVM_ARBITRUM_WS_URL: optionalUrl,
   EVM_BSC_RPC_URL: optionalUrl,
   EVM_BSC_WS_URL: optionalUrl,
+  EVM_BSC_BACKUP_RPC_URL: optionalUrl,
+  EVM_BSC_BACKUP_WS_URL: optionalUrl,
   EVM_POLYGON_RPC_URL: optionalUrl,
   EVM_POLYGON_WS_URL: optionalUrl,
   EVM_OPTIMISM_RPC_URL: optionalUrl,
@@ -159,6 +166,8 @@ const schema = z.object({
   EVM_TRON_RPC_URL: optionalUrl,
 
   KYBERSWAP_CLIENT_ID: z.string().default('copyra'),
+  /** Optional 0x API key — used as EVM quote fallback when KyberSwap fails. */
+  ZERO_EX_API_KEY: z.string().trim().optional(),
 
   TRADING_ENABLED: bool,
   SOL_TRADING_ENABLED: bool,

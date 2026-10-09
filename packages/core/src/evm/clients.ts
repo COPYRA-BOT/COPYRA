@@ -94,18 +94,44 @@ export function evmClient(chain: Chain): PublicClient {
   return evmPool(chain).primary().client;
 }
 
+const wsClients = new Map<Chain, PublicClient>();
+const wsEndpointIndex = new Map<Chain, number>();
+
+function wsEndpoints(config: ChainConfig): string[] {
+  return [config.wsUrl, ...config.wsFallbacks].filter((u): u is string => Boolean(u));
+}
+
 /** WebSocket client for live subscriptions. Separate from the HTTP pool. */
-export function evmWsClient(chain: Chain): PublicClient | null {
+export function evmWsClient(chain: Chain, recreate = false): PublicClient | null {
   const config = chainConfig(chain);
-  if (!config.wsUrl) return null;
-  return createPublicClient({
-    chain: viemChain(chain),
-    transport: webSocket(config.wsUrl, {
-      reconnect: { attempts: Number.POSITIVE_INFINITY, delay: 1_000 },
-      keepAlive: { interval: 15_000 },
-      timeout: 20_000,
-    }),
-  }) as PublicClient;
+  const endpoints = wsEndpoints(config);
+  if (endpoints.length === 0) return null;
+
+  if (recreate) {
+    wsClients.delete(chain);
+    const prev = wsEndpointIndex.get(chain) ?? 0;
+    wsEndpointIndex.set(chain, (prev + 1) % endpoints.length);
+  }
+
+  let client = wsClients.get(chain);
+  if (!client) {
+    const idx = wsEndpointIndex.get(chain) ?? 0;
+    const url = endpoints[idx % endpoints.length]!;
+    client = createPublicClient({
+      chain: viemChain(chain),
+      transport: webSocket(url, {
+        reconnect: { attempts: Number.POSITIVE_INFINITY, delay: 1_000 },
+        keepAlive: { interval: 15_000 },
+        timeout: 20_000,
+      }),
+    }) as PublicClient;
+    wsClients.set(chain, client);
+    log.info(
+      { chain, wsIndex: idx, wsEndpoints: endpoints.length },
+      'EVM WebSocket client ready',
+    );
+  }
+  return client;
 }
 
 export async function getEvmBlockNumber(chain: Chain): Promise<{

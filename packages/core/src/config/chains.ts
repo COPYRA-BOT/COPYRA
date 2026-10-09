@@ -39,6 +39,8 @@ export interface ChainConfig {
   dexscreenerSlug?: string;
   rpcUrl?: string;
   wsUrl?: string;
+  /** Extra WSS endpoints (paid backups). Used when the primary subscription socket dies. */
+  wsFallbacks: string[];
   rpcFallbacks: string[];
   /**
    * False = monitor only. The executor refuses to build a transaction and the
@@ -76,12 +78,14 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'solana',
     rpcUrl: env.SOLANA_RPC_URL,
     wsUrl: env.SOLANA_WS_URL,
-    // Env fallbacks first, then public endpoints so custody reads survive provider blips.
+    wsFallbacks: [env.SOLANA_BACKUP_WS_URL].filter((u): u is string => Boolean(u)),
+    // Paid backup first, then CSV fallbacks, then public endpoints.
     rpcFallbacks: [
+      env.SOLANA_BACKUP_RPC_URL,
       ...env.SOLANA_RPC_FALLBACK_URLS,
       'https://solana-rpc.publicnode.com',
       'https://api.mainnet-beta.solana.com',
-    ].filter((url, i, all) => url && all.indexOf(url) === i),
+    ].filter((url, i, all): url is string => Boolean(url) && all.indexOf(url) === i),
     canExecute: Boolean(env.SOLANA_RPC_URL),
     blockTimeMs: 400,
     requiredConfirmations: 1,
@@ -108,6 +112,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'ethereum',
     rpcUrl: env.EVM_ETHEREUM_RPC_URL,
     wsUrl: env.EVM_ETHEREUM_WS_URL,
+    wsFallbacks: [],
     // Public fallbacks survive Alchemy 429s so custody balances stay readable.
     rpcFallbacks: ['https://ethereum.publicnode.com', 'https://rpc.ankr.com/eth'],
     canExecute: Boolean(env.EVM_ETHEREUM_RPC_URL),
@@ -136,6 +141,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'base',
     rpcUrl: env.EVM_BASE_RPC_URL,
     wsUrl: env.EVM_BASE_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: ['https://base.publicnode.com', 'https://mainnet.base.org'],
     canExecute: Boolean(env.EVM_BASE_RPC_URL),
     blockTimeMs: 2_000,
@@ -163,6 +169,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'arbitrum',
     rpcUrl: env.EVM_ARBITRUM_RPC_URL,
     wsUrl: env.EVM_ARBITRUM_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: ['https://arbitrum-one.publicnode.com', 'https://arb1.arbitrum.io/rpc'],
     canExecute: Boolean(env.EVM_ARBITRUM_RPC_URL),
     blockTimeMs: 250,
@@ -190,7 +197,13 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'bsc',
     rpcUrl: env.EVM_BSC_RPC_URL,
     wsUrl: env.EVM_BSC_WS_URL,
-    rpcFallbacks: ['https://bsc.publicnode.com', 'https://bsc-dataseed.binance.org'],
+    wsFallbacks: [env.EVM_BSC_BACKUP_WS_URL].filter((u): u is string => Boolean(u)),
+    // Paid QuickNode backup first, then public endpoints.
+    rpcFallbacks: [
+      env.EVM_BSC_BACKUP_RPC_URL,
+      'https://bsc.publicnode.com',
+      'https://bsc-dataseed.binance.org',
+    ].filter((url, i, all): url is string => Boolean(url) && all.indexOf(url) === i),
     canExecute: Boolean(env.EVM_BSC_RPC_URL),
     blockTimeMs: 1_500,
     requiredConfirmations: 1,
@@ -217,6 +230,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'polygon',
     rpcUrl: env.EVM_POLYGON_RPC_URL,
     wsUrl: env.EVM_POLYGON_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: Boolean(env.EVM_POLYGON_RPC_URL),
     blockTimeMs: 2_000,
@@ -244,6 +258,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     dexscreenerSlug: 'optimism',
     rpcUrl: env.EVM_OPTIMISM_RPC_URL,
     wsUrl: env.EVM_OPTIMISM_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: Boolean(env.EVM_OPTIMISM_RPC_URL),
     blockTimeMs: 2_000,
@@ -268,6 +283,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     routeProvider: null,
     rpcUrl: env.EVM_ARC_RPC_URL,
     wsUrl: env.EVM_ARC_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: false,
     executionBlockedReason:
@@ -292,6 +308,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     routeProvider: null,
     rpcUrl: env.EVM_ROBINHOOD_RPC_URL,
     wsUrl: env.EVM_ROBINHOOD_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: false,
     executionBlockedReason:
@@ -316,6 +333,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     routeProvider: null,
     rpcUrl: env.EVM_HYPERLIQUID_RPC_URL,
     wsUrl: env.EVM_HYPERLIQUID_WS_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: false,
     executionBlockedReason:
@@ -339,6 +357,7 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     explorerName: 'Tronscan',
     routeProvider: null,
     rpcUrl: env.EVM_TRON_RPC_URL,
+    wsFallbacks: [],
     rpcFallbacks: [],
     canExecute: false,
     executionBlockedReason:

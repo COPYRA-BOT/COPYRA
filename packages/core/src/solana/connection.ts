@@ -77,8 +77,31 @@ function createConnection(url: string, wsEndpoint?: string): Connection {
 }
 
 let pool: RpcPool<Connection> | undefined;
-/** Dedicated subscription connection (always uses SOLANA_WS_URL when set). */
+/** Dedicated subscription connection (rotates primary ↔ paid backup WSS on recreate). */
 let subscriptionConnection: Connection | undefined;
+/** Index into subscription endpoint pairs; advanced on each forced recreate. */
+let subscriptionEndpointIndex = 0;
+
+type SubEndpoint = { rpc: string; ws?: string };
+
+function subscriptionEndpoints(config: ReturnType<typeof chainConfig>): SubEndpoint[] {
+  if (!config.rpcUrl) {
+    throw new Error('SOLANA_RPC_URL is not configured; Solana monitoring is unavailable.');
+  }
+  const pairs: SubEndpoint[] = [{ rpc: config.rpcUrl, ws: config.wsUrl }];
+  // Pair each paid backup WSS with the matching paid backup RPC (first rpcFallbacks entry).
+  for (let i = 0; i < config.wsFallbacks.length; i += 1) {
+    pairs.push({
+      rpc: config.rpcFallbacks[i] ?? config.rpcUrl,
+      ws: config.wsFallbacks[i],
+    });
+  }
+  // Deduplicate identical rpc+ws pairs.
+  return pairs.filter(
+    (p, idx, all) =>
+      all.findIndex((q) => q.rpc === p.rpc && q.ws === p.ws) === idx,
+  );
+}
 
 export function solanaPool(): RpcPool<Connection> {
   if (!pool) {
@@ -88,12 +111,25 @@ export function solanaPool(): RpcPool<Connection> {
     }
     const primaryUrl = config.rpcUrl;
     const primaryWs = config.wsUrl;
+    const backupWsByRpc = new Map<string, string | undefined>();
+    for (let i = 0; i < config.wsFallbacks.length; i += 1) {
+      const rpc = config.rpcFallbacks[i];
+      if (rpc) backupWsByRpc.set(rpc, config.wsFallbacks[i]);
+    }
     pool = new RpcPool<Connection>(
       { chain: Chain.SOLANA, urls: [config.rpcUrl, ...config.rpcFallbacks] },
-      (url) => createConnection(url, url === primaryUrl ? primaryWs : undefined),
+      (url) =>
+        createConnection(
+          url,
+          url === primaryUrl ? primaryWs : backupWsByRpc.get(url),
+        ),
     );
     log.info(
-      { endpoints: pool.size, ws: Boolean(primaryWs) },
+      {
+        endpoints: pool.size,
+        ws: Boolean(primaryWs),
+        wsFallbacks: config.wsFallbacks.length,
+      },
       'Solana RPC pool initialised',
     );
   }
@@ -106,18 +142,31 @@ export function solanaConnection(): Connection {
 }
 
 /**
- * Fresh subscription connection bound to SOLANA_WS_URL.
+ * Fresh subscription connection bound to SOLANA_WS_URL (or paid backup on rotate).
  * Call again after a forced resubscribe so a dead WS socket is replaced.
+ * Each recreate advances to the next rpc/ws pair when backups are configured.
  */
 export function solanaSubscriptionConnection(recreate = false): Connection {
   if (!subscriptionConnection || recreate) {
     const config = chainConfig(Chain.SOLANA);
-    if (!config.rpcUrl) {
-      throw new Error('SOLANA_RPC_URL is not configured; Solana monitoring is unavailable.');
+    const endpoints = subscriptionEndpoints(config);
+    if (recreate && endpoints.length > 1) {
+      subscriptionEndpointIndex = (subscriptionEndpointIndex + 1) % endpoints.length;
+    } else if (!subscriptionConnection) {
+      subscriptionEndpointIndex = 0;
     }
+    const pair = endpoints[subscriptionEndpointIndex % endpoints.length]!;
     // Replace the Connection object; web3.js does not reliably recover onLogs after idle WS death.
-    subscriptionConnection = createConnection(config.rpcUrl, config.wsUrl);
-    log.info({ ws: Boolean(config.wsUrl), recreate }, 'Solana subscription connection ready');
+    subscriptionConnection = createConnection(pair.rpc, pair.ws);
+    log.info(
+      {
+        ws: Boolean(pair.ws),
+        recreate,
+        endpointIndex: subscriptionEndpointIndex,
+        endpoints: endpoints.length,
+      },
+      'Solana subscription connection ready',
+    );
   }
   return subscriptionConnection;
 }

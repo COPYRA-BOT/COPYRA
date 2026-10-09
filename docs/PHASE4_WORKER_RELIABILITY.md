@@ -40,8 +40,11 @@ Do this once after deploy (App → Settings → App-level **and** component **wo
    Delete any blank or `false` overrides on the **worker** component for those keys.
 2. **Secrets (App-level encrypted, available to worker):**  
    `SOLANA_RPC_URL`, **`SOLANA_WS_URL`** (required for onLogs — HTTPS alone is not enough),  
-   `SOLANA_RPC_FALLBACK_URLS` (optional),  
+   `SOLANA_BACKUP_RPC_URL` / `SOLANA_BACKUP_WS_URL` (QuickNode — WSS failover + HTTP pool),  
+   `SOLANA_RPC_FALLBACK_URLS` (optional public extras),  
    `EVM_*_RPC_URL` (Alchemy preferred for `alchemy_getAssetTransfers`),  
+   `EVM_BSC_BACKUP_RPC_URL` / `EVM_BSC_BACKUP_WS_URL` (QuickNode BNB backup),  
+   `ZERO_EX_API_KEY` (optional — EVM quote fallback when KyberSwap fails),  
    `SOLANA_BOT_PRIVATE_KEY`, `EVM_BOT_PRIVATE_KEY`,  
    `DATABASE_URL`, `REDIS_URL`,  
    `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`,  
