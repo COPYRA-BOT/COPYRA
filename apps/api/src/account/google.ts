@@ -1,5 +1,5 @@
 import { OAuth2Client } from 'google-auth-library';
-import { env, componentLogger } from '@copyra/core';
+import { componentLogger, env } from '@copyra/core';
 
 const log = componentLogger('google-auth');
 
@@ -55,7 +55,6 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdenti
     if (payload.iss !== 'accounts.google.com' && payload.iss !== 'https://accounts.google.com') {
       return null;
     }
-    // GIS normally sends boolean true; tolerate string forms just in case.
     const verified =
       payload.email_verified === true || String(payload.email_verified).toLowerCase() === 'true';
     if (!verified) return null;
@@ -72,4 +71,37 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleIdenti
     );
     return null;
   }
+}
+
+/**
+ * Exchange a GIS popup auth code (`ux_mode: 'popup'`) for an identity.
+ * Requires `GOOGLE_CLIENT_SECRET` and uses redirect_uri `postmessage`.
+ */
+export async function exchangeGoogleAuthCode(code: string): Promise<GoogleIdentity | null> {
+  const clientId = resolveGoogleClientId();
+  const clientSecret = env.GOOGLE_CLIENT_SECRET?.trim();
+  if (!clientId) return null;
+  if (!clientSecret) {
+    log.warn({}, 'GOOGLE_CLIENT_SECRET is not set — cannot exchange Google auth code');
+    return null;
+  }
+  try {
+    const client = new OAuth2Client(clientId, clientSecret, 'postmessage');
+    const { tokens } = await client.getToken(code);
+    if (!tokens.id_token) {
+      log.warn({}, 'Google code exchange returned no id_token');
+      return null;
+    }
+    return verifyGoogleIdToken(tokens.id_token);
+  } catch (error) {
+    log.warn(
+      { err: error instanceof Error ? error.message : String(error) },
+      'Google auth code exchange failed',
+    );
+    return null;
+  }
+}
+
+export function googleSecretConfigured(): boolean {
+  return Boolean(env.GOOGLE_CLIENT_SECRET?.trim());
 }

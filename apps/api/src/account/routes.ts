@@ -8,7 +8,12 @@ import { jsonSafe } from '../serialize.js';
 import { audit } from './audit.js';
 import { hashPassword, randomDigits, verifyPassword } from './crypto.js';
 import { sendAccountEmail } from './email.js';
-import { resolveGoogleClientId, verifyGoogleIdToken } from './google.js';
+import {
+  exchangeGoogleAuthCode,
+  googleSecretConfigured,
+  resolveGoogleClientId,
+  verifyGoogleIdToken,
+} from './google.js';
 import {
   claimReferralToTrading,
   referralSummary,
@@ -390,26 +395,44 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
         .object({
           idToken: z.string().min(20).optional(),
           credential: z.string().min(20).optional(),
+          /** GIS oauth2 popup auth code (ux_mode: popup → redirect_uri postmessage). */
+          code: z.string().min(10).optional(),
           ref: z.string().optional(),
         })
         .safeParse(request.body ?? {});
       if (!parsed.success) {
-        return reply.code(400).send({ error: 'Google sign-in requires a valid ID token.' });
-      }
-      const idToken = parsed.data.idToken || parsed.data.credential;
-      if (!idToken) {
-        return reply.code(400).send({ error: 'Google sign-in requires a valid ID token.' });
+        return reply.code(400).send({ error: 'Google sign-in requires a valid Google credential.' });
       }
       const clientId = resolveGoogleClientId();
       if (!clientId) {
         return reply.code(503).send({ error: 'Google sign-in is not configured (GOOGLE_CLIENT_ID).' });
       }
-      const identity = await verifyGoogleIdToken(idToken);
-      if (!identity) {
-        return reply
-          .code(401)
-          .send({ error: 'Google token verification failed. Try again, or use another Google account.' });
+
+      let identity = null as Awaited<ReturnType<typeof verifyGoogleIdToken>>;
+      if (parsed.data.code) {
+        identity = await exchangeGoogleAuthCode(parsed.data.code);
+        if (!identity) {
+          return reply.code(401).send({
+            error: googleSecretConfigured()
+              ? 'Google authorization code was rejected. Try again.'
+              : 'Set GOOGLE_CLIENT_SECRET on the API (App-Level) so Google sign-in can finish.',
+          });
+        }
+      } else {
+        const idToken = parsed.data.idToken || parsed.data.credential;
+        if (!idToken) {
+          return reply.code(400).send({
+            error: 'Google sign-in requires a valid ID token or auth code. Click Sign in with Google again.',
+          });
+        }
+        identity = await verifyGoogleIdToken(idToken);
+        if (!identity) {
+          return reply
+            .code(401)
+            .send({ error: 'Google token verification failed. Try again, or use another Google account.' });
+        }
       }
+
       const referredById = await resolveReferrerId(request.cookies, parsed.data.ref);
       const { user, created } = await upsertGoogleUser({
         sub: identity.sub,
@@ -437,19 +460,20 @@ export async function registerAccountRoutes(app: FastifyInstance): Promise<void>
       return jsonSafe({ ok: true, created, user: view });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // Unique / conflict → 409; everything else → 500 with a clear message (not bare Internal Server Error).
       const conflict = /unique|already linked|already exists/i.test(message);
       return reply.code(conflict ? 409 : 500).send({
-        error: conflict
-          ? message
-          : `Google sign-in failed: ${message.slice(0, 180)}`,
+        error: conflict ? message : `Google sign-in failed: ${message.slice(0, 180)}`,
       });
     }
   });
 
   app.get('/api/account/google/config', async () => {
     const clientId = resolveGoogleClientId();
-    return { clientId: clientId || null, enabled: Boolean(clientId) };
+    return {
+      clientId: clientId || null,
+      enabled: Boolean(clientId),
+      codeExchange: googleSecretConfigured(),
+    };
   });
 
   // ---- Wallet link / account wallet login (uses existing SIWE/SIWS) ------
