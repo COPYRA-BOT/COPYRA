@@ -112,7 +112,8 @@ export interface QualificationInput {
    * True when the spend leg is a recognised quote asset (SOL/USDC/USDT on
    * Solana, wrapped-native/USDC on EVM). A token-to-token swap is a buy of the
    * received side, but the spec requires real quote-currency expenditure, so it
-   * is skipped with NO_QUOTE_CURRENCY_SPENT rather than copied.
+   * used to hard-skip as NO_QUOTE; non-quote spends are now still copyable
+   * (custody always spends the chain quote asset). Kept for telemetry.
    */
   spendLegIsQuoteAsset: boolean;
 }

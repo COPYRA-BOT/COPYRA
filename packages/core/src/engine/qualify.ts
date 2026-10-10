@@ -153,15 +153,10 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
       detail: 'Receive leg amount is zero.',
     };
   }
-  if (!input.spendLegIsQuoteAsset) {
-    return {
-      qualified: false,
-      reason: SkipReason.NO_QUOTE_CURRENCY_SPENT,
-      detail:
-        `Spend leg ${decoded.tokenIn.address} is not a recognised quote asset. ` +
-        'The spec requires real SOL/USDC/native expenditure, so token-to-token rotations are not copied.',
-    };
-  }
+  // Token→token rotations (e.g. meme→meme scale-ins) are copyable buy signals:
+  // COPYRA always spends the chain quote asset (SOL/USDC) from custody. Market /
+  // liq / MC gates below still apply. Zero / missing spend legs above remain
+  // skips (airdrops). `spendLegIsQuoteAsset` is retained for telemetry only.
 
   // --- token safety --------------------------------------------------------
   if (input.tokenBlacklisted) {
@@ -231,14 +226,22 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
   }
 
   // --- liquidity (spec §12) ------------------------------------------------
+  // Brand-new launches often have Jupiter price + estimated MC before Dexscreener
+  // indexes pool liquidity. Allow those through when price+MC are known; sizing
+  // already omits the pool-share cap when liquidityUsd is null.
   if (market.liquidityUsd === null) {
-    return {
-      qualified: false,
-      reason: SkipReason.INSUFFICIENT_LIQUIDITY,
-      detail: 'Liquidity is unknown; trading into an unmeasurable pool is refused.',
-    };
-  }
-  if (market.liquidityUsd < config.minLiquidityUsd) {
+    const recoverable =
+      market.priceUsd > 0 &&
+      market.marketCapUsd !== null &&
+      /jupiter|supply|pump/i.test(market.source);
+    if (!recoverable) {
+      return {
+        qualified: false,
+        reason: SkipReason.INSUFFICIENT_LIQUIDITY,
+        detail: 'Liquidity is unknown; trading into an unmeasurable pool is refused.',
+      };
+    }
+  } else if (market.liquidityUsd < config.minLiquidityUsd) {
     return {
       qualified: false,
       reason: SkipReason.INSUFFICIENT_LIQUIDITY,

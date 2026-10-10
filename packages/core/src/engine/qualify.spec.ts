@@ -95,10 +95,26 @@ describe('qualifySignal', () => {
     if (!result.qualified) expect(result.reason).toBe(reason);
   });
 
-  it('skips a token-to-token rotation with no quote-asset spend', () => {
+  it('still qualifies a token-to-token rotation (copy spends custody quote asset)', () => {
     const result = qualifySignal(qualifyInput({ spendLegIsQuoteAsset: false }));
-    expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.NO_QUOTE_CURRENCY_SPENT);
+    expect(result.qualified).toBe(true);
+    if (result.qualified) expect(result.marketCapTier).toBe(2);
+  });
+
+  it('allows unknown liquidity when Jupiter/supply recovered price+MC', () => {
+    const result = qualifySignal(
+      qualifyInput({
+        config: strategyConfig({ minMarketCapUsd: 50_000, maxMarketCapUsd: 20_000_000, minLiquidityUsd: 30_000 }),
+        market: market({
+          liquidityUsd: null,
+          marketCapUsd: 400_000,
+          priceUsd: 0.0004,
+          source: 'jupiter:price+supply:mc',
+          missing: false,
+        }),
+      }),
+    );
+    expect(result.qualified).toBe(true);
   });
 
   it('skips a zero-spend buy (airdrop-shaped)', () => {

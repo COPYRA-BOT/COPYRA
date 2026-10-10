@@ -54,6 +54,33 @@ describe('calculatePositionSize', () => {
     }
   });
 
+  it('floors to min trade when soft tier cap undershoots but wallet can afford min', () => {
+    // Mirrors live BELOW_MIN skips: ~0.003 SOL (~$0.33), tier×strength → ~$0.06,
+    // min ~$0.12, available after 20% reserve ~$0.26 ≥ min → buy at min.
+    const result = size({
+      portfolio: portfolio({ tradingBalanceQuote: 0.002979159, quotePriceUsd: 109.2, deployedUsd: 0 }),
+      config: strategyConfig({
+        reservePct: 20,
+        tradeAllocationPct: 50,
+        maxDeploymentPct: 80,
+        tier1MaxPct: 20,
+        tier2MaxPct: 30,
+        tier3MaxPct: 40,
+        tier4MaxPct: 50,
+        minTradeUsd: 0.1205,
+      }),
+      tier: 2,
+      signalStrength: 1,
+      absoluteMaxUsd: 25,
+      market: market({ liquidityUsd: 37_000 }),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.sizeUsd).toBeCloseTo(0.1205, 4);
+      expect(result.basis.bindingConstraint).toMatch(/min trade floor/i);
+    }
+  });
+
   it('skips when the entire balance sits inside the reserve', () => {
     const result = size({
       portfolio: portfolio({ tradingBalanceQuote: 0.05, quotePriceUsd: 120 }),

@@ -4,6 +4,7 @@ import type { MarketSnapshot } from '../engine/types.js';
 import { componentLogger } from '../obs/logger.js';
 import { fetchJson } from '../util/retry.js';
 import { getJupiterPrices } from '../solana/jupiter.js';
+import { getSolanaTokenUiSupply } from '../solana/token-supply.js';
 import { getDexscreenerMarket, getDexscreenerMarkets, type TokenMarketData } from './dexscreener.js';
 
 const log = componentLogger('market');
@@ -19,8 +20,20 @@ export { getDexscreenerMarket, getDexscreenerMarkets };
  * COPYRA actually trades through — if the two disagree materially, the
  * aggregator's own number is the one that will determine the fill, so it wins
  * and the divergence is logged.
+ *
+ * When Dexscreener has not indexed a brand-new launch yet, Jupiter price +
+ * on-chain mint supply recover market cap so we do not skip as
+ * TOKEN_METADATA_UNAVAILABLE on otherwise tradeable tokens.
  */
 const PRICE_DIVERGENCE_WARN_PCT = 5;
+
+async function marketCapFromSupply(tokenAddress: string, priceUsd: number): Promise<number | null> {
+  if (!(priceUsd > 0)) return null;
+  const supply = await getSolanaTokenUiSupply(tokenAddress);
+  if (supply === null || !(supply > 0)) return null;
+  const mc = priceUsd * supply;
+  return Number.isFinite(mc) && mc > 0 ? mc : null;
+}
 
 export async function getMarketSnapshot(
   chain: Chain,
@@ -35,28 +48,83 @@ export async function getMarketSnapshot(
         return null;
       }),
     ]);
-    if (dex.missing || !jupiterResult) return dex;
-    const jupiter = jupiterResult.get(tokenAddress);
-    if (!jupiter) return dex;
+    const jupiter = jupiterResult?.get(tokenAddress) ?? null;
 
-    if (dex.priceUsd > 0) {
-      const divergence = Math.abs((jupiter.usdPrice - dex.priceUsd) / dex.priceUsd) * 100;
-      if (divergence > PRICE_DIVERGENCE_WARN_PCT) {
-        log.warn(
-          { tokenAddress, dexscreenerPrice: dex.priceUsd, jupiterPrice: jupiter.usdPrice, divergence },
-          'Price sources diverge; using the Jupiter price because it determines the fill',
+    // Dex indexed — prefer it, overlay Jupiter price when available.
+    if (!dex.missing) {
+      if (!jupiter) {
+        if (dex.marketCapUsd === null && dex.priceUsd > 0) {
+          const estimated = await marketCapFromSupply(tokenAddress, dex.priceUsd);
+          if (estimated !== null) {
+            return {
+              ...dex,
+              marketCapUsd: estimated,
+              fdvUsd: dex.fdvUsd ?? estimated,
+              source: `${dex.source}+supply:mc`,
+            };
+          }
+        }
+        return dex;
+      }
+
+      if (dex.priceUsd > 0) {
+        const divergence = Math.abs((jupiter.usdPrice - dex.priceUsd) / dex.priceUsd) * 100;
+        if (divergence > PRICE_DIVERGENCE_WARN_PCT) {
+          log.warn(
+            { tokenAddress, dexscreenerPrice: dex.priceUsd, jupiterPrice: jupiter.usdPrice, divergence },
+            'Price sources diverge; using the Jupiter price because it determines the fill',
+          );
+        }
+      }
+
+      const ratio = dex.priceUsd > 0 ? jupiter.usdPrice / dex.priceUsd : 1;
+      let marketCapUsd = dex.marketCapUsd !== null ? dex.marketCapUsd * ratio : null;
+      let fdvUsd = dex.fdvUsd !== null ? dex.fdvUsd * ratio : null;
+      let source = `${dex.source}+jupiter:price`;
+      if (marketCapUsd === null) {
+        const estimated = await marketCapFromSupply(tokenAddress, jupiter.usdPrice);
+        if (estimated !== null) {
+          marketCapUsd = estimated;
+          fdvUsd = fdvUsd ?? estimated;
+          source = `${source}+supply:mc`;
+        }
+      }
+      return {
+        ...dex,
+        priceUsd: jupiter.usdPrice,
+        marketCapUsd,
+        fdvUsd,
+        source,
+      };
+    }
+
+    // Dex missing — recover from Jupiter + on-chain supply (new pumps).
+    if (jupiter && jupiter.usdPrice > 0) {
+      const estimated = await marketCapFromSupply(tokenAddress, jupiter.usdPrice);
+      if (estimated !== null) {
+        log.info(
+          { tokenAddress, priceUsd: jupiter.usdPrice, marketCapUsd: estimated },
+          'Recovered market snapshot from Jupiter price + mint supply (Dexscreener missing)',
         );
+        return {
+          priceUsd: jupiter.usdPrice,
+          marketCapUsd: estimated,
+          fdvUsd: estimated,
+          liquidityUsd: null,
+          volume24hUsd: null,
+          source: 'jupiter:price+supply:mc',
+          fetchedAt: new Date(),
+          missing: false,
+          symbol: dex.symbol,
+          name: dex.name,
+          dexId: null,
+          pairAddress: null,
+          pairCreatedAt: null,
+        };
       }
     }
 
-    const ratio = dex.priceUsd > 0 ? jupiter.usdPrice / dex.priceUsd : 1;
-    return {
-      ...dex,
-      priceUsd: jupiter.usdPrice,
-      marketCapUsd: dex.marketCapUsd !== null ? dex.marketCapUsd * ratio : null,
-      fdvUsd: dex.fdvUsd !== null ? dex.fdvUsd * ratio : null,
-      source: `${dex.source}+jupiter:price`,
-    };
+    return dex;
   }
 
   return getDexscreenerMarket(chain, tokenAddress);

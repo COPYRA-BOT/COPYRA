@@ -78,7 +78,24 @@ export function calculatePositionSize(input: SizingInput): SizingResult {
   for (const candidate of candidates) {
     if (candidate.value < binding.value) binding = candidate;
   }
-  const chosenUsd = Math.max(0, binding.value);
+  let chosenUsd = Math.max(0, binding.value);
+  let bindingLabel = binding.label;
+
+  // Soft caps (tier % × signal strength, allocation) can undershoot the saved
+  // minimum even when the wallet can afford a min-size buy. Floor to minTradeUsd
+  // against hard ceilings only — never invent size above available / headroom /
+  // liquidity / absolute max. Fixes BELOW_MIN skips on ~$0.30 wallets that still
+  // clear a ~$0.12 minimum after reserve.
+  const hardCeilUsd = Math.min(
+    availableUsd,
+    deploymentHeadroomUsd,
+    input.absoluteMaxUsd,
+    liquidityCapUsd ?? Number.POSITIVE_INFINITY,
+  );
+  if (chosenUsd < config.minTradeUsd && hardCeilUsd >= config.minTradeUsd) {
+    chosenUsd = config.minTradeUsd;
+    bindingLabel = `min trade floor (was ${binding.label})`;
+  }
 
   const basis: SizingBasis = {
     tradingBalanceQuote: portfolio.tradingBalanceQuote,
@@ -98,7 +115,7 @@ export function calculatePositionSize(input: SizingInput): SizingResult {
     absoluteMaxUsd: input.absoluteMaxUsd,
     minTradeUsd: config.minTradeUsd,
     chosenUsd,
-    bindingConstraint: binding.label,
+    bindingConstraint: bindingLabel,
   };
 
   if (portfolio.quotePriceUsd <= 0) {
@@ -130,11 +147,12 @@ export function calculatePositionSize(input: SizingInput): SizingResult {
   if (chosenUsd < config.minTradeUsd) {
     return {
       ok: false,
-      reason:
-        binding.label === 'available balance after reserve'
-          ? SkipReason.INSUFFICIENT_BALANCE
-          : SkipReason.BELOW_MIN_TRADE_SIZE,
-      detail: `Largest safe size $${chosenUsd.toFixed(2)} (limited by ${binding.label}) is below the $${config.minTradeUsd} minimum.`,
+      reason: SkipReason.INSUFFICIENT_BALANCE,
+      detail:
+        `Trading balance $${tradingBalanceUsd.toFixed(2)} (available $${availableUsd.toFixed(2)} after ${config.reservePct}% reserve) ` +
+        `cannot fund the $${config.minTradeUsd} minimum` +
+        (bindingLabel !== 'available balance after reserve' ? ` (soft cap was ${binding.label})` : '') +
+        '. Deposit more SOL to custody trading balance.',
       basis,
     };
   }
