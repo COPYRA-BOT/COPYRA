@@ -126,7 +126,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         maxSlippageBps: z.number().int().positive().max(5000).optional(),
         maxPriceImpactPct: z.number().positive().max(50).optional(),
         minLiquidityUsd: z.number().positive().optional(),
-        takeProfitPct: z.number().positive().optional(),
+        /** 0 = stop-loss only (take profit disabled). */
+        takeProfitPct: z.number().min(0).max(1_000).optional(),
         stopLossPct: z.number().positive().lt(100).optional(),
         trailingTriggerPct: z.number().positive().optional(),
         trailingPartialSellPct: z.number().positive().max(100).optional(),

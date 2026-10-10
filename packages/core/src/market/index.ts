@@ -27,6 +27,13 @@ export { getDexscreenerMarket, getDexscreenerMarkets };
  */
 const PRICE_DIVERGENCE_WARN_PCT = 5;
 
+/**
+ * Exit ticks run every 250ms. Without a short snapshot cache each open position
+ * hits Dexscreener + Jupiter on every tick and triggers HTTP 429 → failed exits.
+ */
+const SNAPSHOT_CACHE_TTL_MS = 1_000;
+const snapshotCache = new Map<string, { at: number; data: TokenMarketData }>();
+
 async function marketCapFromSupply(tokenAddress: string, priceUsd: number): Promise<number | null> {
   if (!(priceUsd > 0)) return null;
   const supply = await getSolanaTokenUiSupply(tokenAddress);
@@ -36,6 +43,23 @@ async function marketCapFromSupply(tokenAddress: string, priceUsd: number): Prom
 }
 
 export async function getMarketSnapshot(
+  chain: Chain,
+  tokenAddress: string,
+): Promise<TokenMarketData> {
+  const cacheKey = `${chain}:${tokenAddress}`;
+  const cached = snapshotCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < SNAPSHOT_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const data = await fetchMarketSnapshot(chain, tokenAddress);
+  if (!data.missing && data.priceUsd > 0) {
+    snapshotCache.set(cacheKey, { at: Date.now(), data });
+  }
+  return data;
+}
+
+async function fetchMarketSnapshot(
   chain: Chain,
   tokenAddress: string,
 ): Promise<TokenMarketData> {

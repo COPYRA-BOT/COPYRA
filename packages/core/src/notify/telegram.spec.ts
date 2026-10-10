@@ -31,13 +31,13 @@ describe('resolveTelegramTargets', () => {
   const admin = '-5389164510';
   const user = '123456789';
 
-  it('sends skips and detections to admin only', () => {
-    expect(resolveTelegramTargets({ kind: 'skip', adminChat: admin, userChat: user })).toEqual([
-      admin,
-    ]);
-    expect(resolveTelegramTargets({ kind: 'detection', adminChat: admin, userChat: user })).toEqual([
-      admin,
-    ]);
+  it('suppresses skip and detection flood everywhere (dashboard still logs them)', () => {
+    expect(shouldSuppressTelegramKind('skip')).toBe(true);
+    expect(shouldSuppressTelegramKind('detection')).toBe(true);
+    expect(resolveTelegramTargets({ kind: 'skip', adminChat: admin, userChat: user })).toEqual([]);
+    expect(resolveTelegramTargets({ kind: 'detection', adminChat: admin, userChat: user })).toEqual(
+      [],
+    );
   });
 
   it('sends buy/sell confirmed to admin and linked user', () => {

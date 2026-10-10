@@ -87,10 +87,11 @@ export function evaluateExit(input: ExitEvaluationInput): ExitAction {
     }
   }
 
-  // 3. Take profit.
-  if (currentPriceUsd >= levels.takeProfitPriceUsd) {
+  // 3. Take profit — disabled when takeProfitPct <= 0 (stop-loss-only mode).
+  // takeProfitPct=0 would otherwise set TP == entry and sell winners immediately.
+  if (config.takeProfitPct > 0 && currentPriceUsd >= levels.takeProfitPriceUsd) {
     if (exitStrategy === ExitStrategy.MANUAL) {
-      // Option A — sell the whole position at +20%.
+      // Option A — sell the whole position at +takeProfitPct%.
       return {
         action: 'SELL',
         fraction: 1,
@@ -99,7 +100,7 @@ export function evaluateExit(input: ExitEvaluationInput): ExitAction {
       };
     }
 
-    // Option B — sell 50% at +20%, then trail the remainder.
+    // Option B — sell partial at TP, then trail the remainder.
     if (!partialTakeProfitDone) {
       return {
         action: 'ACTIVATE_TRAILING',
@@ -121,9 +122,13 @@ export function evaluateExit(input: ExitEvaluationInput): ExitAction {
     };
   }
 
+  const band =
+    config.takeProfitPct > 0
+      ? `SL $${levels.stopLossPriceUsd}, TP $${levels.takeProfitPriceUsd}`
+      : `SL $${levels.stopLossPriceUsd}, TP off`;
   return {
     action: 'HOLD',
-    detail: `Holding at ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}% (SL $${levels.stopLossPriceUsd}, TP $${levels.takeProfitPriceUsd}).`,
+    detail: `Holding at ${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}% (${band}).`,
   };
 }
 
@@ -154,6 +159,9 @@ export function describeExitPlan(
     'takeProfitPct' | 'stopLossPct' | 'trailingDropPct' | 'trailingPartialSellPct'
   >,
 ): string {
+  if (!(config.takeProfitPct > 0)) {
+    return `SL -${fmt(config.stopLossPct)}% only`;
+  }
   if (exitStrategy === ExitStrategy.TRAILING) {
     return `TP +${fmt(config.takeProfitPct)}% (${fmt(config.trailingPartialSellPct)}%) · Trailing ${fmt(
       config.trailingDropPct,

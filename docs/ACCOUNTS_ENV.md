@@ -20,7 +20,7 @@ Already required for the live app (unchanged): `DATABASE_URL`, `REDIS_URL`, RPC 
 
 | Target | Env / field | Receives |
 |---|---|---|
-| Admin ops chat | `TELEGRAM_CHAT_ID` (App-Level, e.g. `-5389164510`) | **All** worker/backend alerts: detection, skip, buy/sell submitted/confirmed/failed, ops/watchdog, worker-online |
+| Admin ops chat | `TELEGRAM_CHAT_ID` (App-Level, e.g. `-5389164510`) | Buy/sell submitted/confirmed/failed, ops/watchdog, worker-online, COPYRA alerts. **Detection and skip noise is suppressed** (still in dashboard Recent Activity) so the chat is not flooded with 1k+ skip lines. |
 | Linked end-user | `User.telegramChatId` (Connect Telegram in account) | **Buy confirmed** and **sell confirmed** only (+ link ack) |
 
 `TELEGRAM_BOT_TOKEN` stays encrypted App-Level. Keep the admin chat id on App-Level so both `api` and `worker` can post.

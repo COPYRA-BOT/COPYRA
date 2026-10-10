@@ -20,6 +20,7 @@ import { computeBalanceDeltas } from './decoder.js';
 import {
   buildJupiterSwap,
   getJupiterQuote,
+  isJupiterRateLimitError,
   type JupiterQuote,
   type QuoteResult,
 } from './jupiter.js';
@@ -352,7 +353,12 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       if (attempt === request.maxAttempts) {
         return failure(TxStatus.FAILED, 'QUOTE_FAILED', describe(error));
       }
-      await sleep(40 * attempt);
+      // 429 needs real backoff — 40ms retries only re-trigger Jupiter rate limits
+      // and leave stop-loss exits stuck until the price has already moved further.
+      const delayMs = isJupiterRateLimitError(error)
+        ? Math.min(2_400, 280 * 2 ** (attempt - 1))
+        : 40 * attempt;
+      await sleep(delayMs);
       continue;
     }
 

@@ -10,8 +10,9 @@ const log = componentLogger('telegram');
  * Telegram delivery.
  *
  * Routing (shared COPYRA bot token; chat targets differ):
- *  * Platform `TELEGRAM_CHAT_ID` (admin) — EVERY worker/backend notification:
- *    detections, skips, buys, sells, failures, ops/watchdog, worker-online, etc.
+ *  * Platform `TELEGRAM_CHAT_ID` (admin) — buy/sell submitted/confirmed/failed,
+ *    ops/watchdog, worker-online, alerts. Detection + skip noise is suppressed
+ *    (still visible in dashboard Recent Activity / notification_logs).
  *  * Per-user `User.telegramChatId` — that account's BUY/SELL confirmed alerts only
  *    (+ telegram-link ack when they connect their chat).
  *  * Never throws into the trading path; every attempt is logged to `notification_logs`
@@ -21,12 +22,17 @@ const log = componentLogger('telegram');
 const API_BASE = 'https://api.telegram.org';
 
 /**
- * Pure noise — never Telegram (still may be skipped before queue).
- * Skips/detections/failures MUST reach the admin chat.
+ * Pure noise — never Telegram (still persisted to notification_logs when queued).
+ *
+ * `detection` / `skip` are suppressed: with 14+ wallets they produce 1k+ Telegram
+ * messages/day while burns the bot rate limit and hides real buy/sell alerts.
+ * Failures, ops, and confirmed fills still reach the admin chat.
  */
 const SUPPRESSED_KINDS = new Set([
   'redeploy-finished',
   'error:POSITION_TICK_FAILED',
+  'detection',
+  'skip',
 ]);
 
 /** Linked end-user chats: confirmed fills + link confirmation only. */
@@ -41,7 +47,8 @@ export function shouldSuppressTelegramKind(kind: string): boolean {
 
 /**
  * Pure routing helper (unit-tested).
- * Admin gets all non-suppressed kinds; users only buy/sell(+link).
+ * Admin gets actionable kinds (buys/sells/failures/ops); users only buy/sell(+link).
+ * Detection/skip noise is suppressed everywhere (see Recent Activity in the dashboard).
  */
 export function resolveTelegramTargets(input: {
   kind: string;
@@ -160,7 +167,7 @@ class TelegramNotifier {
 
   /**
    * Resolve destination chat ids.
-   * - Admin TELEGRAM_CHAT_ID ← all worker/backend kinds (skip, detect, buy, sell, ops, errors)
+   * - Admin TELEGRAM_CHAT_ID ← buys/sells/failures/ops (not detection/skip spam)
    * - User telegramChatId ← buy-confirmed / sell-confirmed / telegram-link only
    */
   async #resolveTargets(options: SendOptions): Promise<string[]> {

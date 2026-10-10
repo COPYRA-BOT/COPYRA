@@ -58,6 +58,48 @@ export function invalidateUserModeSettingsCache(userId?: string, mode?: TradingM
 }
 
 /**
+ * One-shot ops defaults so the live app copies every qualifying buy and exits
+ * on stop-loss only (take profit was firing into Jupiter 429 / bad fills).
+ * Idempotent via host.ui.execThroughputFix — does not rewrite qualify/sizing math.
+ */
+const EXEC_THROUGHPUT_FIX = 1;
+
+async function applyExecutionThroughputDefaults(host: StrategySettings): Promise<StrategySettings> {
+  const ui =
+    host.ui && typeof host.ui === 'object' && !Array.isArray(host.ui)
+      ? ({ ...(host.ui as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  if (ui.execThroughputFix === EXEC_THROUGHPUT_FIX) return host;
+
+  const updated = await prisma.strategySettings.update({
+    where: { id: host.id },
+    data: {
+      takeProfitPct: 0,
+      firstBuyOnly: false,
+      ui: { ...ui, execThroughputFix: EXEC_THROUGHPUT_FIX } as Prisma.InputJsonValue,
+      updatedBy: 'exec-throughput-fix',
+    },
+  });
+  const modeResult = await prisma.userModeSettings.updateMany({
+    data: {
+      takeProfitPct: 0,
+      firstBuyOnly: false,
+      updatedBy: 'exec-throughput-fix',
+    },
+  });
+  userModeCache.clear();
+  log.info(
+    {
+      takeProfitPct: 0,
+      firstBuyOnly: false,
+      userModeRows: modeResult.count,
+    },
+    'Applied execution throughput defaults (SL-only exit, Every buy)',
+  );
+  return updated;
+}
+
+/**
  * Host/global strategy row — emergency stop, chain allow-list, seed defaults.
  * Per-user SOL/EVM risk lives in UserModeSettings.
  */
@@ -67,8 +109,9 @@ export async function ensureSettings(): Promise<StrategySettings> {
 
   const existing = await prisma.strategySettings.findUnique({ where: { id: 1 } });
   if (existing) {
-    settingsCache = { at: Date.now(), row: existing };
-    return existing;
+    const applied = await applyExecutionThroughputDefaults(existing);
+    settingsCache = { at: Date.now(), row: applied };
+    return applied;
   }
 
   const defaultChains = executableChains().map((c) => c.chain);
@@ -77,6 +120,10 @@ export async function ensureSettings(): Promise<StrategySettings> {
       data: {
         id: 1,
         enabledChains: defaultChains.length > 0 ? defaultChains : [Chain.SOLANA],
+        takeProfitPct: 0,
+        firstBuyOnly: false,
+        ui: { execThroughputFix: EXEC_THROUGHPUT_FIX } as Prisma.InputJsonValue,
+        updatedBy: 'exec-throughput-fix',
       },
     });
     log.info({ enabledChains: created.enabledChains }, 'Seeded default strategy settings from spec');
@@ -85,8 +132,9 @@ export async function ensureSettings(): Promise<StrategySettings> {
   } catch (error) {
     const raced = await prisma.strategySettings.findUnique({ where: { id: 1 } });
     if (raced) {
-      settingsCache = { at: Date.now(), row: raced };
-      return raced;
+      const applied = await applyExecutionThroughputDefaults(raced);
+      settingsCache = { at: Date.now(), row: applied };
+      return applied;
     }
     throw error;
   }

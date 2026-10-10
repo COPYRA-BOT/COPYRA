@@ -190,6 +190,42 @@ describe('computeTrailingStop + describeExitPlan', () => {
       'TP +20% (50%) · Trailing 15% · SL -10%',
     );
   });
+
+  it('renders stop-loss-only when take profit is disabled', () => {
+    expect(describeExitPlan(ExitStrategy.MANUAL, strategyConfig({ takeProfitPct: 0 }))).toBe(
+      'SL -10% only',
+    );
+  });
+});
+
+describe('evaluateExit — stop-loss only (takeProfitPct = 0)', () => {
+  it('does not take profit at or above entry when TP is off', () => {
+    const action = evaluateExit({
+      config: strategyConfig({ takeProfitPct: 0 }),
+      exitStrategy: ExitStrategy.MANUAL,
+      entryPriceUsd: 1,
+      currentPriceUsd: 1.5,
+      highestPriceUsd: null,
+      trailingActive: false,
+      partialTakeProfitDone: false,
+      traderSold: false,
+    });
+    expect(action.action).toBe('HOLD');
+  });
+
+  it('still sells on stop loss when TP is off', () => {
+    const action = evaluateExit({
+      config: strategyConfig({ takeProfitPct: 0 }),
+      exitStrategy: ExitStrategy.MANUAL,
+      entryPriceUsd: 1,
+      currentPriceUsd: 0.9,
+      highestPriceUsd: null,
+      trailingActive: false,
+      partialTakeProfitDone: false,
+      traderSold: false,
+    });
+    expect(action).toMatchObject({ action: 'SELL', fraction: 1, reason: 'STOP_LOSS' });
+  });
 });
 
 describe('evaluateExit — bad input', () => {
