@@ -77,15 +77,25 @@ After deploy, ensure migration `20261011210000_sniper_mode` applied (API/start s
 
 ## 5) End-to-end checklist
 
-1. Push `main` → DO builds `api`, `worker`, `sniper`
-2. Runtime logs → **sniper** shows: `COPYRA sniper worker starting` and `Sniper Helius/WS logsSubscribe connected`
-3. Heartbeat name: `copyra-sniper-worker` (Monitor tab / DB `worker_heartbeats`)
-4. Dashboard → **Sniper Mode** (third segment) → connect **Solana** wallet (same custody as SOL Mode)
-5. Open **Sniper settings**: runtime `monitor` / `onchain` / `live`, MC/liq/slippage, max position/deployed SOL, daily loss, launchpads, TP/SL
-6. Toggle bot **ON** for Sniper Mode only (does not start SOL/EVM copy)
-7. With `SNIPER_ENABLED=false` or runtime `monitor`: signals appear as rejected / blocked with exact reasons — **no buys**
-8. For live: set App `SNIPER_ENABLED=true`, `SNIPER_MODE=live`, dashboard runtime **Live**, bot **ON**, funded custody + fee reserve
-9. Kill Switch on Sniper Mode stops sniper engine and liquidates **sniper** positions only
+1. Push `main` → DO builds `api`, `worker`, `sniper` (if autodeploy stalls: **Actions → Force rebuild and deploy**)
+2. Confirm **three** components in DO: `api` (Healthy), `worker` (Running), **`sniper` (Running)**
+3. Runtime logs → **sniper** shows: `COPYRA sniper worker starting` and `Sniper Helius/WS logsSubscribe connected`
+4. `GET https://copyra.fun/api/status` → `trading.sniperEnabled` / `sniperMode` present, and a worker named **`copyra-sniper-worker`**
+5. Dashboard → **Sniper Mode** (third segment) → connect **Solana** wallet (same custody as SOL Mode)
+6. Open **Sniper settings**: runtime `monitor` / `onchain` / `live`, MC/liq/slippage, max position/deployed SOL, daily loss, launchpads, TP/SL
+7. Toggle bot **ON** for Sniper Mode only (does not start SOL/EVM copy)
+8. With `SNIPER_ENABLED=false` or runtime `monitor`: signals appear as rejected / blocked with exact reasons — **no buys**
+9. For live: set App `SNIPER_ENABLED=true`, `SNIPER_MODE=live`, dashboard runtime **Live**, bot **ON**, funded custody + fee reserve
+10. Kill Switch on Sniper Mode stops sniper engine and liquidates **sniper** positions only
+
+### If Sniper Mode UI is live but `copyra-sniper-worker` is missing from `/api/status`
+
+Env vars alone are not enough — the **sniper worker component** must be running:
+
+1. DO → Components → look for **`sniper`**
+2. If missing: Create **Worker** named `sniper`, run `/app/scripts/start-sniper-worker.sh`, same Dockerfile/`main`, Autodeploy on
+3. If present but crash-looping: Runtime Logs → sniper; then **Force rebuild** that component
+4. App-Level secrets (`DATABASE_URL`, `REDIS_URL`, `SOLANA_WS_URL`, …) must be available to **sniper**, not only `api`
 
 ## 6) Force rebuild if sniper looks stuck
 

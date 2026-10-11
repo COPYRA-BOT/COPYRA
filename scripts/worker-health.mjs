@@ -1,17 +1,24 @@
 /**
- * Tiny liveness HTTP server for the dedicated copy-trade worker component.
+ * Tiny liveness HTTP server for dedicated worker / sniper components.
  * DigitalOcean health-checks a Web Service / Worker that exposes a port;
  * trading itself does not need HTTP — this only answers / and /health.
  *
- * When the trading process writes /tmp/copyra-worker-status.json, /health
- * includes last sync / WS / processed ages so ops can tell stall vs quiet market.
+ * Set COPYRA_HEALTH_ROLE=sniper for the sniper worker (status file + service name).
+ * Default role is the copy-trade worker.
  */
 import http from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 
 const port = Number(process.env.PORT || process.env.HEALTH_PORT || 8080);
 const started = Date.now();
-const STATUS_PATH = '/tmp/copyra-worker-status.json';
+const role = String(process.env.COPYRA_HEALTH_ROLE || 'worker')
+  .trim()
+  .toLowerCase();
+const isSniper = role === 'sniper' || role === 'sniper-worker';
+const STATUS_PATH = isSniper
+  ? '/tmp/copyra-sniper-status.json'
+  : '/tmp/copyra-worker-status.json';
+const SERVICE = isSniper ? 'copyra-sniper-worker' : 'copyra-worker';
 
 function readStatus() {
   try {
@@ -23,6 +30,10 @@ function readStatus() {
 }
 
 function ageSec(ts) {
+  if (typeof ts === 'string' && ts) {
+    const ms = Date.parse(ts);
+    if (Number.isFinite(ms)) return Math.round((Date.now() - ms) / 1000);
+  }
   if (!ts || typeof ts !== 'number' || ts <= 0) return null;
   return Math.round((Date.now() - ts) / 1000);
 }
@@ -33,11 +44,16 @@ const server = http.createServer((req, res) => {
     const st = readStatus();
     const body = {
       ok: true,
-      service: 'copyra-worker',
+      service: SERVICE,
+      role: isSniper ? 'sniper' : 'worker',
       uptimeSec: Math.round((Date.now() - started) / 1000),
       monitor: st
         ? {
             status: st.status || null,
+            sniperEnabled: st.sniperEnabled ?? null,
+            sniperMode: st.sniperMode ?? null,
+            discoveryCount: st.discoveryCount ?? null,
+            lastDiscoveryAgeSec: ageSec(st.lastDiscoveryAt),
             watching: st.watching ?? null,
             lastSolanaSyncAgeSec: ageSec(st.lastSolanaSyncAt),
             lastSolanaWsEventAgeSec: ageSec(st.lastSolanaWsEventAt),
@@ -59,7 +75,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`COPYRA worker health listening on :${port}`);
+  console.log(`COPYRA ${SERVICE} health listening on :${port}`);
 });
 
 server.on('error', (err) => {

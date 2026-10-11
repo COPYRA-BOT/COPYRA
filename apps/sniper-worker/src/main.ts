@@ -26,6 +26,7 @@ let exitInFlight = false;
 let discoveryStop: (() => void) | null = null;
 let lastDiscoveryAt: string | null = null;
 let discoveryCount = 0;
+let bootError: string | null = null;
 
 function writeStatus(extra: Record<string, unknown> = {}): void {
   try {
@@ -38,6 +39,7 @@ function writeStatus(extra: Record<string, unknown> = {}): void {
         sniperMode: env.SNIPER_MODE,
         lastDiscoveryAt,
         discoveryCount,
+        bootError,
         ...extra,
       }),
     );
@@ -59,6 +61,20 @@ async function beat(status: string, detail: Prisma.InputJsonValue): Promise<void
   writeStatus({ status, detail });
 }
 
+function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue {
+  return {
+    monitor: 'sniper+exits',
+    sniperEnabled: env.SNIPER_ENABLED,
+    sniperMode: env.SNIPER_MODE,
+    lastSolanaSyncAt: Date.now(),
+    lastDiscoveryAt,
+    discoveryCount,
+    bootError,
+    pid: process.pid,
+    ...extra,
+  } as Prisma.InputJsonValue;
+}
+
 logger.info(
   {
     sniperEnabled: env.SNIPER_ENABLED,
@@ -68,7 +84,15 @@ logger.info(
   'COPYRA sniper worker starting',
 );
 
-await ensureSettings();
+// Heartbeat before heavier boot work so /api/status shows the component immediately.
+void beat('starting', beatDetail({ boot: true }));
+
+try {
+  await ensureSettings();
+} catch (error) {
+  bootError = error instanceof Error ? error.message : String(error);
+  logger.error({ err: error }, 'Sniper ensureSettings failed — continuing with host env only');
+}
 
 if (!env.SNIPER_ENABLED) {
   logger.warn(
@@ -77,15 +101,21 @@ if (!env.SNIPER_ENABLED) {
   );
 }
 
-discoveryStop = await startPumpFunDiscovery(async (event) => {
-  discoveryCount += 1;
-  lastDiscoveryAt = new Date().toISOString();
-  try {
-    await handleSniperDiscovery(event);
-  } catch (error) {
-    logger.error({ err: error, mint: event.tokenAddress }, 'Sniper discovery handler failed');
-  }
-});
+try {
+  discoveryStop = await startPumpFunDiscovery(async (event) => {
+    discoveryCount += 1;
+    lastDiscoveryAt = new Date().toISOString();
+    try {
+      await handleSniperDiscovery(event);
+    } catch (error) {
+      logger.error({ err: error, mint: event.tokenAddress }, 'Sniper discovery handler failed');
+    }
+  });
+} catch (error) {
+  bootError = error instanceof Error ? error.message : String(error);
+  logger.error({ err: error }, 'Sniper discovery failed to start — will keep heartbeating');
+  discoveryStop = () => undefined;
+}
 
 const exitTimer = setInterval(() => {
   if (exitInFlight) return;
@@ -104,28 +134,10 @@ void monitorOpenPositions({ strategy: TradingStrategy.SNIPER }).catch((error: un
 });
 
 const heartbeatTimer = setInterval(() => {
-  void beat('running', {
-    monitor: 'sniper+exits',
-    sniperEnabled: env.SNIPER_ENABLED,
-    sniperMode: env.SNIPER_MODE,
-    lastSolanaSyncAt: Date.now(),
-    lastDiscoveryAt,
-    discoveryCount,
-    pid: process.pid,
-  });
+  void beat('running', beatDetail());
 }, HEARTBEAT_MS);
 
-void beat('running', {
-  monitor: 'sniper+exits',
-  sniperEnabled: env.SNIPER_ENABLED,
-  sniperMode: env.SNIPER_MODE,
-  // Keep a sync-style clock so dashboards that key off lastSolanaSyncAt stay honest.
-  lastSolanaSyncAt: Date.now(),
-  lastDiscoveryAt,
-  discoveryCount,
-  boot: true,
-  pid: process.pid,
-});
+void beat('running', beatDetail({ boot: true }));
 
 telegram.send(
   `🎯 <b>SNIPER WORKER ONLINE</b>\nMode: ${env.SNIPER_MODE}\nHost enabled: ${env.SNIPER_ENABLED ? 'yes' : 'no'}\nPump.fun program: <code>${env.PUMP_FUN_PROGRAM_ID}</code>`,
@@ -136,7 +148,7 @@ const shutdown = async () => {
   clearInterval(exitTimer);
   clearInterval(heartbeatTimer);
   discoveryStop?.();
-  await beat('stopping', { pid: process.pid });
+  await beat('stopping', beatDetail());
   await prisma.$disconnect().catch(() => undefined);
   process.exit(0);
 };

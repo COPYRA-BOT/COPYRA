@@ -5,6 +5,8 @@ set -e
 
 PORT="${PORT:-${HEALTH_PORT:-8080}}"
 export PORT
+# So worker-health.mjs reports copyra-sniper-worker + reads sniper status file.
+export COPYRA_HEALTH_ROLE=sniper
 
 LOCK=/tmp/copyra-sniper-supervisor.lock
 PIDFILE=/tmp/copyra-sniper-worker.pid
