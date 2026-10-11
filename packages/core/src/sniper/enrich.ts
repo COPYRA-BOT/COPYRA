@@ -172,7 +172,7 @@ export async function enrichSniperToken(
   let buyRouteOk: boolean | null = routed.buyRouteOk;
   let sellRouteOk: boolean | null = routed.sellRouteOk;
   if (routed.route === 'pump.fun' && !jupiterBuyOk) {
-    // Curve is live but we require a simulatable Jupiter/PumpSwap quote for broadcast.
+    // Curve is live but we require a Jupiter/PumpSwap quote for broadcast.
     buyRouteOk = false;
     sellRouteOk = false;
     errors.push('route:pump-curve-active-awaiting-jupiter-or-pumpswap');
