@@ -79,5 +79,5 @@ export * from './notify/messages.js';
 export * from './notify/telegram.js';
 export * from './notify/ops-alerts.js';
 
-// Sniper (Phase 5 — independent of wallet copy-trading)
-export * from './sniper/index.js';
+// Sniper is NOT exported from the main barrel — importing it pulls `ws` and
+// discovery into the copy-trade worker. Use `@copyra/core/sniper` instead.

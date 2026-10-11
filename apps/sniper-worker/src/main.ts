@@ -3,17 +3,12 @@
  * Discovers Pump.fun / PumpSwap launches via Helius WS, qualifies fail-closed,
  * executes via shared Jupiter/signer, and monitors sniper-only exits.
  */
+import { ensureSettings, env, initSentry, logger, monitorOpenPositions, telegram } from '@copyra/core';
 import {
-  ensureSettings,
-  env,
   handleSniperDiscovery,
-  initSentry,
-  logger,
-  monitorOpenPositions,
   SNIPER_HEARTBEAT_NAME,
   startPumpFunDiscovery,
-  telegram,
-} from '@copyra/core';
+} from '@copyra/core/sniper';
 import { prisma, TradingStrategy, type Prisma } from '@copyra/db';
 import { writeFileSync } from 'node:fs';
 

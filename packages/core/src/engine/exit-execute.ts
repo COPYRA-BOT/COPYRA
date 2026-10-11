@@ -58,14 +58,32 @@ function isTransientExitTickError(error: unknown): boolean {
  * Exit tick. Copy worker passes strategy COPY (default); sniper worker passes SNIPER
  * so the two processes never starve each other on the same position set.
  */
+type LivePosition = Position & {
+  token: { symbol: string | null; decimals: number | null };
+};
+
 export async function monitorOpenPositions(opts?: {
   strategy?: TradingStrategy;
 }): Promise<void> {
   const strategy = opts?.strategy ?? TradingStrategy.COPY;
-  const positions = await prisma.position.findMany({
-    where: { status: { in: [...LIVE] }, strategy },
-    include: { token: true },
-  });
+  let positions: LivePosition[];
+  try {
+    positions = await prisma.position.findMany({
+      where: { status: { in: [...LIVE] }, strategy },
+      include: { token: true },
+    });
+  } catch (error) {
+    // Pre-migration / enum drift must not crash-loop the copy worker.
+    log.warn({ err: error, strategy }, 'Exit query with strategy failed — falling back');
+    const all = await prisma.position.findMany({
+      where: { status: { in: [...LIVE] } },
+      include: { token: true },
+    });
+    positions =
+      strategy === TradingStrategy.SNIPER
+        ? all.filter((p) => p.strategy === TradingStrategy.SNIPER)
+        : all.filter((p) => p.strategy !== TradingStrategy.SNIPER);
+  }
   if (positions.length === 0) return;
   // Host emergency stop once; each position uses that owner's mode settings.
   const host = await getSettings();
