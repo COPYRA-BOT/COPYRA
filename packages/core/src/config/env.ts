@@ -38,7 +38,12 @@ function normalizeTradingFlags(): void {
   const isPresent = (v: string | undefined) => v !== undefined && v.trim() !== '';
 
   // Blank App Platform values → unset (do not coerce "" to false).
-  for (const key of ['TRADING_ENABLED', 'SOL_TRADING_ENABLED', 'EVM_TRADING_ENABLED'] as const) {
+  for (const key of [
+    'TRADING_ENABLED',
+    'SOL_TRADING_ENABLED',
+    'EVM_TRADING_ENABLED',
+    'SNIPER_ENABLED',
+  ] as const) {
     if (process.env[key] !== undefined && !isPresent(process.env[key])) {
       delete process.env[key];
     }
@@ -53,7 +58,12 @@ function normalizeTradingFlags(): void {
     process.env.TRADING_ENABLED = 'true';
   }
   // DigitalOcean / UI sometimes stores TRUE / True — normalize before Zod.
-  for (const key of ['TRADING_ENABLED', 'SOL_TRADING_ENABLED', 'EVM_TRADING_ENABLED'] as const) {
+  for (const key of [
+    'TRADING_ENABLED',
+    'SOL_TRADING_ENABLED',
+    'EVM_TRADING_ENABLED',
+    'SNIPER_ENABLED',
+  ] as const) {
     const raw = process.env[key];
     if (isPresent(raw)) process.env[key] = truthy(raw) ? 'true' : 'false';
   }
@@ -174,6 +184,26 @@ const schema = z.object({
   EVM_TRADING_ENABLED: bool,
   MAX_TRADE_USD: z.coerce.number().positive().default(25),
 
+  /** Phase 5 — Solana launch sniper (independent of wallet copy-trading). */
+  SNIPER_ENABLED: bool,
+  /** monitor | onchain | live — blank defaults to monitor (never buys). */
+  SNIPER_MODE: z.string().optional().default('monitor'),
+  SNIPER_MAX_MARKET_CAP_USD: z.coerce.number().positive().default(20_000_000),
+  SNIPER_MIN_LIQUIDITY_USD: z.coerce.number().nonnegative().default(10_000),
+  SNIPER_MAX_PRICE_IMPACT_BPS: z.coerce.number().int().positive().default(800),
+  SNIPER_MAX_SLIPPAGE_BPS: z.coerce.number().int().positive().default(300),
+  SNIPER_MAX_OPEN_POSITIONS: z.coerce.number().int().positive().default(5),
+  SNIPER_MAX_POSITION_SOL: z.coerce.number().positive().default(0.25),
+  SNIPER_MAX_DEPLOYED_SOL: z.coerce.number().positive().default(2),
+  SNIPER_DAILY_LOSS_LIMIT_SOL: z.coerce.number().positive().default(1),
+  SNIPER_ALLOWED_LAUNCHPADS: csv,
+  SNIPER_MARKET_DATA_MAX_AGE_MS: z.coerce.number().int().positive().default(30_000),
+  PUMP_FUN_PROGRAM_ID: z
+    .string()
+    .trim()
+    .optional()
+    .default('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'),
+
   TELEGRAM_BOT_TOKEN: z.string().trim().optional(),
   TELEGRAM_CHAT_ID: z.string().trim().optional(),
   SENTRY_DSN: z.string().trim().optional(),
@@ -229,6 +259,9 @@ export const env = {
     process.env.EVM_TRADING_ENABLED === undefined
       ? parsed.data.TRADING_ENABLED
       : parsed.data.EVM_TRADING_ENABLED,
+  /** Sniper host kill — defaults false until explicitly enabled on DO. */
+  SNIPER_ENABLED:
+    process.env.SNIPER_ENABLED === undefined ? false : parsed.data.SNIPER_ENABLED,
 };
 export type Env = typeof env;
 

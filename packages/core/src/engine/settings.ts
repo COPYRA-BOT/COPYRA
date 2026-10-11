@@ -19,14 +19,18 @@ const SETTINGS_CACHE_TTL_MS = 250;
 let settingsCache: { at: number; row: StrategySettings } | null = null;
 const userModeCache = new Map<string, { at: number; row: UserModeSettings }>();
 
-export type AuthTradingMode = 'sol' | 'evm';
+export type AuthTradingMode = 'sol' | 'evm' | 'sniper';
 
 export function tradingModeFromAuth(mode: AuthTradingMode): TradingMode {
-  return mode === 'evm' ? TradingMode.EVM : TradingMode.SOL;
+  if (mode === 'evm') return TradingMode.EVM;
+  if (mode === 'sniper') return TradingMode.SNIPER;
+  return TradingMode.SOL;
 }
 
 export function authModeFromTrading(mode: TradingMode): AuthTradingMode {
-  return mode === TradingMode.EVM ? 'evm' : 'sol';
+  if (mode === TradingMode.EVM) return 'evm';
+  if (mode === TradingMode.SNIPER) return 'sniper';
+  return 'sol';
 }
 
 export function tradingModeFromChain(chain: Chain): TradingMode {
@@ -303,14 +307,50 @@ function seedDataFromHost(host: StrategySettings, mode: TradingMode) {
   };
 }
 
-/** Load or seed the user's SOL/EVM strategy row. */
+/** Sniper seed defaults — fail-closed launch filters (independent of copy SOL mode). */
+function sniperSeedOverrides(host: StrategySettings) {
+  return {
+    engine: 'PAUSED' as const,
+    exitStrategy: ExitStrategy.MANUAL,
+    minMarketCapUsd: 1,
+    maxMarketCapUsd: 20_000_000,
+    maxDeploymentPct: 50,
+    maxOpenPositions: 5,
+    tradeAllocationPct: 20,
+    maxCapitalPerTokenPct: 20,
+    reservePct: host.reservePct,
+    minTradeUsd: Math.min(Number(host.minTradeUsd) || 10, 10),
+    maxSlippageBps: 300,
+    maxPriceImpactPct: 8,
+    minLiquidityUsd: 10_000,
+    takeProfitPct: 20,
+    stopLossPct: 10,
+    trailingTriggerPct: 20,
+    trailingPartialSellPct: 50,
+    trailingDropPct: 15,
+    followTraderSells: false,
+    firstBuyOnly: false,
+    ui: {
+      sniperRuntimeMode: 'monitor',
+      sniperEnabled: true,
+      maxPositionSol: 0.25,
+      maxDeployedSol: 2,
+      dailyLossLimitSol: 1,
+      allowedLaunchpads: ['pump.fun'],
+      blacklist: '',
+    },
+  };
+}
+
+/** Load or seed the user's SOL/EVM/SNIPER strategy row. */
 export async function ensureUserModeSettings(
   userId: string,
   mode: TradingMode | AuthTradingMode,
 ): Promise<UserModeSettings> {
-  const tradingMode = typeof mode === 'string' && (mode === 'sol' || mode === 'evm')
-    ? tradingModeFromAuth(mode)
-    : (mode as TradingMode);
+  const tradingMode =
+    typeof mode === 'string' && (mode === 'sol' || mode === 'evm' || mode === 'sniper')
+      ? tradingModeFromAuth(mode)
+      : (mode as TradingMode);
 
   const key = cacheKey(userId, tradingMode);
   const hit = userModeCache.get(key);
@@ -326,7 +366,11 @@ export async function ensureUserModeSettings(
 
   const host = await ensureSettings();
   try {
-    const seed = seedDataFromHost(host, tradingMode);
+    const base = seedDataFromHost(host, tradingMode);
+    const seed =
+      tradingMode === TradingMode.SNIPER
+        ? { ...base, ...sniperSeedOverrides(host) }
+        : base;
     const created = await prisma.userModeSettings.create({
       data: {
         userId,
@@ -366,7 +410,7 @@ export async function getStrategyConfigFor(
   mode: TradingMode | AuthTradingMode | Chain,
 ): Promise<{ config: StrategyConfig; modeRow: UserModeSettings; host: StrategySettings }> {
   const tradingMode =
-    typeof mode === 'string' && (mode === 'sol' || mode === 'evm')
+    typeof mode === 'string' && (mode === 'sol' || mode === 'evm' || mode === 'sniper')
       ? tradingModeFromAuth(mode)
       : typeof mode === 'string' && Object.values(Chain).includes(mode as Chain)
         ? tradingModeFromChain(mode as Chain)

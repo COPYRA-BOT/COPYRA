@@ -5,6 +5,8 @@ import {
   prisma,
   TradeReason,
   TradeSide,
+  TradingMode,
+  TradingStrategy,
   TxStatus,
   type Position,
 } from '@copyra/db';
@@ -52,9 +54,16 @@ function isTransientExitTickError(error: unknown): boolean {
   );
 }
 
-export async function monitorOpenPositions(): Promise<void> {
+/**
+ * Exit tick. Copy worker passes strategy COPY (default); sniper worker passes SNIPER
+ * so the two processes never starve each other on the same position set.
+ */
+export async function monitorOpenPositions(opts?: {
+  strategy?: TradingStrategy;
+}): Promise<void> {
+  const strategy = opts?.strategy ?? TradingStrategy.COPY;
   const positions = await prisma.position.findMany({
-    where: { status: { in: [...LIVE] } },
+    where: { status: { in: [...LIVE] }, strategy },
     include: { token: true },
   });
   if (positions.length === 0) return;
@@ -62,7 +71,11 @@ export async function monitorOpenPositions(): Promise<void> {
   const host = await getSettings();
   await mapPool(positions, EXIT_TICK_CONCURRENCY, async (position) => {
     try {
-      const { config } = await getStrategyConfigFor(position.userId, position.chain);
+      const mode =
+        position.strategy === TradingStrategy.SNIPER
+          ? TradingMode.SNIPER
+          : position.chain;
+      const { config } = await getStrategyConfigFor(position.userId, mode);
       await markAndMaybeExit(position, config, host);
     } catch (error) {
       // Lock contention / pool blips are expected under load — log, don't Telegram.
@@ -78,7 +91,7 @@ export async function monitorOpenPositions(): Promise<void> {
         code: 'POSITION_TICK_FAILED',
         chain: position.chain,
         notify: false,
-        context: { positionId: position.id },
+        context: { positionId: position.id, strategy: position.strategy },
       });
     }
   });
@@ -223,22 +236,25 @@ async function markAndMaybeExit(
  */
 export async function killSwitchSellAll(input: {
   userId: string;
-  mode: 'sol' | 'evm';
+  mode: 'sol' | 'evm' | 'sniper';
 }): Promise<{
-  mode: 'sol' | 'evm';
+  mode: 'sol' | 'evm' | 'sniper';
   attempted: number;
   sold: number;
   failed: number;
   results: Array<{ positionId: string; chain: Chain; token: string; ok: boolean; error?: string }>;
 }> {
   const chains =
-    input.mode === 'sol'
-      ? [Chain.SOLANA]
-      : [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
+    input.mode === 'evm'
+      ? [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC]
+      : [Chain.SOLANA];
+  const strategy =
+    input.mode === 'sniper' ? TradingStrategy.SNIPER : TradingStrategy.COPY;
   const positions = await prisma.position.findMany({
     where: {
       userId: input.userId,
       chain: { in: chains },
+      strategy,
       status: { in: [...LIVE] },
     },
   });
@@ -256,7 +272,9 @@ export async function killSwitchSellAll(input: {
   for (const position of positions) {
     const token = position.tokenSymbol ?? position.tokenAddress.slice(0, 8);
     try {
-      const { config } = await getStrategyConfigFor(input.userId, position.chain);
+      const modeKey =
+        position.strategy === TradingStrategy.SNIPER ? TradingMode.SNIPER : position.chain;
+      const { config } = await getStrategyConfigFor(input.userId, modeKey);
       await withLock(`exit:${position.id}`, 180_000, async () => {
         const fresh = await prisma.position.findUnique({ where: { id: position.id } });
         if (!fresh || !LIVE.includes(fresh.status as (typeof LIVE)[number])) {

@@ -6,7 +6,7 @@ import {
   reconcilePendingTrades,
   telegram,
 } from '@copyra/core';
-import { prisma, type Prisma } from '@copyra/db';
+import { prisma, TradingStrategy, type Prisma } from '@copyra/db';
 import { workerActivity, writeWorkerStatusFile } from './activity.js';
 import { startEvmMonitor } from './evm-monitor.js';
 import {
@@ -177,7 +177,8 @@ let exitInFlight = false;
 const exitTimer = setInterval(() => {
   if (exitInFlight) return;
   exitInFlight = true;
-  void monitorOpenPositions()
+  // COPY strategy only — sniper exits run on the dedicated sniper worker.
+  void monitorOpenPositions({ strategy: TradingStrategy.COPY })
     .catch((error: unknown) => {
       logger.error({ err: error }, 'Exit monitor tick failed');
     })
@@ -308,7 +309,7 @@ const watchdogTimer = setInterval(() => {
 }, WATCHDOG_CHECK_MS);
 
 // First exit pass immediately so open positions are not waiting a full interval after boot.
-void monitorOpenPositions().catch((error: unknown) => {
+void monitorOpenPositions({ strategy: TradingStrategy.COPY }).catch((error: unknown) => {
   logger.error({ err: error }, 'Exit monitor initial tick failed');
 });
 

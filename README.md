@@ -48,9 +48,12 @@ That starts:
 |---|---|
 | API (`apps/api`) | `41717` locally (`API_PORT`); `8080` in Docker / App Platform (`PORT`) |
 | Dashboard (`apps/web`) | `43127` |
-| Worker (`apps/worker`) | no HTTP port — Helius log subscriptions + heartbeat |
+| Worker (`apps/worker`) | copy-trade SOL/EVM + COPY exits |
+| Sniper worker (`apps/sniper-worker`) | Pump.fun discovery + SNIPER exits (independent) |
 
 Open `http://127.0.0.1:43127`. Vite proxies `/api` and `/health` to the API so session cookies stay same-origin.
+
+Dashboard modes: **SOL Mode** · **EVM Mode** · **Sniper Mode** (Solana custody shared with SOL; settings and positions are independent).
 
 Useful commands:
 
@@ -61,7 +64,10 @@ npm run verify:providers
 npm run dev:api
 npm run dev:web
 npm run dev:worker
+npm run dev:sniper
 ```
+
+DigitalOcean sniper setup: `docs/SNIPER_DO.md`.
 
 ## Observe-only vs live trading
 
@@ -77,12 +83,13 @@ Set `TRADING_ENABLED=true` **and** a dedicated bot key only when you intend to s
 ## Repo layout
 
 ```
-apps/api       Fastify HTTP + WebSocket API (SIWE/SIWS, Jupiter user-sign, snapshot)
-apps/worker    Solana logs, EVM transfer polls, TP/SL marks, reconciliation
-apps/web       Uploaded copyra. UI + Reown AppKit (Vite)
-packages/core  RPC, decode, qualify, size, execute, exits, Jupiter, KyberSwap, Telegram
-packages/db    Prisma schema and client
-docs/          Audit, migration plan, readiness, deploy
+apps/api            Fastify HTTP + WebSocket API (SIWE/SIWS, Jupiter user-sign, snapshot)
+apps/worker         Wallet copy-trade (SOL/EVM), COPY exits, reconciliation
+apps/sniper-worker  Launch sniper (Pump.fun / Helius), SNIPER exits
+apps/web            COPYRA UI + Reown AppKit (Vite)
+packages/core       RPC, decode, qualify, size, execute, exits, sniper, Jupiter, Telegram
+packages/db         Prisma schema and client
+docs/               Deploy, sniper DO setup, readiness, audit
 ```
 
 ## Socials

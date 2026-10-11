@@ -33,6 +33,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/core/package.json packages/core/
 COPY apps/api/package.json apps/api/
 COPY apps/worker/package.json apps/worker/
+COPY apps/sniper-worker/package.json apps/sniper-worker/
 COPY apps/web/package.json apps/web/
 
 RUN --mount=type=cache,target=/root/.npm \
@@ -47,13 +48,15 @@ COPY tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/worker ./apps/worker
+COPY apps/sniper-worker ./apps/sniper-worker
 COPY scripts ./scripts
 
 RUN npm run db:generate \
   && npm run build -w @copyra/db \
   && npm run build -w @copyra/core \
   && npm run build -w @copyra/api \
-  && npm run build -w @copyra/worker
+  && npm run build -w @copyra/worker \
+  && npm run build -w @copyra/sniper-worker
 
 # ----------------------------------------------------------------------------
 # build-web — Vite / Reown only; independent cache from backend
@@ -103,7 +106,7 @@ COPY --from=assemble /app/apps ./apps
 COPY --from=assemble /app/scripts ./scripts
 COPY --from=assemble /app/tsconfig.base.json /app/tsconfig.json ./
 
-RUN chmod +x /app/scripts/start-production.sh /app/scripts/start-worker.sh \
+RUN chmod +x /app/scripts/start-production.sh /app/scripts/start-worker.sh /app/scripts/start-sniper-worker.sh \
   && test -f /app/scripts/worker-health.mjs
 
 EXPOSE 8080

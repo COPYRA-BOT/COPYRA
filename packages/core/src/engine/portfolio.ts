@@ -2,6 +2,7 @@ import {
   BalanceBucket,
   Chain,
   PositionStatus,
+  TradingStrategy,
   prisma,
 } from '@copyra/db';
 import { chainConfig } from '../config/chains.js';
@@ -222,6 +223,7 @@ export async function buildPortfolioState(
   chain: Chain,
   tokenAddress: string,
   userId?: string,
+  opts?: { strategy?: TradingStrategy },
 ): Promise<{ state: PortfolioState; balance: OnChainBalance }> {
   const address = await resolveTradingAddress(chain, userId);
   if (!address) throw new NoTradingWalletError(chain);
@@ -229,23 +231,32 @@ export async function buildPortfolioState(
   const savingsQuote = await savingsQuoteForAddress(chain, address).catch(() => 0);
 
   const owner = userId ? { userId } : {};
-  const [openPositions, tokenPosition] = await Promise.all([
+  // Deployed capital is shared across strategies (atomic custody). Position
+  // counts / duplicate-token checks are scoped per strategy when requested.
+  const strategyFilter = opts?.strategy ? { strategy: opts.strategy } : {};
+  const tokenAddr = chain === Chain.SOLANA ? tokenAddress : tokenAddress.toLowerCase();
+  const [allOpen, strategyOpen, tokenPosition] = await Promise.all([
     prisma.position.findMany({
       where: { ...owner, status: { in: LIVE_POSITION_STATUSES } },
       select: { id: true, entryValueUsd: true, realizedPnlUsd: true, chain: true },
     }),
+    prisma.position.findMany({
+      where: { ...owner, ...strategyFilter, status: { in: LIVE_POSITION_STATUSES } },
+      select: { id: true },
+    }),
     prisma.position.findFirst({
       where: {
         ...owner,
+        ...strategyFilter,
         chain,
-        tokenAddress: chain === Chain.SOLANA ? tokenAddress : tokenAddress.toLowerCase(),
+        tokenAddress: tokenAddr,
         status: { in: LIVE_POSITION_STATUSES },
       },
       select: { id: true },
     }),
   ]);
 
-  const deployedUsd = openPositions.reduce(
+  const deployedUsd = allOpen.reduce(
     (sum, p) => sum + Number(p.entryValueUsd ?? 0) - Number(p.realizedPnlUsd ?? 0),
     0,
   );
@@ -256,7 +267,7 @@ export async function buildPortfolioState(
       tradingBalanceQuote: Math.max(0, balance.availableQuote - savingsQuote),
       quotePriceUsd: balance.quotePriceUsd,
       deployedUsd: Math.max(0, deployedUsd),
-      openPositionCount: openPositions.length,
+      openPositionCount: strategyOpen.length,
       existingPositionForToken: tokenPosition !== null,
       readAtBlock: balance.blockOrSlot,
       readAt: balance.readAt,

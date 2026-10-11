@@ -78,3 +78,6 @@ export * from './notify/format.js';
 export * from './notify/messages.js';
 export * from './notify/telegram.js';
 export * from './notify/ops-alerts.js';
+
+// Sniper (Phase 5 — independent of wallet copy-trading)
+export * from './sniper/index.js';

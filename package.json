@@ -12,8 +12,9 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build -w @copyra/db && npm run build -w @copyra/core && npm run build -w @copyra/api && npm run build -w @copyra/worker && npm run build -w @copyra/web",
-    "dev": "concurrently -n api,worker,web -c blue,magenta,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:web\"",
+    "build": "npm run build -w @copyra/db && npm run build -w @copyra/core && npm run build -w @copyra/api && npm run build -w @copyra/worker && npm run build -w @copyra/sniper-worker && npm run build -w @copyra/web",
+    "dev": "concurrently -n api,worker,sniper,web -c blue,magenta,yellow,green \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:sniper\" \"npm:dev:web\"",
+    "dev:sniper": "npm run dev -w @copyra/sniper-worker",
     "dev:api": "npm run dev -w @copyra/api",
     "dev:worker": "npm run dev -w @copyra/worker",
     "dev:web": "npm run dev -w @copyra/web",

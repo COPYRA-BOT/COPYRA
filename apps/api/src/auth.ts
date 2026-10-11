@@ -14,12 +14,18 @@ import { resolveReferrerId } from './account/users.js';
 const LEGACY_SESSION_COOKIE = 'copyra_session';
 const SESSION_DAYS = 7;
 
-export type AuthMode = 'sol' | 'evm';
+export type AuthMode = 'sol' | 'evm' | 'sniper';
 
-const MODE_COOKIES: Record<AuthMode, string> = {
+/** Cookie namespace for SOL/EVM wallet sessions. Sniper reuses the SOL session (same custody). */
+const MODE_COOKIES: Record<'sol' | 'evm', string> = {
   sol: 'copyra_session_sol',
   evm: 'copyra_session_evm',
 };
+
+/** Sniper is Solana-custody — always read the SOL session cookie. */
+export function cookieModeFor(mode: AuthMode): 'sol' | 'evm' {
+  return mode === 'evm' ? 'evm' : 'sol';
+}
 
 export function authModeFromChain(chain: Chain): AuthMode {
   return chain === Chain.SOLANA ? 'sol' : 'evm';
@@ -29,13 +35,13 @@ export function authModeFromRequest(
   request: FastifyRequest,
   preferred?: AuthMode | null,
 ): AuthMode {
-  if (preferred === 'sol' || preferred === 'evm') return preferred;
+  if (preferred === 'sol' || preferred === 'evm' || preferred === 'sniper') return preferred;
   const header = String(request.headers['x-copyra-mode'] ?? '')
     .trim()
     .toLowerCase();
-  if (header === 'sol' || header === 'evm') return header;
+  if (header === 'sol' || header === 'evm' || header === 'sniper') return header;
   const query = (request.query ?? {}) as { mode?: string };
-  if (query.mode === 'sol' || query.mode === 'evm') return query.mode;
+  if (query.mode === 'sol' || query.mode === 'evm' || query.mode === 'sniper') return query.mode;
   return 'sol';
 }
 
@@ -227,7 +233,8 @@ export async function createSession(
     },
   });
   const secure = cookieSecure(meta.secureCookie);
-  reply.setCookie(MODE_COOKIES[mode], token, {
+  // Sniper shares the SOL session cookie (same custody).
+  reply.setCookie(MODE_COOKIES[cookieModeFor(mode)], token, {
     httpOnly: true,
     sameSite: 'lax',
     secure,
@@ -267,13 +274,14 @@ export async function createSession(
   return { userId: user.id, expiresAt, mode };
 }
 
-/** Read the session for one mode (sol | evm). Falls back to legacy cookie when kind matches. */
+/** Read the session for one mode (sol | evm | sniper→sol cookie). Falls back to legacy cookie when kind matches. */
 export async function readSession(
   request: FastifyRequest,
   mode?: AuthMode | null,
 ): Promise<SessionView | null> {
   const resolved = authModeFromRequest(request, mode);
-  const token = request.cookies[MODE_COOKIES[resolved]];
+  const cookieMode = cookieModeFor(resolved);
+  const token = request.cookies[MODE_COOKIES[cookieMode]];
   const scoped = await loadSessionByToken(token);
   if (scoped) {
     await prisma.user.update({
@@ -287,7 +295,7 @@ export async function readSession(
   const legacy = await loadSessionByToken(request.cookies[LEGACY_SESSION_COOKIE]);
   if (!legacy) return null;
   const legacyMode = authModeFromChain(legacy.user.chain);
-  if (legacyMode !== resolved) return null;
+  if (legacyMode !== cookieMode) return null;
   await prisma.user.update({
     where: { id: legacy.user.id },
     data: { lastSeenAt: new Date() },
@@ -314,7 +322,8 @@ export async function revokeSession(
   reply: FastifyReply,
   mode: AuthMode | 'all' = 'all',
 ): Promise<void> {
-  const targets: AuthMode[] = mode === 'all' ? ['sol', 'evm'] : [mode];
+  const targets: Array<'sol' | 'evm'> =
+    mode === 'all' ? ['sol', 'evm'] : [cookieModeFor(mode)];
 
   for (const m of targets) {
     const cookieName = MODE_COOKIES[m];

@@ -91,12 +91,20 @@ enum TradeSide {
 /// Drives the Telegram title line: "BUY", "SELL · TAKE PROFIT", etc.
 enum TradeReason {
   COPY
+  /// Solana launch sniper entry (independent of wallet copy-trading).
+  SNIPER
   TAKE_PROFIT
   STOP_LOSS
   TRAILING_STOP
   TRADER_SOLD
   MANUAL
   EMERGENCY_STOP
+}
+
+/// Which COPYRA strategy owns a position. Copy and sniper share custody but not settings.
+enum TradingStrategy {
+  COPY
+  SNIPER
 }
 
 /// A transaction is only ever CONFIRMED by reading chain state back.
@@ -154,6 +162,20 @@ enum SkipReason {
   QUOTE_STALE
   TOKEN_METADATA_UNAVAILABLE
   RPC_UNAVAILABLE
+  /// Sniper: required safety / market data missing, stale, or inconsistent.
+  SNIPER_DATA_UNAVAILABLE
+  /// Sniper: mint/freeze/transfer authority checks failed.
+  SNIPER_TOKEN_CONTROLS
+  /// Sniper: holder concentration or suspicious funding pattern.
+  SNIPER_HOLDER_RISK
+  /// Sniper: no genuine swap activity / wash-volume suspicion.
+  SNIPER_ACTIVITY
+  /// Sniper: no viable buy or sell route.
+  SNIPER_NO_ROUTE
+  /// Sniper: daily loss limit reached.
+  SNIPER_DAILY_LOSS
+  /// Sniper: host or mode disabled / monitor-only.
+  SNIPER_DISABLED
 }
 
 /// Per-user custody key family (one Solana wallet + one EVM address for all EVM chains).
@@ -162,10 +184,11 @@ enum CustodyFamily {
   EVM
 }
 
-/// Dashboard / copy-engine mode. SOL and EVM settings are independent per user.
+/// Dashboard / engine mode. SOL, EVM (copy), and SNIPER settings are independent per user.
 enum TradingMode {
   SOL
   EVM
+  SNIPER
 }
 
 enum BalanceBucket {
@@ -249,6 +272,7 @@ model User {
   custodyDeposits CustodyDeposit[]
   traders         Trader[]
   signals         Signal[]
+  sniperSignals   SniperSignal[]
   positions       Position[]
   trades          Trade[]
   notifications   NotificationLog[]
@@ -466,6 +490,7 @@ model Token {
 
   positions  Position[]
   signals    Signal[]
+  sniperSignals SniperSignal[]
   firstBuy   TokenFirstBuy?
 
   @@unique([chain, address])
@@ -648,6 +673,9 @@ model Position {
   tokenAddress String
   tokenSymbol  String?
 
+  /// COPY (wallet copy-trade) vs SNIPER (launch discovery). Default preserves legacy rows.
+  strategy TradingStrategy @default(COPY)
+
   status PositionStatus @default(PENDING_OPEN)
 
   /// Mint/contract of what was spent (SOL/USDC/WETH/...).
@@ -706,11 +734,14 @@ model Position {
   trades  Trade[]
   signals Signal[]
   drifts  DriftFlag[]
+  sniperSignals SniperSignal[]
 
   @@index([status, chain])
   @@index([chain, tokenAddress, status])
   @@index([userId, status])
+  @@index([userId, strategy, status])
   @@index([userId, chain, tokenAddress, status])
+  @@index([userId, strategy, chain, tokenAddress, status])
   @@map("positions")
 }
 
@@ -940,7 +971,64 @@ model StrategySettings {
   @@map("strategy_settings")
 }
 
-/// Per-user, per-mode (SOL / EVM) copy-trading strategy. Each mode is independent.
+/// Solana launch sniper candidate — independent of wallet-copy Signal rows.
+model SniperSignal {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain    Chain  @default(SOLANA)
+
+  tokenId      String?
+  token        Token?  @relation(fields: [tokenId], references: [id])
+  tokenAddress String
+  tokenSymbol  String?
+
+  /// pump.fun | pumpswap | raydium | unknown
+  launchpad    String
+  /// create | migrate | pool
+  eventKind    String
+  sourceTxHash String
+  creatorAddress String?
+  /// bonding_curve | migrated | unknown
+  bondingState String?
+  migrated     Boolean @default(false)
+
+  status     SignalStatus @default(DETECTED)
+  skipReason SkipReason?
+  skipDetail String?
+
+  marketCapUsdAtSignal Decimal? @db.Decimal(30, 4)
+  liquidityUsdAtSignal Decimal? @db.Decimal(30, 4)
+  priceUsdAtSignal     Decimal? @db.Decimal(40, 18)
+  riskScore            Decimal? @db.Decimal(8, 4)
+  plannedSizeQuote     Decimal? @db.Decimal(40, 18)
+  plannedSizeUsd       Decimal? @db.Decimal(30, 4)
+  sizingBasis          Json?
+  enrichSnapshot       Json?
+
+  detectLatencyMs  Int?
+  qualifyLatencyMs Int?
+  execLatencyMs    Int?
+
+  positionId String?
+  position   Position? @relation(fields: [positionId], references: [id])
+  tradeId    String?
+
+  detectedAt    DateTime  @default(now())
+  qualifiedAt   DateTime?
+  executedAt    DateTime?
+  failedAt      DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([userId, sourceTxHash, tokenAddress])
+  @@index([userId, status, createdAt])
+  @@index([tokenAddress, status])
+  @@index([status, createdAt])
+  @@map("sniper_signals")
+}
+
+/// Per-user, per-mode (SOL / EVM / SNIPER) strategy. Each mode is independent.
 model UserModeSettings {
   id     String      @id @default(cuid())
   userId String

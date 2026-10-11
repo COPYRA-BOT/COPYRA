@@ -1,6 +1,7 @@
 import {
   chainConfig,
   CHAIN_CONFIGS,
+  env,
   evmSigner,
   explorerTxUrl,
   getDexscreenerMarket,
@@ -64,7 +65,7 @@ async function requireAuthed(
   const session = await readSession(request, resolved);
   if (!session) {
     reply.code(401).send({
-      error: `Connect your ${resolved === 'evm' ? 'EVM' : 'Solana'} wallet and sign in first. Each wallet has its own private account.`,
+      error: `Connect your ${resolved === 'evm' ? 'EVM' : 'Solana'} wallet and sign in first. Each wallet has its own private account.${resolved === 'sniper' ? ' Sniper Mode uses your Solana custody.' : ''}`,
     });
     return null;
   }
@@ -112,7 +113,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
   app.patch('/api/settings', async (request, reply) => {
     const body = z
       .object({
-        mode: z.enum(['sol', 'evm']).optional(),
+        mode: z.enum(['sol', 'evm', 'sniper']).optional(),
         engine: z.enum(['ON', 'PAUSED', 'STOPPED']).optional(),
         exitStrategy: z.enum(['MANUAL', 'TRAILING']).optional(),
         minMarketCapUsd: z.number().positive().optional(),
@@ -243,7 +244,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
    * that account’s open positions back to custody (SOL or USDC).
    */
   app.post('/api/kill-switch', async (request, reply) => {
-    const body = z.object({ mode: z.enum(['sol', 'evm']) }).parse(request.body ?? {});
+    const body = z.object({ mode: z.enum(['sol', 'evm', 'sniper']) }).parse(request.body ?? {});
     const session = await requireAuthed(request, reply, body.mode);
     if (!session) return;
 
@@ -869,17 +870,19 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       };
     };
 
-    const [status, settingsRes, traders, positions, signals, trades, solBal, evmBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
+    const [status, settingsRes, traders, positions, signals, sniperSignals, trades, solBal, evmBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
       await Promise.all([
         buildLiveStatus(request),
         (async () => {
           const host = await getSettings();
-          const [sol, evm] = await Promise.all([
+          const [sol, evm, sniper] = await Promise.all([
             loadModeSettings(solUserId, 'sol'),
             loadModeSettings(evmUserId, 'evm'),
+            loadModeSettings(solUserId, 'sniper'),
           ]);
           const activeMode = authModeFromRequest(request);
-          const active = activeMode === 'evm' ? evm : sol;
+          const active =
+            activeMode === 'evm' ? evm : activeMode === 'sniper' ? sniper : sol;
           return {
             host: {
               tradingEnabled: host.tradingEnabled,
@@ -887,8 +890,10 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               emergencyStopReason: host.emergencyStopReason,
               enabledChains: host.enabledChains,
               pnlResetAt: host.pnlResetAt,
+              sniperEnabled: env.SNIPER_ENABLED,
+              sniperMode: env.SNIPER_MODE,
             },
-            modes: { sol, evm },
+            modes: { sol, evm, sniper },
             // Backward-compatible fields for the active mode session.
             row: active?.row ?? null,
             effective: active?.effective ?? (await getStrategyConfig()),
@@ -915,6 +920,14 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               orderBy: { createdAt: 'desc' },
               take: 120,
               include: { trader: true, token: true },
+            })
+          : Promise.resolve([]),
+        solUserId
+          ? prisma.sniperSignal.findMany({
+              where: { userId: solUserId },
+              orderBy: { createdAt: 'desc' },
+              take: 80,
+              include: { token: true },
             })
           : Promise.resolve([]),
         userIds.length
@@ -996,6 +1009,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       traders,
       positions,
       signals,
+      sniperSignals,
       trades: trades.map((t) => ({
         ...t,
         explorerUrl: t.txHash ? explorerTxUrl(t.chain, t.txHash) : t.explorerUrl,

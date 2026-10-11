@@ -19,9 +19,10 @@ If the worker heartbeat shows `syncAge` of hours while `beatAt` is fresh, a zomb
 | Component | Role | Health |
 |---|---|---|
 | `api` | Dashboard + `/api` + `/health` | HTTP health checks |
-| `worker` | SOL/EVM detect → buy/sell + exits + Telegram | No HTTP (cannot make the app Degraded) |
+| `worker` | SOL/EVM copy-trade → buy/sell + **COPY** exits + Telegram | Own process (cannot starve API) |
+| `sniper` | Pump.fun discovery → sniper qualify/buy + **SNIPER** exits | Own process (independent of copy worker) |
 
-`RUN_WORKER=false` on the API. Trading runs only on the dedicated worker.
+`RUN_WORKER=false` on the API. Copy trading runs on `worker`; launch sniping on `sniper`. See `docs/SNIPER_DO.md` for adding the sniper component and env flags (`SNIPER_ENABLED` defaults false / monitor).
 
 ## Domain stuck on “Configuring” / site 504 / DO Degraded
 

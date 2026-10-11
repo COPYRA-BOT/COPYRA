@@ -186,3 +186,57 @@ workers:
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
         value: "https://copyra.fun"
+
+  # Independent launch sniper — never shares the copy-trade process.
+  # Start with SNIPER_ENABLED=false / SNIPER_MODE=monitor; flip live in App-Level envs.
+  - name: sniper
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: COPYRA-BOT/COPYRA
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xs
+    run_command: /app/scripts/start-sniper-worker.sh
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=768"
+      - key: PORT
+        value: "8080"
+      - key: HEALTH_PORT
+        value: "8080"
+      - key: SNIPER_ENABLED
+        value: "false"
+      - key: SNIPER_MODE
+        value: "monitor"
+      - key: SNIPER_MAX_MARKET_CAP_USD
+        value: "20000000"
+      - key: SNIPER_MIN_LIQUIDITY_USD
+        value: "10000"
+      - key: SNIPER_MAX_PRICE_IMPACT_BPS
+        value: "800"
+      - key: SNIPER_MAX_SLIPPAGE_BPS
+        value: "300"
+      - key: SNIPER_MAX_OPEN_POSITIONS
+        value: "5"
+      - key: SNIPER_MAX_POSITION_SOL
+        value: "0.25"
+      - key: SNIPER_MAX_DEPLOYED_SOL
+        value: "2"
+      - key: SNIPER_DAILY_LOSS_LIMIT_SOL
+        value: "1"
+      - key: SNIPER_ALLOWED_LAUNCHPADS
+        value: "pump.fun"
+      - key: PUMP_FUN_PROGRAM_ID
+        value: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+      - key: TRADING_ENABLED
+        value: "true"
+      - key: MULTI_USER_CUSTODY
+        value: "true"
+      - key: PUBLIC_WEB_URL
+        value: "https://copyra.fun"
+      - key: PUBLIC_API_URL
+        value: "https://copyra.fun"
