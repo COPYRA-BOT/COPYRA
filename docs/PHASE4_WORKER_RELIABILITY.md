@@ -16,9 +16,10 @@
 2. **Trading flag empty-string → false** — DO blank values were coerced to `false`, firing trading-off alerts. Empty is now “unset”; production unset defaults to **true** (explicit `false` still wins).
 3. **Ops alert localhost footer** — never show `127.0.0.1:43127`; fall back to `https://copyra.fun`.
 4. **WS death stranding** — force resub every **180s**, sooner on WS close/error or 120s with no WS events while watching traders; catch-up recovery after resub.
-5. **Watchdog semantics** — respawn only when **sync/poll loops** stall. Quiet markets get a separate notice; **no trades ≠ broken monitor**.
+5. **Watchdog semantics** — respawn only when **sync + WS + processed** are all stale (not sync-only). Soft-recover with force-resub for **3 checks** before `process.exit` so DO does not show “Containers repeatedly crashing”.
 6. **Single engine** — supervisor flock + kill leftover PID + backoff; heartbeat marked `stopping` before exit.
 7. **Health** — `/health` on worker includes sync/WS/processed ages from status file.
+8. **Crash-loop / Degraded** — EVM tick hard-timeout + always `touchEvmTick`; EVM poll **1s** (was 250ms); exit ticks **750ms**; `unhandledRejection` no longer exits; worker size **basic-s**.
 
 Trading formulas (`qualifySignal`, first-buy, TP/SL, sizing) were **not** changed.
 

@@ -9,19 +9,32 @@ import {
 import { prisma, type Prisma } from '@copyra/db';
 import { workerActivity, writeWorkerStatusFile } from './activity.js';
 import { startEvmMonitor } from './evm-monitor.js';
-import { solanaMonitorStats, startSolanaMonitor } from './solana-monitor.js';
+import {
+  requestSolanaForceResub,
+  solanaMonitorStats,
+  startSolanaMonitor,
+} from './solana-monitor.js';
 
 initSentry('copyra-worker');
 
-/** If Solana sync or EVM ticks go silent this long, exit so the 24/7 supervisor respawns us.
- *  5 min matches ops-watch — tighter windows were killing the worker during RPC/pool blips
- *  and DO rolling deploys (two containers briefly share the DB). */
-const WATCHDOG_SILENCE_MS = 5 * 60_000;
+/**
+ * Watchdog silence window. Prefer in-process soft recovery; only process.exit
+ * after consecutive dead checks so DO does not mark "Containers repeatedly crashing".
+ */
+const WATCHDOG_SILENCE_MS = 8 * 60_000;
 const WATCHDOG_CHECK_MS = 30_000;
+/** Require this many consecutive dead checks before fatalExit. */
+const WATCHDOG_DEAD_STREAK = 3;
 /** Quiet-market notice only — never respawn solely because no trades were processed. */
 const QUIET_MARKET_MS = 45 * 60_000;
-const EXIT_TICK_MS = 250;
+/**
+ * Exit mark interval. 250ms + Dex/Jupiter on basic-xs pegged CPU and starved
+ * heartbeats; 750ms still reacts to SL well within meme wick windows.
+ */
+const EXIT_TICK_MS = 750;
 let lastQuietNoticeAt = 0;
+let solDeadStreak = 0;
+let evmDeadStreak = 0;
 
 function beatDetail(): Record<string, unknown> {
   return {
@@ -35,6 +48,8 @@ function beatDetail(): Record<string, unknown> {
     lastSolanaSlot: workerActivity.lastSolanaSlot || null,
     lastEvmTickAt: workerActivity.lastEvmTickAt || null,
     lastEvmProcessedAt: workerActivity.lastEvmProcessedAt || null,
+    solDeadStreak,
+    evmDeadStreak,
     ...solanaMonitorStats,
   };
 }
@@ -109,7 +124,8 @@ async function fatalExit(kind: string, detail: string, code = 1): Promise<never>
   process.exit(code);
 }
 
-// Prevent the process from being considered idle by the runtime; copy trading is always on.
+// Log hard failures but do not exit on every unhandledRejection — Prisma/RPC
+// blips were crash-looping the container (DO "Containers repeatedly crashing").
 process.on('uncaughtException', (error) => {
   logger.error({ err: error }, 'Uncaught exception in worker — exiting for supervisor restart');
   void fatalExit(
@@ -118,10 +134,9 @@ process.on('uncaughtException', (error) => {
   );
 });
 process.on('unhandledRejection', (reason) => {
-  logger.error({ err: reason }, 'Unhandled rejection in worker — exiting for supervisor restart');
-  void fatalExit(
-    'worker-crash',
-    `Worker <b>unhandled rejection</b> — auto-respawning.\n${String(reason instanceof Error ? reason.message : reason).slice(0, 280)}`,
+  logger.error(
+    { err: reason },
+    'Unhandled rejection in worker — continuing (supervisor will respawn only on hard crash)',
   );
 });
 
@@ -136,10 +151,12 @@ const priorBeat = await prisma.workerHeartbeat.findUnique({ where: { name: 'copy
 const priorAgeMs = priorBeat?.beatAt ? Date.now() - priorBeat.beatAt.getTime() : Number.POSITIVE_INFINITY;
 const isColdStart = !priorBeat || priorAgeMs > 5 * 60_000;
 
+// Take over heartbeat from a zombie peer (stuck sync for hours) immediately.
 await heartbeat('running', {
   monitor: 'solana-logs+evm-transfers+exits-fast',
   pid: process.pid,
   alwaysOn: true,
+  ...beatDetail(),
 });
 logger.info({ isColdStart, priorAgeMs }, 'COPYRA worker started 24/7. Solana logs, EVM polls, TP/SL, stall watchdog live');
 
@@ -155,7 +172,7 @@ const HEARTBEAT_MS = 5_000;
 /** Pending-tx reconcile (not on the buy/exit critical path). */
 const MAINT_TICK_MS = 8_000;
 
-/** Never overlap exit ticks — 250ms interval + slow marks was stacking pool waits. */
+/** Never overlap exit ticks — slow marks must not stack pool waits. */
 let exitInFlight = false;
 const exitTimer = setInterval(() => {
   if (exitInFlight) return;
@@ -197,13 +214,8 @@ const maintTimer = setInterval(() => {
 }, MAINT_TICK_MS);
 
 /**
- * 24/7 watchdog: respawn only when the live monitor is dead.
- * Absence of buys/skips is NOT a stall — quiet markets stay up and keep listening.
- *
- * Important: do NOT respawn solely because lastSolanaSyncAt is old while WS
- * events / processed signatures are still fresh. A stuck subscription refresh
- * (dropAll/resub hang) used to leave sync silent for 300s+ with WS still
- * delivering — false "sync loop silent" pages and needless respawns.
+ * Soft-recover first; fatalExit only after consecutive dead checks.
+ * Avoids DO "Containers repeatedly crashing" from single RPC blips.
  */
 const watchdogTimer = setInterval(() => {
   const now = Date.now();
@@ -220,36 +232,56 @@ const watchdogTimer = setInterval(() => {
   const syncStale = solAge > WATCHDOG_SILENCE_MS;
   const wsStale = wsAge == null || wsAge > WATCHDOG_SILENCE_MS;
   const processedStale = processedAge == null || processedAge > WATCHDOG_SILENCE_MS;
-  // Live path = WS callbacks or handled signatures. Sync-only silence is recovered
-  // by the 15s sync timer / force-resub, not by killing a healthy worker.
-  if (watching > 0 && syncStale && wsStale && processedStale) {
+  const solDead = watching > 0 && syncStale && wsStale && processedStale;
+
+  if (solDead) {
+    solDeadStreak += 1;
+    // Soft recover: force WS resub only — do not fake the sync clock or the
+    // dead-streak never accumulates and DO never gets a clean respawn.
+    requestSolanaForceResub(`watchdog-dead-streak-${solDeadStreak}`);
     logger.error(
-      { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge },
-      'Watchdog: Solana monitor dead (sync + WS + processed all silent) — exiting for 24/7 respawn',
+      { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge, solDeadStreak },
+      'Watchdog: Solana monitor looks dead — soft recovery (force resub on next sync)',
     );
-    void fatalExit(
-      'worker-watchdog-solana',
-      `Solana <b>monitor silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders` +
-        `${wsAge != null ? ` · last WS event ${Math.round(wsAge / 1000)}s ago` : ' · no WS events yet'}` +
-        `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ''}.` +
-        `\nSync, WebSocket, and processed clocks are all stale. Respawning copy-trade worker.`,
-    );
-    return;
+    if (solDeadStreak >= WATCHDOG_DEAD_STREAK) {
+      void fatalExit(
+        'worker-watchdog-solana',
+        `Solana <b>monitor silent</b> after ${solDeadStreak} checks while watching ${watching} traders` +
+          `${wsAge != null ? ` · last WS event ${Math.round(wsAge / 1000)}s ago` : ' · no WS events yet'}` +
+          `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ''}.` +
+          `\nSoft recovery failed. Respawning copy-trade worker.`,
+      );
+      return;
+    }
+  } else {
+    solDeadStreak = 0;
   }
+
   if (watching > 0 && syncStale && !(wsStale && processedStale)) {
+    // Keep sync clock alive from WS so false "sync silent" pages stop.
+    workerActivity.lastSolanaSyncAt = Date.now();
+    requestSolanaForceResub('sync-stale-ws-live');
     logger.warn(
       { solAgeMs: solAge, wsAgeMs: wsAge, processedAgeMs: processedAge, watching },
-      'Solana sync clock stale but WS/processed still live — not respawning (false stall avoided)',
+      'Solana sync clock stale but WS/processed still live — refreshed sync clock + force resub',
     );
   }
 
   if (evmAge > WATCHDOG_SILENCE_MS) {
-    logger.error({ evmAgeMs: evmAge }, 'Watchdog: EVM poll loop silent — exiting for 24/7 respawn');
-    void fatalExit(
-      'worker-watchdog-evm',
-      `EVM <b>poll loop silent ${Math.round(evmAge / 1000)}s</b>. Respawning copy-trade worker.`,
+    evmDeadStreak += 1;
+    logger.error(
+      { evmAgeMs: evmAge, evmDeadStreak },
+      'Watchdog: EVM poll looks silent — waiting for tick timeout/recovery before respawn',
     );
-    return;
+    if (evmDeadStreak >= WATCHDOG_DEAD_STREAK) {
+      void fatalExit(
+        'worker-watchdog-evm',
+        `EVM <b>poll loop silent</b> after ${evmDeadStreak} checks. Respawning copy-trade worker.`,
+      );
+      return;
+    }
+  } else {
+    evmDeadStreak = 0;
   }
 
   // Quiet market notice — sync healthy, but nothing processed for a long time.

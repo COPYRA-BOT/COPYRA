@@ -35,7 +35,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-backoff=3
+backoff=5
 while true; do
   # Ensure no leftover engine from a previous crash/respawn.
   if [ -f "$PIDFILE" ]; then
@@ -53,15 +53,15 @@ while true; do
   npm run start -w @copyra/worker &
   WORKER_PID=$!
   echo "$WORKER_PID" > "$PIDFILE"
-  backoff=3
   wait "$WORKER_PID" || true
   code=$?
-  # Bounded backoff with light jitter (3s → 15s) so crash loops do not thrash RPC/DB.
-  jitter=$(awk 'BEGIN{srand(); printf "%d", int(rand()*3)}' 2>/dev/null || echo 1)
+  # Bounded backoff with light jitter (5s → 45s) so crash loops do not thrash
+  # RPC/DB or make DigitalOcean report "Containers repeatedly crashing".
+  jitter=$(awk 'BEGIN{srand(); printf "%d", int(rand()*5)}' 2>/dev/null || echo 2)
   sleep_for=$((backoff + jitter))
   echo "COPYRA worker exited code=${code}; respawning in ${sleep_for}s..." >&2
   sleep "$sleep_for"
-  if [ "$backoff" -lt 15 ]; then
-    backoff=$((backoff + 3))
+  if [ "$backoff" -lt 45 ]; then
+    backoff=$((backoff + 5))
   fi
 done

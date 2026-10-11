@@ -92,6 +92,15 @@ export const solanaMonitorStats: {
   wsBound: false,
 };
 
+/** Set by watchdog soft-recovery so the next sync() force-resubscribes. */
+let requestForceResub = false;
+
+/** Ask the Solana monitor to drop/rebuild onLogs on the next sync tick. */
+export function requestSolanaForceResub(reason: string): void {
+  requestForceResub = true;
+  log.warn({ reason }, 'Solana force-resub requested');
+}
+
 export async function startSolanaMonitor(): Promise<() => void> {
   let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
@@ -172,9 +181,13 @@ export async function startSolanaMonitor(): Promise<() => void> {
         wsQuietMs > WS_QUIET_RESUB_MS &&
         Date.now() - lastForceResub > 60_000;
       const force =
-        forceResubSoon || Date.now() - lastForceResub >= FORCE_RESUB_MS || quietForce;
+        forceResubSoon ||
+        requestForceResub ||
+        Date.now() - lastForceResub >= FORCE_RESUB_MS ||
+        quietForce;
       if (force) {
         forceResubSoon = false;
+        requestForceResub = false;
         await dropAll();
         touchSolanaSync();
         connection = solanaSubscriptionConnection(true);

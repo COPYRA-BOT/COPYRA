@@ -161,14 +161,15 @@ workers:
       deploy_on_push: true
     instance_count: 1
     # Own vCPU/RAM — catch-up and exits cannot starve API /health.
-    instance_size_slug: basic-xs
+    # basic-xs was OOM/CPU crash-looping at ~66%/67% under 14-wallet load.
+    instance_size_slug: basic-s
     # Health server inside start-worker.sh answers /health if DO probes the port.
     run_command: /app/scripts/start-worker.sh
     envs:
       - key: NODE_ENV
         value: production
       - key: NODE_OPTIONS
-        value: "--max-old-space-size=768"
+        value: "--max-old-space-size=1536"
       - key: PORT
         value: "8080"
       - key: HEALTH_PORT

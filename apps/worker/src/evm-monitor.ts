@@ -24,8 +24,14 @@ const log = componentLogger('evm-monitor');
 
 /** All executable EVM venues COPYRA can copy-trade on. */
 const POLL_CHAINS: Chain[] = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC];
-/** Fast poll so detect→qualify stays on the sub-second path with WS-class RPCs. */
-const EVM_POLL_MS = 250;
+/**
+ * Poll interval. 250ms stacked with Solana exits on basic-xs was pegging CPU
+ * (~66%) and hanging ticks → watchdog crash-loops (DO "Containers repeatedly crashing").
+ * 1s still keeps copy latency acceptable; Solana WS remains the hot path.
+ */
+const EVM_POLL_MS = 1_000;
+/** Hard cap so a hung Alchemy/Prisma call cannot freeze touchEvmTick forever. */
+const EVM_TICK_TIMEOUT_MS = 45_000;
 
 interface AssetTransfer {
   hash: string;
@@ -47,55 +53,65 @@ export async function startEvmMonitor(): Promise<() => void> {
   /** Never overlap ticks — stacked 250ms polls were hanging the whole worker. */
   let ticking = false;
 
+  const runTickWork = async () => {
+    // Poll every EVM chain that has an RPC + enabled traders.
+    // Do not gate detection on strategy.enabledChains — that list controls
+    // execution only; missing BASE/ETH traders previously looked like “EVM dead”.
+    //
+    // Also watch each EVM address on Base when the saved row is ETH/ARB/BSC.
+    // KOL wallets are often added as ETHEREUM but trade memes on Base — without
+    // this cross-chain poll, EVM copy stays silent (transfers-only on mainnet).
+    const traders = await prisma.trader.findMany({
+      where: { chain: { in: POLL_CHAINS }, enabled: true },
+    });
+    const jobs = new Map<string, { chain: Chain; traderId: string; address: string; label: string }>();
+    for (const trader of traders) {
+      const addJob = (chain: Chain) => {
+        if (!chainConfig(chain).rpcUrl) return;
+        const key = `${chain}:${trader.address.toLowerCase()}`;
+        if (!jobs.has(key)) {
+          jobs.set(key, {
+            chain,
+            traderId: trader.id,
+            address: trader.address,
+            label: trader.label,
+          });
+        }
+      };
+      addJob(trader.chain);
+      if (trader.chain !== Chain.BASE) addJob(Chain.BASE);
+    }
+    const pollable = [...jobs.values()];
+    if (pollable.length === 0) return;
+
+    // Bound concurrency so parallel Alchemy polls cannot open more DB queries
+    // than the process Prisma pool (default 3).
+    await mapPool(pollable, 2, async (job) => {
+      if (stopped) return;
+      try {
+        await pollTrader(job.chain, job.traderId, job.address, cursors);
+      } catch (error) {
+        log.error({ err: error, trader: job.label, chain: job.chain }, 'EVM poll failed');
+      }
+    });
+  };
+
   const tick = async () => {
     if (stopped || ticking) return;
     ticking = true;
     try {
-      // Poll every EVM chain that has an RPC + enabled traders.
-      // Do not gate detection on strategy.enabledChains — that list controls
-      // execution only; missing BASE/ETH traders previously looked like “EVM dead”.
-      //
-      // Also watch each EVM address on Base when the saved row is ETH/ARB/BSC.
-      // KOL wallets are often added as ETHEREUM but trade memes on Base — without
-      // this cross-chain poll, EVM copy stays silent (transfers-only on mainnet).
-      const traders = await prisma.trader.findMany({
-        where: { chain: { in: POLL_CHAINS }, enabled: true },
-      });
-      const jobs = new Map<string, { chain: Chain; traderId: string; address: string; label: string }>();
-      for (const trader of traders) {
-        const addJob = (chain: Chain) => {
-          if (!chainConfig(chain).rpcUrl) return;
-          const key = `${chain}:${trader.address.toLowerCase()}`;
-          if (!jobs.has(key)) {
-            jobs.set(key, {
-              chain,
-              traderId: trader.id,
-              address: trader.address,
-              label: trader.label,
-            });
-          }
-        };
-        addJob(trader.chain);
-        if (trader.chain !== Chain.BASE) addJob(Chain.BASE);
-      }
-      const pollable = [...jobs.values()];
-      if (pollable.length === 0) {
-        touchEvmTick();
-        return;
-      }
-
-      // Bound concurrency so parallel Alchemy polls cannot open more DB queries
-      // than the process Prisma pool (default 3).
-      await mapPool(pollable, 2, async (job) => {
-        if (stopped) return;
-        try {
-          await pollTrader(job.chain, job.traderId, job.address, cursors);
-        } catch (error) {
-          log.error({ err: error, trader: job.label, chain: job.chain }, 'EVM poll failed');
-        }
-      });
-      touchEvmTick();
+      await Promise.race([
+        runTickWork(),
+        sleep(EVM_TICK_TIMEOUT_MS).then(() => {
+          throw new Error(`EVM tick hard timeout after ${EVM_TICK_TIMEOUT_MS}ms`);
+        }),
+      ]);
+    } catch (error) {
+      log.error({ err: error }, 'EVM monitor tick failed or timed out');
     } finally {
+      // Always advance the watchdog clock — a hung tick must not look like "EVM dead"
+      // for 5+ minutes and crash-loop the container.
+      touchEvmTick();
       ticking = false;
     }
   };
