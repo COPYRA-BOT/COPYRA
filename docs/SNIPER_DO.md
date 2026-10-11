@@ -95,7 +95,7 @@ After deploy, ensure migration `20261011210000_sniper_mode` applied (API/start s
 2. Confirm **three** components in DO: `api` (Healthy), `worker` (Running), **`sniper` (Running)**
 3. Runtime logs → **sniper** shows: `COPYRA sniper worker starting` and `Sniper Helius/WS logsSubscribe connected`
 4. `GET https://copyra.fun/api/status` → `trading.sniperEnabled` / `sniperMode` present, and a worker named **`copyra-sniper-worker`**
-5. Dashboard → **Sniper Mode** (third segment) → connect **Solana** wallet (same custody as SOL Mode)
+5. Dashboard → **Sniper Mode** (third segment) → connect **Solana** wallet (preferred; EVM can be linked from Account). Sniper has its **own Solana custody** (0 until you deposit) — independent from SOL Mode
 6. Open **Sniper settings**: runtime `monitor` / `onchain` / `live`, **new/old token scope**, age/volume/socials/migrated/holders/snipers/dev/top %, MC/liq/slippage, max position/deployed SOL, daily loss, launchpads, TP/SL
 7. Toggle bot **ON** for Sniper Mode only (does not start SOL/EVM copy)
 8. With `SNIPER_ENABLED=false` or runtime `monitor`: Pending terminal shows detections + enrich metadata and exact reject reasons — **no buys**
