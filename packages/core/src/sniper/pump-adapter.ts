@@ -3,7 +3,7 @@
  *
  * Probes bonding-curve PDAs for tradeability when Jupiter has no route yet.
  * Execution still prefers Jupiter / PumpSwap when a compatible route exists;
- * bonding-curve buys are gated until a quote + simulation path succeeds.
+ * bonding-curve buys are gated until a quote + preflight path succeeds.
  */
 import { PublicKey } from '@solana/web3.js';
 import { env } from '../config/env.js';
