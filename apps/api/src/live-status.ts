@@ -313,11 +313,31 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
     // Enrich heartbeats so the dashboard can tell "running" vs stale/dead worker.
     workers: heartbeats.map((hb) => {
       const ageMs = hb.beatAt ? Date.now() - new Date(hb.beatAt).getTime() : Number.POSITIVE_INFINITY;
-      const live = Number.isFinite(ageMs) && ageMs < 90_000 && hb.status === 'running';
+      const detail =
+        hb.detail && typeof hb.detail === 'object' && !Array.isArray(hb.detail)
+          ? (hb.detail as Record<string, unknown>)
+          : {};
+      const syncAt = Number(detail.lastSolanaSyncAt ?? 0);
+      const wsAt = Number(detail.lastSolanaWsEventAt ?? 0);
+      const syncAgeMs = syncAt > 0 ? Date.now() - syncAt : null;
+      const wsAgeMs = wsAt > 0 ? Date.now() - wsAt : null;
+      // Beat alone is not enough — a zombie worker can keep beatAt fresh while
+      // Solana sync has been stuck for hours (DO Degraded / false "alive").
+      const monitorFresh =
+        (syncAgeMs != null && syncAgeMs < 180_000) ||
+        (wsAgeMs != null && wsAgeMs < 180_000);
+      const live =
+        Number.isFinite(ageMs) &&
+        ageMs < 90_000 &&
+        hb.status === 'running' &&
+        monitorFresh;
       return {
         ...hb,
         ageMs: Number.isFinite(ageMs) ? ageMs : null,
         live,
+        monitorStale: !monitorFresh,
+        syncAgeMs,
+        wsAgeMs,
       };
     }),
     counts: { openPositions, signals24h, confirmedTrades: confirmedTrades.length },
