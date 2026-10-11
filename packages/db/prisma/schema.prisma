@@ -906,23 +906,23 @@ model StrategySettings {
 
   // --- execution guards (spec §12) ---
   maxSlippageBps     Int     @default(100)
-  maxPriceImpactPct  Decimal @default(3) @db.Decimal(10, 6)
+  maxPriceImpactPct  Decimal @default(8) @db.Decimal(10, 6)
   minLiquidityUsd    Decimal @default(50000) @db.Decimal(30, 4)
   quoteMaxAgeMs      Int     @default(3000)
   confirmTimeoutMs   Int     @default(60000)
   maxExecutionAttempts Int   @default(3)
 
   // --- exits (spec §13) ---
-  takeProfitPct      Decimal @default(20) @db.Decimal(8, 4)
+  /// 0 = stop-loss only (take profit disabled).
+  takeProfitPct      Decimal @default(0) @db.Decimal(8, 4)
   stopLossPct        Decimal @default(10) @db.Decimal(8, 4)
   trailingTriggerPct Decimal @default(20) @db.Decimal(8, 4)
   trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
   trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
   followTraderSells  Boolean @default(true)
-  /// When true (default), only the watched trader's first buy of a token is
-  /// copied; their later buys of the same token are skipped. When false
-  /// (Every buy), additional buys of the same token may be copied / scaled in.
-  firstBuyOnly       Boolean @default(true)
+  /// When true, only the watched trader's first buy of a token is copied.
+  /// Default false (Every buy) so correlated / scale-in activity is not dropped.
+  firstBuyOnly       Boolean @default(false)
 
   /// Chains the engine is allowed to execute on. Monitor-only chains are
   /// rejected by the executor regardless of what is listed here.
@@ -974,19 +974,20 @@ model UserModeSettings {
   autoTransferFromSavings Boolean @default(false)
 
   maxSlippageBps     Int     @default(100)
-  maxPriceImpactPct  Decimal @default(3) @db.Decimal(10, 6)
+  maxPriceImpactPct  Decimal @default(8) @db.Decimal(10, 6)
   minLiquidityUsd    Decimal @default(50000) @db.Decimal(30, 4)
   quoteMaxAgeMs      Int     @default(3000)
   confirmTimeoutMs   Int     @default(60000)
   maxExecutionAttempts Int   @default(3)
 
-  takeProfitPct      Decimal @default(20) @db.Decimal(8, 4)
+  /// 0 = stop-loss only (take profit disabled).
+  takeProfitPct      Decimal @default(0) @db.Decimal(8, 4)
   stopLossPct        Decimal @default(10) @db.Decimal(8, 4)
   trailingTriggerPct Decimal @default(20) @db.Decimal(8, 4)
   trailingPartialSellPct Decimal @default(50) @db.Decimal(8, 4)
   trailingDropPct    Decimal @default(15) @db.Decimal(8, 4)
   followTraderSells  Boolean @default(true)
-  firstBuyOnly       Boolean @default(true)
+  firstBuyOnly       Boolean @default(false)
 
   /// Dashboard extras: unit prefs (K/M), blacklist string, etc.
   ui Json?

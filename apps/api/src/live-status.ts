@@ -238,7 +238,14 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
         }),
         prisma.trade.findMany({
           where: { userId: activeUserId, status: 'CONFIRMED', totalLatencyMs: { not: null } },
-          select: { totalLatencyMs: true, broadcastAt: true, sourceDetectedAt: true },
+          select: {
+            totalLatencyMs: true,
+            quoteLatencyMs: true,
+            buildLatencyMs: true,
+            signLatencyMs: true,
+            broadcastLatencyMs: true,
+            confirmLatencyMs: true,
+          },
           take: 200,
         }),
       ])
@@ -247,20 +254,33 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
         0,
         [] as {
           totalLatencyMs: number | null;
-          broadcastAt: Date | null;
-          sourceDetectedAt: Date | null;
+          quoteLatencyMs: number | null;
+          buildLatencyMs: number | null;
+          signLatencyMs: number | null;
+          broadcastLatencyMs: number | null;
+          confirmLatencyMs: number | null;
         }[],
       ];
 
   const confirmSamples = confirmedTrades
     .map((t) => t.totalLatencyMs)
     .filter((n): n is number => typeof n === 'number');
+  // Submitted = executor hot path (quote→broadcast), NOT trader blockTime→broadcast
+  // (that mixed chain lag into the metric and showed 8s+ while fills were ~1s).
   const broadcastSamples = confirmedTrades
-    .map((t) =>
-      t.broadcastAt && t.sourceDetectedAt
-        ? t.broadcastAt.getTime() - t.sourceDetectedAt.getTime()
-        : null,
-    )
+    .map((t) => {
+      const parts = [
+        t.quoteLatencyMs,
+        t.buildLatencyMs,
+        t.signLatencyMs,
+        t.broadcastLatencyMs,
+      ].filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+      if (parts.length >= 2) return parts.reduce((a, b) => a + b, 0);
+      if (typeof t.totalLatencyMs === 'number' && typeof t.confirmLatencyMs === 'number') {
+        return Math.max(0, t.totalLatencyMs - t.confirmLatencyMs);
+      }
+      return null;
+    })
     .filter((n): n is number => typeof n === 'number');
 
   const payload = jsonSafe({

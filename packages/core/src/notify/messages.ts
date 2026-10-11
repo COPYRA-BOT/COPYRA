@@ -1,5 +1,5 @@
 import { Chain, ExitStrategy, type SkipReason, type TradeReason } from '@copyra/db';
-import { chainConfig, explorerTxUrl } from '../config/chains.js';
+import { chainConfig, explorerTokenUrl, explorerTxUrl } from '../config/chains.js';
 import { describeExitPlan } from '../engine/exits.js';
 import {
   compactUsd,
@@ -14,6 +14,16 @@ import {
   plainUsd,
   shortAddress,
 } from './format.js';
+
+/** Token page + exact tx on the chain's primary explorer (Solscan / Basescan / …). */
+function explorerLinks(chain: Chain, txHash: string, tokenAddress?: string | null): string {
+  const config = chainConfig(chain);
+  const tx = `<a href="${explorerTxUrl(chain, txHash)}">${escapeHtml(config.explorerName)} tx</a>`;
+  if (tokenAddress) {
+    return `🔗 <a href="${explorerTokenUrl(chain, tokenAddress)}">Token</a> · ${tx}`;
+  }
+  return `🔗 ${tx}`;
+}
 
 /**
  * COPYRA notification templates.
@@ -93,7 +103,7 @@ export function renderBuy(n: BuyNotification): string {
   );
   lines.push(`Open P&amp;L: ${formatSignedNative(n.openPnlQuote, symbol)}`);
   lines.push('');
-  lines.push(`🔗 <a href="${explorerTxUrl(n.chain, n.txHash)}">${config.explorerName}</a>`);
+  lines.push(explorerLinks(n.chain, n.txHash, n.tokenAddress));
 
   return lines.join('\n');
 }
@@ -102,6 +112,7 @@ export interface SellNotification {
   chain: Chain;
   reason: TradeReason;
   tokenSymbol: string;
+  tokenAddress?: string;
   marketCapUsd: number | null;
   liquidityUsd: number | null;
   traderLabel: string;
@@ -168,7 +179,7 @@ export function renderSell(n: SellNotification): string {
   );
   lines.push(`Total P&amp;L: ${formatSignedNative(n.totalPnlQuote, symbol)}`);
   lines.push('');
-  lines.push(`🔗 <a href="${explorerTxUrl(n.chain, n.txHash)}">${config.explorerName}</a>`);
+  lines.push(explorerLinks(n.chain, n.txHash, n.tokenAddress));
 
   return lines.join('\n');
 }
@@ -198,7 +209,7 @@ export function renderSkip(n: SkipNotification): string {
     `Reason: <b>${n.reason}</b>`,
     escapeHtml(n.detail),
     '',
-    `🔗 <a href="${explorerTxUrl(n.chain, n.sourceTxHash)}">${config.explorerName} (trader tx)</a>`,
+    explorerLinks(n.chain, n.sourceTxHash, n.tokenAddress),
   ].join('\n');
 }
 
@@ -222,7 +233,7 @@ export function renderDetection(n: DetectionNotification): string {
       ? `Token: $${escapeHtml(n.tokenSymbol ?? shortAddress(n.tokenAddress, 6, 4))}`
       : 'No token leg',
     `Detected in ${formatSpeed(n.detectLatencyMs)} from block time`,
-    `🔗 <a href="${explorerTxUrl(n.chain, n.sourceTxHash)}">${config.explorerName}</a>`,
+    explorerLinks(n.chain, n.sourceTxHash, n.tokenAddress),
   ].join('\n');
 }
 

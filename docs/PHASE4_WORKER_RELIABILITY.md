@@ -68,6 +68,7 @@ Do this once after deploy (App → Settings → App-level **and** component **wo
 |---|---|---|
 | Sync age &gt; 5m, watching &gt; 0 | Stall — watchdog respawns | Check worker Runtime Logs + RPC |
 | Sync age &lt; 1m, no processed for 45m+ | Quiet / filters | Check Recent Activity skips; relax filters only if intentional |
+| Sync age &gt; 5m but WS/processed fresh | False stall (fixed) | Do not respawn — WS proves monitor alive; sync latch self-heals |
 | `catchUpErr` high every pass | RPC timeout/rate limit | Fix catch-up (shipped) + upgrade RPC |
 | Alert footer `127.0.0.1` | Missing `PUBLIC_WEB_URL` on that component | Set App-level URL (fixed in code too) |
 

@@ -23,7 +23,9 @@ const PRICE_CACHE_TTL_MS = 2_000;
 /** Serve slightly stale prices during a 429 cooldown rather than failing marks. */
 const PRICE_STALE_OK_MS = 15_000;
 /** After a 429, pause Pro calls briefly so buy/exit quotes recover. */
-const RATE_LIMIT_COOLDOWN_MS = 1_200;
+const RATE_LIMIT_COOLDOWN_MS = 800;
+/** Hot-path HTTP budget — Pro plan; keep quote+build under the 1s execution target. */
+const JUPITER_HTTP_TIMEOUT_MS = 900;
 
 const priceCache = new Map<string, { price: JupiterPrice; at: number }>();
 let rateLimitedUntil = 0;
@@ -121,12 +123,12 @@ async function quoteFromBase(base: string, params: QuoteParams, query: URLSearch
     () =>
       fetchJson<JupiterQuote & { error?: string }>(
         `${base}/swap/v1/quote?${query.toString()}`,
-        { headers: headers(), timeoutMs: 1_800, label: 'jupiter/quote' },
+        { headers: headers(), timeoutMs: JUPITER_HTTP_TIMEOUT_MS, label: 'jupiter/quote' },
       ),
     {
-      attempts: 4,
-      baseDelayMs: 120,
-      maxDelayMs: 1_800,
+      attempts: 3,
+      baseDelayMs: 80,
+      maxDelayMs: 900,
       retryable: (error) => isJupiterRateLimitError(error) || error instanceof HttpError,
       onRetry: (error, attempt, delayMs) => {
         if (isJupiterRateLimitError(error)) markRateLimited();
@@ -249,13 +251,13 @@ export async function buildJupiterSwap(params: SwapBuildParams): Promise<SwapBui
           method: 'POST',
           headers: { ...headers(), 'content-type': 'application/json' },
           body: JSON.stringify(body),
-          timeoutMs: 1_800,
+          timeoutMs: JUPITER_HTTP_TIMEOUT_MS,
           label: 'jupiter/swap',
         }),
       {
-        attempts: 3,
-        baseDelayMs: 150,
-        maxDelayMs: 1_500,
+        attempts: 2,
+        baseDelayMs: 80,
+        maxDelayMs: 800,
         retryable: (error) => isJupiterRateLimitError(error),
         onRetry: (error, attempt, delayMs) => {
           if (isJupiterRateLimitError(error)) markRateLimited();

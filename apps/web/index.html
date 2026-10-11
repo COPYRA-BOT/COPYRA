@@ -148,14 +148,15 @@ function sizePos(o){const{eng,total,avail,inv,al,mc,maxMc,minMc,maxDep,maxTok,li
  if(avail<min)return{rej:'INSUFFICIENT_BALANCE'};if(amt<min)return{rej:'TRADE_BELOW_MINIMUM'};if(avail-amt<res)return{rej:'MINIMUM_RESERVE'};return{amt}}
 function decide(p,x){const E=1e-12,up=v=>p.entry*(1+v/100)*(1-E),sl=p.entry*(1-p.sl/100)*(1+E);
  if(x<=sl)return{f:1,why:'STOP_LOSS'};
- if(p.mode=='TRAILING'){if(!p.half&&x>=up(p.trTp))return{f:p.trFrac/100,why:'TAKE_PROFIT'};if(p.half&&x<=Math.max(p.peak,x)*(1-p.trTrail/100)*(1+E))return{f:1,why:'TRAILING_STOP'};return null}
- return x>=up(p.tp)?{f:1,why:'TAKE_PROFIT'}:null}
+ if(!(p.tp>0)&&p.mode!='TRAILING')return null;
+ if(p.mode=='TRAILING'){if(!p.half&&p.trTp>0&&x>=up(p.trTp))return{f:p.trFrac/100,why:'TAKE_PROFIT'};if(p.half&&x<=Math.max(p.peak,x)*(1-p.trTrail/100)*(1+E))return{f:1,why:'TRAILING_STOP'};return null}
+ return p.tp>0&&x>=up(p.tp)?{f:1,why:'TAKE_PROFIT'}:null}
 function stats(r){const n=r.length,w=r.filter(x=>x.usd>0).length,l=r.filter(x=>x.usd<0).length,wr=n?w/n*100:0,pnl=r.reduce((s,x)=>s+x.usd,0);
  return{n,w,l,wr,pnl,best:n?Math.max(...r.map(x=>x.usd)):null,worst:n?Math.min(...r.map(x=>x.usd)):null,score:n?wr*Math.log(1+n)/10+Math.sign(pnl)*Math.log(1+Math.abs(pnl)):null}}
 const SKIP={BOT_PAUSED:'Bot is paused',TRADER_DISABLED:'Trader is stopped',TOKEN_BLACKLISTED:'Token is blacklisted',NOT_FIRST_BUY:'Watched wallet already bought this token. First buy only skips later buys.',LIQUIDITY_TOO_LOW:'Pool liquidity below your minimum',MAX_OPEN_POSITIONS:'Max open positions reached',INSUFFICIENT_CHAIN_LIQUIDITY:'Not enough USDC on this chain for a new position',MARKET_CAP_TOO_HIGH:'Market cap above your saved maximum',MARKET_CAP_TOO_LOW:'Market cap below your saved minimum',MAX_DEPLOYED:'Max capital already deployed',INSUFFICIENT_BALANCE:'Available balance below minimum trade',TRADE_BELOW_MINIMUM:'Calculated trade below minimum',MINIMUM_RESERVE:'Trade would break your minimum reserve',NO_ROUTE:'No swap route found',PRICE_IMPACT_TOO_HIGH:'Price impact above your limit',NOT_A_BUY:'Not a buy',BLOCKED_NO_SIGNER:'Qualified, but no signing key is configured so nothing was broadcast',BLOCKED_DISABLED:'Qualified, but trading is disabled by the host or settings guard',IS_SELL:'Trader sold (not an entry)'};
 /** Display units: K = thousands USD, M = millions USD. Saved to strategy row as absolute USD. */
 const unitMul=u=>u==='M'?1e6:1e3;
-const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:20,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:3,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'FIRST_ONLY',maxDep:80,maxTok:50,bl:''});
+const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:0,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:8,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'EVERY',maxDep:80,maxTok:50,bl:''});
 const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,balError:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;

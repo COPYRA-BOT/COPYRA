@@ -62,7 +62,8 @@ export function invalidateUserModeSettingsCache(userId?: string, mode?: TradingM
  * on stop-loss only (take profit was firing into Jupiter 429 / bad fills).
  * Idempotent via host.ui.execThroughputFix — does not rewrite qualify/sizing math.
  */
-const EXEC_THROUGHPUT_FIX = 1;
+/** Bump when re-applying live defaults (v1 failed: DB CHECK blocked takeProfitPct=0). */
+const EXEC_THROUGHPUT_FIX = 2;
 
 async function applyExecutionThroughputDefaults(host: StrategySettings): Promise<StrategySettings> {
   const ui =
@@ -71,32 +72,45 @@ async function applyExecutionThroughputDefaults(host: StrategySettings): Promise
       : {};
   if (ui.execThroughputFix === EXEC_THROUGHPUT_FIX) return host;
 
-  const updated = await prisma.strategySettings.update({
-    where: { id: host.id },
-    data: {
-      takeProfitPct: 0,
-      firstBuyOnly: false,
-      ui: { ...ui, execThroughputFix: EXEC_THROUGHPUT_FIX } as Prisma.InputJsonValue,
-      updatedBy: 'exec-throughput-fix',
-    },
-  });
-  const modeResult = await prisma.userModeSettings.updateMany({
-    data: {
-      takeProfitPct: 0,
-      firstBuyOnly: false,
-      updatedBy: 'exec-throughput-fix',
-    },
-  });
-  userModeCache.clear();
-  log.info(
-    {
-      takeProfitPct: 0,
-      firstBuyOnly: false,
-      userModeRows: modeResult.count,
-    },
-    'Applied execution throughput defaults (SL-only exit, Every buy)',
-  );
-  return updated;
+  try {
+    const updated = await prisma.strategySettings.update({
+      where: { id: host.id },
+      data: {
+        takeProfitPct: 0,
+        firstBuyOnly: false,
+        // Meme copy needs headroom; 2–3% was rejecting real Jupiter routes.
+        maxPriceImpactPct: 8,
+        ui: { ...ui, execThroughputFix: EXEC_THROUGHPUT_FIX } as Prisma.InputJsonValue,
+        updatedBy: 'exec-throughput-fix-v2',
+      },
+    });
+    const modeResult = await prisma.userModeSettings.updateMany({
+      data: {
+        takeProfitPct: 0,
+        firstBuyOnly: false,
+        maxPriceImpactPct: 8,
+        updatedBy: 'exec-throughput-fix-v2',
+      },
+    });
+    userModeCache.clear();
+    log.info(
+      {
+        takeProfitPct: 0,
+        firstBuyOnly: false,
+        maxPriceImpactPct: 8,
+        userModeRows: modeResult.count,
+      },
+      'Applied execution throughput defaults v2 (SL-only, Every buy, impact 8%)',
+    );
+    return updated;
+  } catch (error) {
+    // If migration has not landed yet, do not brick boot — retry next ensureSettings.
+    log.warn(
+      { err: error },
+      'exec-throughput-fix-v2 deferred (likely awaiting takeProfitPct>=0 migration)',
+    );
+    return host;
+  }
 }
 
 /**

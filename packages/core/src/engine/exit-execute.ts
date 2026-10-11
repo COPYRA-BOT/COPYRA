@@ -517,6 +517,7 @@ async function executeExit(
       chain: position.chain,
       reason,
       tokenSymbol: position.tokenSymbol ?? 'TOKEN',
+      tokenAddress: position.tokenAddress,
       marketCapUsd: position.entryMarketCapUsd ? Number(position.entryMarketCapUsd) : null,
       liquidityUsd: position.entryLiquidityUsd ? Number(position.entryLiquidityUsd) : null,
       traderLabel: source?.trader.label ?? 'COPYRA',

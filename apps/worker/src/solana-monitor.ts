@@ -29,8 +29,8 @@ import {
 const log = componentLogger('solana-monitor');
 
 /** How long we wait for a processed-commitment log to become fetchable. */
-const TX_FETCH_ATTEMPTS = 4;
-const TX_FETCH_BASE_DELAY_MS = 40;
+const TX_FETCH_ATTEMPTS = 3;
+const TX_FETCH_BASE_DELAY_MS = 25;
 /** Recent signatures to re-scan per trader on each catch-up tick. */
 const CATCHUP_LIMIT = 12;
 /** Steady-state catch-up window — wide enough to recover RPC gaps without flood. */
@@ -53,6 +53,9 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
   TxClassification.TRANSFER_IN,
   TxClassification.TRANSFER_OUT,
   TxClassification.APPROVAL,
+  TxClassification.AIRDROP,
+  TxClassification.CLAIM,
+  TxClassification.NFT,
 ]);
 
 /**
@@ -128,18 +131,38 @@ export async function startSolanaMonitor(): Promise<() => void> {
   bindWsLifecycle(connection);
 
   const dropAll = async () => {
-    for (const [traderId, sub] of subscriptions) {
-      try {
-        await connection.removeOnLogsListener(sub);
-      } catch {
-        /* socket may already be dead */
-      }
-      subscriptions.delete(traderId);
-    }
+    const pending = [...subscriptions.entries()];
+    subscriptions.clear();
+    // Bound removeOnLogsListener — a hung Helius socket previously stuck sync()
+    // with syncing=true for 300s+ while WS still delivered (false watchdog pages).
+    await Promise.race([
+      (async () => {
+        for (const [, sub] of pending) {
+          try {
+            await connection.removeOnLogsListener(sub);
+          } catch {
+            /* socket may already be dead */
+          }
+        }
+      })(),
+      sleep(8_000),
+    ]);
   };
 
   const sync = async () => {
-    if (syncing) return;
+    if (syncing) {
+      // If a prior sync hung past its expected window, clear the latch so the
+      // 15s timer can recover without waiting for the 5m watchdog.
+      const stuckMs = workerActivity.lastSolanaSyncAt
+        ? Date.now() - workerActivity.lastSolanaSyncAt
+        : Number.POSITIVE_INFINITY;
+      if (stuckMs > 45_000) {
+        log.warn({ stuckMs }, 'Solana sync latch stuck — forcing clear for recovery');
+        syncing = false;
+      } else {
+        return;
+      }
+    }
     syncing = true;
     touchSolanaSync();
     try {
@@ -193,6 +216,12 @@ export async function startSolanaMonitor(): Promise<() => void> {
           pubkey,
           (logs, ctx) => {
             touchSolanaWsEvent(ctx.slot);
+            // WS proves the monitor is alive — keep sync clock fresh so a stuck
+            // subscription refresh cannot page "sync loop silent" while live.
+            const syncAge = workerActivity.lastSolanaSyncAt
+              ? Date.now() - workerActivity.lastSolanaSyncAt
+              : Number.POSITIVE_INFINITY;
+            if (syncAge > 30_000) touchSolanaSync();
             void handleSignature(trader.id, logs.signature, ctx.slot).catch((error: unknown) => {
               log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
             });
@@ -639,7 +668,9 @@ async function handleSignature(traderId: string, signature: string, slot: number
     marketCapTier: qualification.marketCapTier,
     detectionId: detection.id,
     sourceTxHash: signature,
-    observedAt: decoded.blockTime ?? new Date(),
+    // Wall-clock when WE saw the buy — not trader blockTime (that inflated
+    // dashboard "Submitted" to 8s+ even when Jupiter→broadcast was <1s).
+    observedAt: new Date(),
   });
 
   await prisma.processedSignature.upsert({

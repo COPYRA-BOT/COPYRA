@@ -251,6 +251,9 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
     decoded.classification === TxClassification.TRANSFER_IN ||
     decoded.classification === TxClassification.TRANSFER_OUT ||
     decoded.classification === TxClassification.APPROVAL ||
+    decoded.classification === TxClassification.AIRDROP ||
+    decoded.classification === TxClassification.CLAIM ||
+    decoded.classification === TxClassification.NFT ||
     !tokenAddress;
   if (!silent) {
     telegram.send(

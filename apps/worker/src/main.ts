@@ -167,9 +167,13 @@ const maintTimer = setInterval(() => {
 }, MAINT_TICK_MS);
 
 /**
- * 24/7 watchdog: respawn only when the monitor LOOPS stall (sync/tick clocks).
+ * 24/7 watchdog: respawn only when the live monitor is dead.
  * Absence of buys/skips is NOT a stall — quiet markets stay up and keep listening.
- * Heartbeat alone is not enough — that kept ticking during the prior silent stall.
+ *
+ * Important: do NOT respawn solely because lastSolanaSyncAt is old while WS
+ * events / processed signatures are still fresh. A stuck subscription refresh
+ * (dropAll/resub hang) used to leave sync silent for 300s+ with WS still
+ * delivering — false "sync loop silent" pages and needless respawns.
  */
 const watchdogTimer = setInterval(() => {
   const now = Date.now();
@@ -183,19 +187,30 @@ const watchdogTimer = setInterval(() => {
     ? now - workerActivity.lastSolanaWsEventAt
     : null;
 
-  if (watching > 0 && solAge > WATCHDOG_SILENCE_MS) {
+  const syncStale = solAge > WATCHDOG_SILENCE_MS;
+  const wsStale = wsAge == null || wsAge > WATCHDOG_SILENCE_MS;
+  const processedStale = processedAge == null || processedAge > WATCHDOG_SILENCE_MS;
+  // Live path = WS callbacks or handled signatures. Sync-only silence is recovered
+  // by the 15s sync timer / force-resub, not by killing a healthy worker.
+  if (watching > 0 && syncStale && wsStale && processedStale) {
     logger.error(
       { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge },
-      'Watchdog: Solana sync loop silent — exiting for 24/7 respawn',
+      'Watchdog: Solana monitor dead (sync + WS + processed all silent) — exiting for 24/7 respawn',
     );
     void fatalExit(
       'worker-watchdog-solana',
-      `Solana <b>sync loop silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders` +
+      `Solana <b>monitor silent ${Math.round(solAge / 1000)}s</b> while watching ${watching} traders` +
         `${wsAge != null ? ` · last WS event ${Math.round(wsAge / 1000)}s ago` : ' · no WS events yet'}` +
         `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ''}.` +
-        `\nThis is a monitor stall (not "no trades"). Respawning copy-trade worker.`,
+        `\nSync, WebSocket, and processed clocks are all stale. Respawning copy-trade worker.`,
     );
     return;
+  }
+  if (watching > 0 && syncStale && !(wsStale && processedStale)) {
+    logger.warn(
+      { solAgeMs: solAge, wsAgeMs: wsAge, processedAgeMs: processedAge, watching },
+      'Solana sync clock stale but WS/processed still live — not respawning (false stall avoided)',
+    );
   }
 
   if (evmAge > WATCHDOG_SILENCE_MS) {

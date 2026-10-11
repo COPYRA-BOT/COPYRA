@@ -44,8 +44,14 @@ describe('renderBuy', () => {
     expect(text).toContain('Impact 0.40%');
     expect(text).toContain('Exit plan: TP +20% · SL -10%');
     expect(text).toContain('Open P&amp;L:');
-    expect(text).toContain('solscan.io/tx/5QQ4cZKfWxXaZ959UULnHbsLhRZikm7Ar8WpqSVRmoXdr1CQTT5dYHH3f9JEy8D84k1eSZNHWzdMkXMqxyLzCyLn');
-    expect(text).toContain('Solscan');
+    expect(text).toContain(
+      'solscan.io/token/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+    );
+    expect(text).toContain(
+      'solscan.io/tx/5QQ4cZKfWxXaZ959UULnHbsLhRZikm7Ar8WpqSVRmoXdr1CQTT5dYHH3f9JEy8D84k1eSZNHWzdMkXMqxyLzCyLn',
+    );
+    expect(text).toContain('Token');
+    expect(text).toContain('Solscan tx');
   });
 
   it('renders Trailing in the exit-plan line for Option B', () => {
@@ -76,6 +82,7 @@ describe('renderBuy', () => {
     expect(text).toContain('BUY · BASE');
     expect(text).toContain('Trailing 15%');
     expect(text).toContain('Speed: not measured');
+    expect(text).toContain('basescan.org/token/0x0000000000000000000000000000000000000001');
     expect(text).toContain('basescan.org/tx/0xabc');
   });
 });
@@ -85,6 +92,7 @@ describe('renderSell', () => {
     const base = {
       chain: Chain.SOLANA,
       tokenSymbol: 'BONK',
+      tokenAddress: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
       marketCapUsd: 4_100_000,
       liquidityUsd: 305_000,
       traderLabel: 'Whale1',
@@ -108,6 +116,8 @@ describe('renderSell', () => {
     expect(sl).toContain('SELL · STOP LOSS · SOL');
     expect(sl).toContain('LOSS:');
     expect(sl).toContain('Held: 7m 12s');
+    expect(sl).toContain('solscan.io/token/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
+    expect(sl).toContain('solscan.io/tx/SigSell111');
 
     const tp = renderSell({
       ...base,
@@ -140,6 +150,7 @@ describe('renderSkip / renderFailure', () => {
     });
     expect(text).toContain('SKIPPED · SOL');
     expect(text).toContain('NOT_FIRST_BUY');
+    expect(text).toContain('solscan.io/token/DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263');
     expect(text).toContain('solscan.io/tx/TraderSig');
   });
 

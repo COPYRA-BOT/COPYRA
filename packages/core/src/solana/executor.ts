@@ -391,11 +391,12 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
         userPublicKey: walletAddress,
         wrapAndUnwrapSol: true,
         computeUnitLimit: env.SOLANA_COMPUTE_UNIT_LIMIT,
-        // Exits need to land in the next few slots — use max priority.
-        priorityFeeMicroLamports: isExit
-          ? Math.max(env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS, 2_000_000)
-          : undefined,
-        priorityLevel: isExit ? 'veryHigh' : 'high',
+        // Max priority on buys and exits — meme books move in under 1s.
+        priorityFeeMicroLamports: Math.max(
+          env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS,
+          isExit ? 2_000_000 : 1_000_000,
+        ),
+        priorityLevel: 'veryHigh',
       });
       telemetry.mark('built');
       record(attempt, 'build', 'ok', `lastValidBlockHeight=${built.lastValidBlockHeight}`);
@@ -433,54 +434,10 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       });
     }
 
-    // --- pre-flight against a real validator (time-bounded) ---------------
-    // Exits skip preflight entirely — every ms of delay ages the blockhash.
-    // Buys keep a short RPC preflight budget; on timeout we still broadcast.
-    if (isExit) {
-      record(attempt, 'preflight', 'ok', 'skipped-exit-urgency');
-    } else {
-      const PREFLIGHT_BUDGET_MS = 180;
-      const preflight = await Promise.race([
-        solanaPool()
-          .call('simulateTransaction', (client) =>
-            // copyra-audit-allow: `simulateTransaction` is the Solana RPC method
-            client.simulateTransaction(transaction, {
-              replaceRecentBlockhash: false,
-              sigVerify: false,
-            }),
-          )
-          .catch((error: unknown) => {
-            log.warn({ err: error }, 'Pre-flight RPC call failed; proceeding to broadcast');
-            return null;
-          }),
-        sleep(PREFLIGHT_BUDGET_MS).then(() => {
-          log.warn({ budgetMs: PREFLIGHT_BUDGET_MS }, 'Pre-flight budget exceeded; proceeding to broadcast');
-          return null;
-        }),
-      ]);
-
-      if (preflight?.value.value.err) {
-        const detail = JSON.stringify(preflight.value.value.err);
-        const logs = preflight.value.value.logs?.slice(-5).join(' | ') ?? '';
-        record(attempt, 'preflight', 'error', `${detail} ${logs}`);
-        lastError = new Error(`Pre-flight failed: ${detail}`);
-        if (attempt === request.maxAttempts) {
-          return failure(TxStatus.FAILED, 'PREFLIGHT_FAILED', `${detail} ${logs}`, {
-            quotedAmountRaw: quote.quote.outAmount,
-            priceImpactPct: quote.priceImpactPct,
-            blockhash,
-            lastValidBlockHeight: BigInt(built.lastValidBlockHeight),
-          });
-        }
-        continue; // fresh quote + fresh blockhash
-      }
-      record(
-        attempt,
-        'preflight',
-        'ok',
-        preflight ? `units=${preflight.value.value.unitsConsumed ?? 'n/a'}` : 'skipped-budget',
-      );
-    }
+    // --- pre-flight -------------------------------------------------------
+    // Skip simulate on both buys and exits — Pro Jupiter + skipPreflight on
+    // send already validates; the 180ms+ simulate was eating the ≤1s budget.
+    record(attempt, 'preflight', 'ok', isExit ? 'skipped-exit-urgency' : 'skipped-speed');
 
     // --- broadcast ---------------------------------------------------------
     let broadcastSignature: string;
@@ -529,11 +486,11 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- confirm, by reading chain state -----------------------------------
-    // Exits: bound confirm wait; expiry polls above fail fast so we rebuild
-    // instead of sitting on a dead blockhash for ~60s (32–47s sell lag).
+    // Bound confirm wait on buys and exits — default 60s confirmTimeout was
+    // holding the hot path open and making retries / metrics look slow.
     const confirmBudget = isExit
-      ? Math.min(request.confirmTimeoutMs, 12_000)
-      : request.confirmTimeoutMs;
+      ? Math.min(request.confirmTimeoutMs, 8_000)
+      : Math.min(request.confirmTimeoutMs, 8_000);
     const confirmation = await confirmSolanaTransaction(
       broadcastSignature,
       built.lastValidBlockHeight,
