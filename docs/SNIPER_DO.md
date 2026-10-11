@@ -66,6 +66,20 @@ Set on the **`sniper` component** (or App-Level). Defaults in `.do/app.yaml` are
 
 Dashboard Sniper settings can **tighten** host caps further; they cannot loosen host `SNIPER_ENABLED=false`.
 
+### Runtime modes (dashboard)
+
+| Mode | What happens | When to use |
+|---|---|---|
+| **Monitor only** | Enrich + filter every launch; Pending terminal fills; never qualifies a buy | Default while tuning filters |
+| **On chain (qualify, no buy)** | Tokens that pass filters mark qualified; still no broadcast | Verify filters/sizing before risking SOL |
+| **Live trading** | Buys when `SNIPER_ENABLED=true`, bot ON, and all fail-closed filters pass | Real entries — start with tiny SOL caps |
+
+Recommended path: **Monitor → On chain → Live** with `maxPositionSol` 0.05–0.25 and a tight daily loss limit.
+
+### Token scope + filters (sniper-only UI)
+
+Copy-trade **first / every buy** is replaced by **new tokens / old tokens / both** (`tokenScope` + min/max age minutes). Additional fail-closed filters: 24h volume, socials/profile/X/website, migrated vs bonding, min/max holders, max snipers %, max dev holding %, max top-holder %. Missing safety data never buys. Pending detections show enrich metadata (age, MC, liq, vol, holders, snipers, dev, top, socials, migrated).
+
 ## 4) Database migration
 
 After deploy, ensure migration `20261011210000_sniper_mode` applied (API/start scripts run `db:migrate` when configured). Confirms:
@@ -82,9 +96,9 @@ After deploy, ensure migration `20261011210000_sniper_mode` applied (API/start s
 3. Runtime logs → **sniper** shows: `COPYRA sniper worker starting` and `Sniper Helius/WS logsSubscribe connected`
 4. `GET https://copyra.fun/api/status` → `trading.sniperEnabled` / `sniperMode` present, and a worker named **`copyra-sniper-worker`**
 5. Dashboard → **Sniper Mode** (third segment) → connect **Solana** wallet (same custody as SOL Mode)
-6. Open **Sniper settings**: runtime `monitor` / `onchain` / `live`, MC/liq/slippage, max position/deployed SOL, daily loss, launchpads, TP/SL
+6. Open **Sniper settings**: runtime `monitor` / `onchain` / `live`, **new/old token scope**, age/volume/socials/migrated/holders/snipers/dev/top %, MC/liq/slippage, max position/deployed SOL, daily loss, launchpads, TP/SL
 7. Toggle bot **ON** for Sniper Mode only (does not start SOL/EVM copy)
-8. With `SNIPER_ENABLED=false` or runtime `monitor`: signals appear as rejected / blocked with exact reasons — **no buys**
+8. With `SNIPER_ENABLED=false` or runtime `monitor`: Pending terminal shows detections + enrich metadata and exact reject reasons — **no buys**
 9. For live: set App `SNIPER_ENABLED=true`, `SNIPER_MODE=live`, dashboard runtime **Live**, bot **ON**, funded custody + fee reserve
 10. Kill Switch on Sniper Mode stops sniper engine and liquidates **sniper** positions only
 

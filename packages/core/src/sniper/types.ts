@@ -3,6 +3,9 @@ import type { SkipReason } from '@copyra/db';
 /** Runtime sniper host mode — monitor never broadcasts; live buys when enabled. */
 export type SniperRuntimeMode = 'monitor' | 'onchain' | 'live';
 
+/** Which age bucket to trade — replaces copy-trade first/every buy. */
+export type SniperTokenScope = 'NEW' | 'OLD' | 'BOTH';
+
 export type SniperLaunchpad = 'pump.fun' | 'pumpswap' | 'raydium' | 'unknown';
 
 export interface SniperDiscoveryEvent {
@@ -28,10 +31,23 @@ export interface SniperEnrichment {
   volume24hUsd: number | null;
   marketSource: string | null;
   marketAgeMs: number | null;
+  /** Minutes since pair/create when known. */
+  tokenAgeMin: number | null;
+  pairCreatedAt: string | null;
+  imageUrl: string | null;
+  hasTwitter: boolean | null;
+  hasWebsite: boolean | null;
+  hasTelegram: boolean | null;
+  hasProfile: boolean | null;
   mintAuthority: string | null;
   freezeAuthority: string | null;
   topHolderPct: number | null;
   holderCount: number | null;
+  /** Creator share of sampled supply when creator is known. */
+  devHoldingPct: number | null;
+  /** Early-holder concentration proxy (top wallets excl. curve). */
+  sniperPct: number | null;
+  migrated: boolean;
   swapActivityOk: boolean | null;
   buyRouteOk: boolean | null;
   sellRouteOk: boolean | null;
@@ -46,6 +62,22 @@ export interface SniperEnrichment {
 export interface SniperConfig {
   enabled: boolean;
   runtimeMode: SniperRuntimeMode;
+  /** NEW = only young launches; OLD = only aged; BOTH = age window. */
+  tokenScope: SniperTokenScope;
+  maxTokenAgeMin: number;
+  minTokenAgeMin: number;
+  minVolume24hUsd: number;
+  requireSocials: boolean;
+  requireProfile: boolean;
+  requireTwitter: boolean;
+  requireWebsite: boolean;
+  /** null = any; true = only migrated; false = only bonding-curve. */
+  migratedOnly: boolean | null;
+  minHolders: number;
+  maxHolders: number;
+  maxSniperPct: number;
+  maxDevHoldingPct: number;
+  maxTopHolderPct: number;
   maxMarketCapUsd: number;
   minLiquidityUsd: number;
   maxPriceImpactBps: number;

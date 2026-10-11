@@ -34,6 +34,28 @@ interface DexscreenerPair {
   marketCap?: number;
   volume?: { h24?: number };
   pairCreatedAt?: number;
+  info?: {
+    imageUrl?: string;
+    websites?: Array<{ url?: string }>;
+    socials?: Array<{ type?: string; url?: string }>;
+  };
+}
+
+function socialFlags(pair: DexscreenerPair): {
+  hasTwitter: boolean;
+  hasWebsite: boolean;
+  hasTelegram: boolean;
+  imageUrl: string | null;
+} {
+  const socials = pair.info?.socials ?? [];
+  const websites = pair.info?.websites ?? [];
+  const types = socials.map((s) => String(s.type ?? '').toLowerCase());
+  return {
+    hasTwitter: types.some((t) => t.includes('twitter') || t === 'x'),
+    hasWebsite: websites.some((w) => Boolean(w.url)),
+    hasTelegram: types.some((t) => t.includes('telegram')),
+    imageUrl: pair.info?.imageUrl ?? null,
+  };
 }
 
 export interface TokenMarketData extends MarketSnapshot {
@@ -42,6 +64,11 @@ export interface TokenMarketData extends MarketSnapshot {
   dexId: string | null;
   pairAddress: string | null;
   pairCreatedAt: Date | null;
+  /** Social / profile links from Dexscreener when present. */
+  hasTwitter?: boolean;
+  hasWebsite?: boolean;
+  hasTelegram?: boolean;
+  imageUrl?: string | null;
 }
 
 /** Short TTL cache so exit ticks and dual Solana lookups do not re-hit Dexscreener every tick. */
@@ -117,6 +144,7 @@ export async function getDexscreenerMarket(
   // may be split over several pools and the aggregator will route across them.
   const totalLiquidityUsd = onChain.reduce((sum, p) => sum + (p.liquidity?.usd ?? 0), 0);
 
+  const socials = socialFlags(best);
   const snapshot: TokenMarketData = {
     priceUsd: Number.isFinite(priceUsd) ? priceUsd : 0,
     // Prefer circulating market cap; fall back to FDV, which is what most
@@ -133,6 +161,7 @@ export async function getDexscreenerMarket(
     dexId: best.dexId,
     pairAddress: best.pairAddress,
     pairCreatedAt: best.pairCreatedAt ? new Date(best.pairCreatedAt) : null,
+    ...socials,
   };
   marketCache.set(cacheKey, { at: Date.now(), value: snapshot });
   return snapshot;
@@ -175,6 +204,7 @@ export async function getDexscreenerMarkets(
           (b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a,
         );
         const priceUsd = Number.parseFloat(best.priceUsd ?? '0');
+        const socials = socialFlags(best);
         out.set(address.toLowerCase(), {
           priceUsd: Number.isFinite(priceUsd) ? priceUsd : 0,
           marketCapUsd: best.marketCap ?? best.fdv ?? null,
@@ -189,6 +219,7 @@ export async function getDexscreenerMarkets(
           dexId: best.dexId,
           pairAddress: best.pairAddress,
           pairCreatedAt: best.pairCreatedAt ? new Date(best.pairCreatedAt) : null,
+          ...socials,
         });
       }
     } catch (error) {

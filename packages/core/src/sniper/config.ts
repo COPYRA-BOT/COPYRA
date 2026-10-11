@@ -2,7 +2,12 @@ import { Chain, TradingMode, type UserModeSettings } from '@copyra/db';
 import { env } from '../config/env.js';
 import { getStrategyConfigFor } from '../engine/settings.js';
 import { DEFAULT_PUMP_FUN_PROGRAM_ID } from './constants.js';
-import type { SniperConfig, SniperLaunchpad, SniperRuntimeMode } from './types.js';
+import type {
+  SniperConfig,
+  SniperLaunchpad,
+  SniperRuntimeMode,
+  SniperTokenScope,
+} from './types.js';
 
 function parseLaunchpads(raw: string[] | undefined): SniperLaunchpad[] {
   const allowed: SniperLaunchpad[] = ['pump.fun', 'pumpswap', 'raydium', 'unknown'];
@@ -19,10 +24,36 @@ function parseRuntimeMode(raw: string | undefined): SniperRuntimeMode {
   return 'monitor';
 }
 
+function parseTokenScope(raw: string | undefined): SniperTokenScope {
+  const n = (raw ?? 'NEW').trim().toUpperCase();
+  if (n === 'OLD' || n === 'BOTH' || n === 'NEW') return n;
+  return 'NEW';
+}
+
 function numUi(ui: Record<string, unknown> | null | undefined, key: string, fallback: number): number {
   const v = ui?.[key];
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function boolUi(
+  ui: Record<string, unknown> | null | undefined,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const v = ui?.[key];
+  if (typeof v === 'boolean') return v;
+  if (v === 'true' || v === '1' || v === 'yes') return true;
+  if (v === 'false' || v === '0' || v === 'no') return false;
+  return fallback;
+}
+
+function migratedUi(ui: Record<string, unknown> | null | undefined): boolean | null {
+  const v = ui?.migratedFilter;
+  if (v === true || v === 'migrated' || v === 'yes') return true;
+  if (v === false || v === 'bonding' || v === 'no') return false;
+  if (v === 'any' || v === null || v === undefined || v === '') return null;
+  return null;
 }
 
 function strListUi(ui: Record<string, unknown> | null | undefined, key: string): string[] {
@@ -53,6 +84,20 @@ export function sniperHostDefaults(): Omit<
   return {
     enabled: env.SNIPER_ENABLED,
     runtimeMode: parseRuntimeMode(env.SNIPER_MODE),
+    tokenScope: 'NEW',
+    maxTokenAgeMin: 120,
+    minTokenAgeMin: 60,
+    minVolume24hUsd: 0,
+    requireSocials: false,
+    requireProfile: false,
+    requireTwitter: false,
+    requireWebsite: false,
+    migratedOnly: null,
+    minHolders: 0,
+    maxHolders: 0,
+    maxSniperPct: 40,
+    maxDevHoldingPct: 15,
+    maxTopHolderPct: 35,
     maxMarketCapUsd: env.SNIPER_MAX_MARKET_CAP_USD,
     minLiquidityUsd: env.SNIPER_MIN_LIQUIDITY_USD,
     maxPriceImpactBps: env.SNIPER_MAX_PRICE_IMPACT_BPS,
@@ -77,15 +122,28 @@ export function sniperConfigFromModeRow(
       : {};
   const hostDefaults = sniperHostDefaults();
   const runtimeFromUi = typeof ui.sniperRuntimeMode === 'string' ? ui.sniperRuntimeMode : undefined;
+  const scopeFromUi = typeof ui.tokenScope === 'string' ? ui.tokenScope : undefined;
   const pads = strListUi(ui, 'allowedLaunchpads');
   const bl = strListUi(ui, 'blacklist');
 
   return {
     ...hostDefaults,
-    enabled: hostDefaults.enabled && (ui.sniperEnabled !== false),
-    runtimeMode: runtimeFromUi
-      ? parseRuntimeMode(runtimeFromUi)
-      : hostDefaults.runtimeMode,
+    enabled: hostDefaults.enabled && ui.sniperEnabled !== false,
+    runtimeMode: runtimeFromUi ? parseRuntimeMode(runtimeFromUi) : hostDefaults.runtimeMode,
+    tokenScope: scopeFromUi ? parseTokenScope(scopeFromUi) : hostDefaults.tokenScope,
+    maxTokenAgeMin: numUi(ui, 'maxTokenAgeMin', hostDefaults.maxTokenAgeMin),
+    minTokenAgeMin: numUi(ui, 'minTokenAgeMin', hostDefaults.minTokenAgeMin),
+    minVolume24hUsd: numUi(ui, 'minVolume24hUsd', hostDefaults.minVolume24hUsd),
+    requireSocials: boolUi(ui, 'requireSocials', hostDefaults.requireSocials),
+    requireProfile: boolUi(ui, 'requireProfile', hostDefaults.requireProfile),
+    requireTwitter: boolUi(ui, 'requireTwitter', hostDefaults.requireTwitter),
+    requireWebsite: boolUi(ui, 'requireWebsite', hostDefaults.requireWebsite),
+    migratedOnly: migratedUi(ui),
+    minHolders: Math.max(0, Math.floor(numUi(ui, 'minHolders', hostDefaults.minHolders))),
+    maxHolders: Math.max(0, Math.floor(numUi(ui, 'maxHolders', hostDefaults.maxHolders))),
+    maxSniperPct: numUi(ui, 'maxSniperPct', hostDefaults.maxSniperPct),
+    maxDevHoldingPct: numUi(ui, 'maxDevHoldingPct', hostDefaults.maxDevHoldingPct),
+    maxTopHolderPct: numUi(ui, 'maxTopHolderPct', hostDefaults.maxTopHolderPct),
     maxMarketCapUsd: Math.min(
       hostDefaults.maxMarketCapUsd,
       Number(modeRow.maxMarketCapUsd) || hostDefaults.maxMarketCapUsd,
@@ -109,9 +167,7 @@ export function sniperConfigFromModeRow(
     maxPositionSol: numUi(ui, 'maxPositionSol', hostDefaults.maxPositionSol),
     maxDeployedSol: numUi(ui, 'maxDeployedSol', hostDefaults.maxDeployedSol),
     dailyLossLimitSol: numUi(ui, 'dailyLossLimitSol', hostDefaults.dailyLossLimitSol),
-    allowedLaunchpads: pads.length
-      ? parseLaunchpads(pads)
-      : hostDefaults.allowedLaunchpads,
+    allowedLaunchpads: pads.length ? parseLaunchpads(pads) : hostDefaults.allowedLaunchpads,
     takeProfitPct: Number(modeRow.takeProfitPct),
     stopLossPct: Number(modeRow.stopLossPct),
     exitStrategy: modeRow.exitStrategy === 'TRAILING' ? 'TRAILING' : 'MANUAL',

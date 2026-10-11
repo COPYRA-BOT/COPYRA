@@ -6,6 +6,20 @@ import type { SniperConfig, SniperDiscoveryEvent, SniperEnrichment } from './typ
 const baseConfig = (): SniperConfig => ({
   enabled: true,
   runtimeMode: 'live',
+  tokenScope: 'NEW',
+  maxTokenAgeMin: 120,
+  minTokenAgeMin: 60,
+  minVolume24hUsd: 0,
+  requireSocials: false,
+  requireProfile: false,
+  requireTwitter: false,
+  requireWebsite: false,
+  migratedOnly: null,
+  minHolders: 0,
+  maxHolders: 0,
+  maxSniperPct: 40,
+  maxDevHoldingPct: 15,
+  maxTopHolderPct: 35,
   maxMarketCapUsd: 20_000_000,
   minLiquidityUsd: 10_000,
   maxPriceImpactBps: 800,
@@ -51,10 +65,20 @@ const enrichOk = (): SniperEnrichment => ({
   volume24hUsd: 40_000,
   marketSource: 'dexscreener',
   marketAgeMs: 2_000,
+  tokenAgeMin: 15,
+  pairCreatedAt: new Date().toISOString(),
+  imageUrl: null,
+  hasTwitter: true,
+  hasWebsite: true,
+  hasTelegram: false,
+  hasProfile: true,
   mintAuthority: null,
   freezeAuthority: null,
   topHolderPct: 12,
   holderCount: 200,
+  devHoldingPct: 5,
+  sniperPct: 18,
+  migrated: false,
   swapActivityOk: true,
   buyRouteOk: true,
   sellRouteOk: true,
@@ -108,7 +132,7 @@ describe('qualifySniperToken', () => {
     if (!result.qualified) expect(result.reason).toBe(SkipReason.SNIPER_TOKEN_CONTROLS);
   });
 
-  it('rejects monitor-only runtime', () => {
+  it('records monitor-only after filters pass', () => {
     const result = qualifySniperToken({
       event: event(),
       enrich: enrichOk(),
@@ -119,7 +143,24 @@ describe('qualifySniperToken', () => {
       dailyLossSol: 0,
     });
     expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.SNIPER_DISABLED);
+    if (!result.qualified) {
+      expect(result.reason).toBe(SkipReason.SNIPER_DISABLED);
+      expect(result.detail).toMatch(/passed filters/i);
+    }
+  });
+
+  it('rejects old tokens when scope is NEW', () => {
+    const result = qualifySniperToken({
+      event: event(),
+      enrich: { ...enrichOk(), tokenAgeMin: 999 },
+      config: { ...baseConfig(), tokenScope: 'NEW', maxTokenAgeMin: 60 },
+      openSniperPositions: 0,
+      existingSniperPositionForToken: false,
+      deployedSol: 0,
+      dailyLossSol: 0,
+    });
+    expect(result.qualified).toBe(false);
+    if (!result.qualified) expect(result.reason).toBe(SkipReason.SNIPER_ACTIVITY);
   });
 
   it('rejects when sell route missing', () => {
@@ -134,5 +175,18 @@ describe('qualifySniperToken', () => {
     });
     expect(result.qualified).toBe(false);
     if (!result.qualified) expect(result.reason).toBe(SkipReason.SNIPER_NO_ROUTE);
+  });
+
+  it('rejects missing twitter when required', () => {
+    const result = qualifySniperToken({
+      event: event(),
+      enrich: { ...enrichOk(), hasTwitter: false, hasProfile: true },
+      config: { ...baseConfig(), requireTwitter: true },
+      openSniperPositions: 0,
+      existingSniperPositionForToken: false,
+      deployedSol: 0,
+      dailyLossSol: 0,
+    });
+    expect(result.qualified).toBe(false);
   });
 });

@@ -30,6 +30,16 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .chip.sniper .tile{background:#000}
 .chip.sniper .tile .ico.sol,.chip.sniper .tile .ico.evm{opacity:0}
 .chip.sniper .tile .ico.snip.on{opacity:1;transform:scale(1)}
+.snip-term{font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#0d0e12;border:1px solid var(--ln);border-radius:12px;max-height:420px;overflow:auto;padding:8px 10px}
+.snip-term .st-row{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px 10px;padding:10px 4px;border-bottom:1px solid #22242a}
+.snip-term .st-row:last-child{border-bottom:0}
+.snip-term time{color:#6a6d75;font-size:11px}
+.snip-term .st-meta{display:flex;flex-wrap:wrap;gap:6px 10px;color:#aeb1b8;margin-top:4px}
+.snip-term .st-meta b{color:var(--tx);font-weight:600}
+.snip-term .st-sym{font-weight:700;color:#00e5ff}
+.snip-term .st-ok{color:var(--g)}.snip-term .st-bad{color:var(--r)}.snip-term .st-warn{color:var(--w)}
+.snip-help{margin:0 0 10px;padding:10px 12px;border-radius:10px;background:rgba(0,229,255,.06);border:1px solid rgba(0,229,255,.2);color:var(--mu);font-size:13px;line-height:1.45}
+.snip-help b{color:var(--tx)}
 #cn-wrap{position:relative;display:inline-flex;align-items:center;max-width:min(220px,56vw);flex-shrink:1;min-width:0}
 #cn-wrap .cn-btn-row{position:relative;display:inline-flex;align-items:center;max-width:100%}
 #cn-wrap appkit-button,#cn-wrap w3m-button,#cn-wrap w3m-core-button{position:absolute;inset:0;opacity:0.02;width:100%!important;height:100%!important;z-index:2;cursor:pointer}
@@ -354,11 +364,25 @@ function hydrate(snap){
    if(typeof modeUi.bl==='string')next.set.bl=modeUi.bl;
    if(e==='sniper'){
     next.set.sniperRuntimeMode=modeUi.sniperRuntimeMode||LIVE?.settings?.host?.sniperMode||'monitor';
+    next.set.tokenScope=modeUi.tokenScope||'NEW';
+    next.set.maxTokenAgeMin=modeUi.maxTokenAgeMin!=null?Number(modeUi.maxTokenAgeMin):120;
+    next.set.minTokenAgeMin=modeUi.minTokenAgeMin!=null?Number(modeUi.minTokenAgeMin):60;
+    next.set.minVolume24hUsd=modeUi.minVolume24hUsd!=null?Number(modeUi.minVolume24hUsd):0;
+    next.set.requireSocials=!!modeUi.requireSocials;
+    next.set.requireProfile=!!modeUi.requireProfile;
+    next.set.requireTwitter=!!modeUi.requireTwitter;
+    next.set.requireWebsite=!!modeUi.requireWebsite;
+    next.set.migratedFilter=modeUi.migratedFilter||'any';
+    next.set.minHolders=modeUi.minHolders!=null?Number(modeUi.minHolders):0;
+    next.set.maxHolders=modeUi.maxHolders!=null?Number(modeUi.maxHolders):0;
+    next.set.maxSniperPct=modeUi.maxSniperPct!=null?Number(modeUi.maxSniperPct):40;
+    next.set.maxDevHoldingPct=modeUi.maxDevHoldingPct!=null?Number(modeUi.maxDevHoldingPct):15;
+    next.set.maxTopHolderPct=modeUi.maxTopHolderPct!=null?Number(modeUi.maxTopHolderPct):35;
     next.set.maxPositionSol=modeUi.maxPositionSol!=null?Number(modeUi.maxPositionSol):0.25;
     next.set.maxDeployedSol=modeUi.maxDeployedSol!=null?Number(modeUi.maxDeployedSol):2;
     next.set.dailyLossLimitSol=modeUi.dailyLossLimitSol!=null?Number(modeUi.dailyLossLimitSol):1;
     next.set.allowedLaunchpads=Array.isArray(modeUi.allowedLaunchpads)?modeUi.allowedLaunchpads.join(', '):(modeUi.allowedLaunchpads||'pump.fun');
-    next.sniperSig=(snap.sniperSignals||[]).filter(s=>owns(s)).slice(0,40);
+    next.sniperSig=(snap.sniperSignals||[]).filter(s=>owns(s)).slice(0,60);
    } else next.sniperSig=[];
   }
   // Prefer mode-scoped balance payload so SOL/EVM accounts never cross-contaminate.
@@ -628,8 +652,44 @@ function liveBanner(e){
 // ---- UI (same markup as the uploaded COPYRA frontend) ----
 const bd=e=>`<span class="bd ${e}">${e.toUpperCase()}</span>`,pnlC=x=>x>=0?'g':'rd';
 function fmtUsdU(v,u){const n=Number(v);if(!Number.isFinite(n))return'*';return u==='M'?`$${n}M`:`$${n}K`}
-function strat(e){const s=S[e].set,mu=s.minMcUnit||s.mcUnit||'K',xu=s.maxMcUnit||mu,lu=s.liqUnit||'K',buy=s.buyMode==='EVERY_BUY'?'Every qualifying buy':'First buy only';if(e==='sniper')return `Sniper · runtime ${(s.sniperRuntimeMode||'monitor').toUpperCase()} · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL ${s.sl}% · Market cap ${fmtUsdU(s.minMc,mu)} to ${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max ${s.maxPositionSol??0.25} SOL/pos · Max deployed ${s.maxDeployedSol??2} SOL · Daily loss ${s.dailyLossLimitSol??1} SOL · Pads ${s.allowedLaunchpads||'pump.fun'} · Max positions ${s.maxPos} · Slippage ${s.slip}% · Fail-closed (missing safety data never buys)`;return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL ${s.sl}% · ${buy} · Market cap ${fmtUsdU(s.minMc,mu)} to ${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
-function howItWorksHtml(){return`<details class="card" style="margin-top:12px"><summary><b>How it works</b></summary>
+function fmtUsdCompact(n){const x=Number(n);if(!Number.isFinite(x))return'—';if(x>=1e6)return`$${(x/1e6).toFixed(2)}M`;if(x>=1e3)return`$${(x/1e3).toFixed(1)}K`;return`$${x.toFixed(0)}`}
+function sniperTermHtml(sigs){
+ if(!sigs||!sigs.length)return'';
+ return sigs.map(k=>{
+  const when=new Date(k.createdAt||k.detectedAt||Date.now()).toLocaleTimeString();
+  const en=(k.enrichSnapshot&&typeof k.enrichSnapshot==='object')?k.enrichSnapshot:{};
+  const sym=k.tokenSymbol||en.symbol||((k.tokenAddress||'')+'').slice(0,6)||'?';
+  const st=k.status||'';
+  const detail=k.skipDetail||'';
+  const mon=/monitor only|qualified but not broadcast|runtime mode onchain/i.test(detail)||st==='BLOCKED_DISABLED';
+  const ok=st==='QUALIFIED'||st==='EXECUTED'||st==='FILLED'||st==='SUBMITTED';
+  const cls=ok?'st-ok':mon?'st-warn':'st-bad';
+  const age=en.tokenAgeMin!=null?`${Number(en.tokenAgeMin).toFixed(0)}m`:'—';
+  const mc=k.marketCapUsdAtSignal??en.marketCapUsd;
+  const liq=k.liquidityUsdAtSignal??en.liquidityUsd;
+  const vol=en.volume24hUsd;
+  const holders=en.holderCount;
+  const snip=en.sniperPct;
+  const dev=en.devHoldingPct;
+  const top=en.topHolderPct;
+  const socials=[en.hasTwitter?'X':null,en.hasWebsite?'web':null,en.hasTelegram?'TG':null].filter(Boolean).join('/')||'none';
+  const mig=(en.migrated||k.migrated)?'migrated':'curve';
+  const reason=k.skipReason?k.skipReason:st;
+  const lat=k.detectLatencyMs!=null?` · ${k.detectLatencyMs}ms`:'';
+  const mint=((k.tokenAddress||'')+'').slice(0,4)+'…'+((k.tokenAddress||'')+'').slice(-4);
+  return `<div class="st-row"><time>${when}</time><div><span class="st-sym">$${sym}</span> · <span class="${cls}">${reason}</span>${detail?` · ${detail}`:''}${lat}
+<div class="st-meta"><span>age <b>${age}</b></span><span>MC <b>${fmtUsdCompact(mc)}</b></span><span>liq <b>${fmtUsdCompact(liq)}</b></span><span>vol <b>${fmtUsdCompact(vol)}</b></span><span>holders <b>${holders??'—'}</b></span><span>snipers <b>${snip!=null?Number(snip).toFixed(0)+'%':'—'}</b></span><span>dev <b>${dev!=null?Number(dev).toFixed(0)+'%':'—'}</b></span><span>top <b>${top!=null?Number(top).toFixed(0)+'%':'—'}</b></span><span>socials <b>${socials}</b></span><span><b>${mig}</b></span><span>${k.launchpad||''}</span><span class="mu">${mint}</span></div></div></div>`;
+ }).join('');
+}
+function strat(e){const s=S[e].set,mu=s.minMcUnit||s.mcUnit||'K',xu=s.maxMcUnit||mu,lu=s.liqUnit||'K',buy=s.buyMode==='EVERY_BUY'?'Every qualifying buy':'First buy only';if(e==='sniper'){const scope=s.tokenScope==='OLD'?'Old tokens':s.tokenScope==='BOTH'?'New+old window':'New tokens';return `Sniper · runtime ${(s.sniperRuntimeMode||'monitor').toUpperCase()} · ${scope} · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL ${s.sl}% · MC ${fmtUsdU(s.minMc,mu)}–${fmtUsdU(s.maxMc,xu)} · Min liq ${fmtUsdU(s.minLiq,lu)} · Vol≥$${Number(s.minVolume24hUsd||0).toLocaleString()} · Holders ${s.minHolders||0}–${s.maxHolders||'∞'} · Max snipers ${s.maxSniperPct??40}% · Max top ${s.maxTopHolderPct??35}% · Max ${s.maxPositionSol??0.25} SOL/pos · Deployed ${s.maxDeployedSol??2} SOL · Daily loss ${s.dailyLossLimitSol??1} SOL · Fail-closed`;}return `${s.alloc}% of available balance per trade · ${s.tpMode=='TRAILING'?`Trailing: sell ${s.trFrac}% at +${s.trTp}%, rest when price falls ${s.trTrail}% from peak`:`TP +${s.tp}%`} · SL ${s.sl}% · ${buy} · Market cap ${fmtUsdU(s.minMc,mu)} to ${fmtUsdU(s.maxMc,xu)} · Min liquidity ${fmtUsdU(s.minLiq,lu)} · Max deployed ${s.maxDep}% · Max per token ${s.maxTok}% · Sizing tiers scale inside your saved MC window (20/30/40/50%) · Min trade ${Number(s.min).toPrecision(4)} ${UI[e].u} · Reserve ${s.res}% · Max positions ${s.maxPos} · Slippage ${s.slip}%`}
+function howItWorksHtml(e){if(e==='sniper')return`<details class="card" style="margin-top:12px"><summary><b>How sniper mode works</b></summary>
+<div class="mu" style="padding-top:10px;line-height:1.55;max-width:72ch">
+<p><b>1. Discover launches.</b> The sniper worker watches Pump.fun (and allowed pads) on Helius — not copy-trader wallets.</p>
+<p><b>2. Enrich + filter.</b> Each detection is enriched with on-chain age, volume, holders, snipers %, dev %, top holders, socials, and migrated state. Fail-closed: missing safety data never buys. Scope is <b>new tokens</b> / <b>old tokens</b> (not first/every buy).</p>
+<p><b>3. Runtime mode.</b> <b>Monitor only</b> records the pending terminal. <b>On chain</b> qualifies without broadcasting. <b>Live trading</b> buys when host SNIPER_ENABLED is true and the bot is ON.</p>
+<p><b>4. Exit.</b> TP/SL or trailing exits share the SOL custody wallet. Pending detections show live metadata for every reject or qualify.</p>
+</div></details>`;
+return`<details class="card" style="margin-top:12px"><summary><b>How it works</b></summary>
 <div class="mu" style="padding-top:10px;line-height:1.55;max-width:72ch">
 <p><b>1. Watch wallets.</b> Add trader addresses. The worker subscribes to live Solana and EVM feeds and decodes confirmed buys, sells, airdrops, and transfers.</p>
 <p><b>2. Apply your rules.</b> Only quote asset buys that pass your market cap window, liquidity, slippage, position limits, and buy mode are eligible. <b>First buy only</b> copies that wallet’s first buy of a token. <b>Every buy</b> also copies later buys of the same token. Skipped trades list the exact reason.</p>
@@ -707,11 +767,11 @@ ${e==='sniper'?`${(()=>{const sigs=s.sniperSig||[];const withDet=sigs.filter(k=>
 <div class="kp" style="margin-top:8px"><div class="k"><small>Avg detect→qualify</small><b>${avgDet!=null?avgDet+' ms':'—'}</b></div><div class="k"><small>Avg exec</small><b>${avgExec!=null?avgExec+' ms':'—'}</b></div><div class="k"><small>Signals</small><b>${sigs.length}</b></div><div class="k"><small>Open sniper</small><b>${P.length}</b></div></div>
 <p class="mu">Size cap ${s.set.maxPositionSol??0.25} SOL · Deployed cap ${s.set.maxDeployedSol??2} SOL · Daily loss ${s.set.dailyLossLimitSol??1} SOL · Pads: ${s.set.allowedLaunchpads||'pump.fun'}</p>
 <div class="row"><button class="btn" onclick="settings('${e}')">Sniper settings</button><button class="btn red" onclick="killSwitch('${e}')">Kill Switch</button></div></div>`})()}
-<div class="card"><h3>Pending / rejected signals</h3><div class="act">${(s.sniperSig||[]).map(k=>{const when=new Date(k.createdAt).toLocaleTimeString();const tok=k.tokenSymbol||(k.tokenAddress||'').slice(0,6);const st=k.status;const r=k.skipReason||'';const lat=k.detectLatencyMs!=null?` · ${k.detectLatencyMs}ms detect`:'';const el=k.execLatencyMs!=null?` · ${k.execLatencyMs}ms exec`:'';return `<div><time>${when}</time><b>${st}</b> · $${tok} · ${k.launchpad||''}${r?' · <b class="wn">'+r+'</b>':''}${k.skipDetail?' · '+k.skipDetail:''}${lat}${el}</div>`}).join('')||'<p class="mu">No sniper signals yet. When the sniper worker sees a Pump.fun create, rows appear here with exact reject reasons.</p>'}</div></div>`:`<div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>`}
+<div class="card"><h3>Pending detections</h3><p class="mu">Live terminal of on-chain discoveries with metadata from enrich (age, MC, liq, holders, socials). Fail-closed rejects show exact reasons.</p><div class="snip-term">${sniperTermHtml(s.sniperSig)||'<p class="mu" style="padding:8px">No detections yet. When the sniper worker sees a Pump.fun create, rows stream here.</p>'}</div></div>`:`<div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>`}
 <div class="card"><h3>Open Positions</h3>${P.length?P.map(p=>posCardHtml(e,p,s,X)).join(''):`<p class="mu">${e==='sniper'?'No open sniper positions. A sniper entry opens only after a launch passes every fail-closed filter and a live buy confirms.':'No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.'}</p>`}</div>
 ${(()=>{const pg=pageSlice(s.act,actPage[e]||1);const emptyMsg=!LIVE?.auth?.[e]?.userId?`Sign in on ${e.toUpperCase()} to see this mode's Recent Activity.`:`No ${e.toUpperCase()} activity yet.`;return`<div class="card"><h3>Recent Activity · ${e.toUpperCase()}</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||`<p class="mu">${emptyMsg}</p>`}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
 <details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b>. ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, market cap or liquidity window, first buy mode, and similar checks).</p>'}</div></details>
-${howItWorksHtml()}`}
+${howItWorksHtml(e)}`}
 const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
 const filteredHist=()=>allHist().filter(h=>histPnL==='profit'?h.usd>0:histPnL==='loss'?h.usd<0:true);
 const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';histPage=1;draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
@@ -1240,8 +1300,10 @@ ${e==='evm'?`<label>Network</label><select id="wc">${chainOpts}</select>`:''}
  }
 }
 const FLD=[['alloc','Trade allocation (% of available)',1],['min','Minimum trade size',0],['res','Minimum reserve',1],['maxPos','Max open positions',1],['buyMode','Buy mode',6],['tpMode','Take profit strategy',2],['tp','Manual take profit (%)',1],['sl','Stop loss (%, sells everything)',1],['trTp','Trailing: first TP at +(%)',1],['trFrac','Trailing: portion sold at first TP (%)',1],['trTrail','Trailing: sell rest when price drops (%) from peak',1],['slip','Max slippage (%)',1],['impact','Max price impact (%)',1],['minLiq','Min liquidity',4],['minMc','Min market cap',5],['maxMc','Max market cap',5],['maxDep','Max capital deployed (%)',1],['maxTok','Max capital per token (%)',1],['bl','Token blacklist (comma separated)',3]];
+/** Sniper settings omit copy buy-mode; token scope + launch filters live in sniperExtra. */
+const FLD_SNIPER=FLD.filter(([k])=>k!=='buyMode');
 function unitSel(id,cur){return `<select id="${id}" style="width:auto;min-width:4.5rem"><option value="K" ${cur==='K'?'selected':''}>K (thousands)</option><option value="M" ${cur==='M'?'selected':''}>M (millions)</option></select>`}
-function settings(e){const s=S[e].set;
+function settings(e){const s=S[e].set;const fields=e==='sniper'?FLD_SNIPER:FLD;
  const fieldHtml=([k,l,t])=>{
   if(t===2)return `<label>${l}</label><select id="s_${k}"><option ${s[k]=='MANUAL'?'selected':''}>MANUAL</option><option ${s[k]=='TRAILING'?'selected':''}>TRAILING</option></select>`;
   if(t===6){const m=s.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';return `<label>${l}</label><select id="s_${k}"><option value="FIRST_ONLY" ${m==='FIRST_ONLY'?'selected':''}>First buy only</option><option value="EVERY_BUY" ${m==='EVERY_BUY'?'selected':''}>Every buy</option></select><p class="mu" style="margin:4px 0 0">First buy only: copy only that watched wallet’s first buy of a token. Their second buy of the same token is skipped. Every buy: copy additional buys of the same token too (scale into the open position).</p>`;}
@@ -1260,12 +1322,39 @@ function settings(e){const s=S[e].set;
 <li style="margin:0 0 6px">Enter your Chat ID below to receive alerts for this wallet.</li>
 <li style="margin:0">Click <b>Connect</b> to complete the setup.</li>
 </ol>`;
- const sniperExtra=e==='sniper'?`<label>Sniper runtime mode</label><select id="s_sniperRuntimeMode"><option value="monitor" ${s.sniperRuntimeMode==='monitor'?'selected':''}>Monitor only</option><option value="onchain" ${s.sniperRuntimeMode==='onchain'?'selected':''}>On chain (qualify, no buy)</option><option value="live" ${s.sniperRuntimeMode==='live'?'selected':''}>Live trading</option></select><p class="mu" style="margin:4px 0 0">Host SNIPER_ENABLED must also be true on DigitalOcean for live buys.</p><label>Max position (SOL)</label><input id="s_maxPositionSol" type="number" step="any" value="${s.maxPositionSol??0.25}"><label>Max deployed (SOL)</label><input id="s_maxDeployedSol" type="number" step="any" value="${s.maxDeployedSol??2}"><label>Daily loss limit (SOL)</label><input id="s_dailyLossLimitSol" type="number" step="any" value="${s.dailyLossLimitSol??1}"><label>Allowed launchpads</label><input id="s_allowedLaunchpads" value="${s.allowedLaunchpads||'pump.fun'}"><p class="mu">Comma-separated: pump.fun, pumpswap, raydium</p>`:'';
- $('#dr').innerHTML=`<div class="row sp"><h3>${e==='sniper'?'SNIPER':e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+FLD.map(fieldHtml).join('')+sniperExtra+`<p class="mu">Save writes to <b>your ${e==='sniper'?'SNIPER':e.toUpperCase()} mode only</b> — independent from other modes and accounts. ${e==='sniper'?'Sniper filters are fail-closed: missing market/safety data never buys.':('Buy mode, TP/SL, allocation, reserve, MC/liquidity, slippage, max positions and deployment are what the worker reads for your live copy + exits.')} Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><div id="tgGuide">${tgGuideHtml}</div><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Connect</button><button class="btn sm" id="tgDisconnect" type="button" hidden>Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
+ const scope=s.tokenScope==='OLD'?'OLD':s.tokenScope==='BOTH'?'BOTH':'NEW';
+ const mig=s.migratedFilter||'any';
+ const sniperExtra=e==='sniper'?`<div class="snip-help"><b>Runtime modes</b><br>
+<b>Monitor only</b> — enrich + filter every Pump.fun create; rows land in Pending; never qualifies a buy. Best default while you tune filters.<br>
+<b>On chain (qualify, no buy)</b> — tokens that pass filters mark as qualified, still no broadcast. Use to verify sizing/risk before going live.<br>
+<b>Live trading</b> — buys when host <b>SNIPER_ENABLED=true</b>, bot is ON, and every fail-closed filter passes. Start tiny (0.05–0.25 SOL/pos).</div>
+<label>Sniper runtime mode</label><select id="s_sniperRuntimeMode"><option value="monitor" ${s.sniperRuntimeMode==='monitor'?'selected':''}>Monitor only</option><option value="onchain" ${s.sniperRuntimeMode==='onchain'?'selected':''}>On chain (qualify, no buy)</option><option value="live" ${s.sniperRuntimeMode==='live'?'selected':''}>Live trading</option></select>
+<label>Token scope</label><select id="s_tokenScope"><option value="NEW" ${scope==='NEW'?'selected':''}>New tokens</option><option value="OLD" ${scope==='OLD'?'selected':''}>Old tokens</option><option value="BOTH" ${scope==='BOTH'?'selected':''}>New + old (age window)</option></select>
+<p class="mu" style="margin:4px 0 0">Replaces copy-trade “first / every buy”. <b>New</b> = age ≤ max age. <b>Old</b> = age ≥ min age. <b>Both</b> = between min and max.</p>
+<label>Max token age (minutes) — new / window</label><input id="s_maxTokenAgeMin" type="number" step="1" value="${s.maxTokenAgeMin??120}">
+<label>Min token age (minutes) — old / window</label><input id="s_minTokenAgeMin" type="number" step="1" value="${s.minTokenAgeMin??60}">
+<label>Min 24h volume (USD)</label><input id="s_minVolume24hUsd" type="number" step="any" value="${s.minVolume24hUsd??0}">
+<label>Migrated</label><select id="s_migratedFilter"><option value="any" ${mig==='any'?'selected':''}>Any (bonding or migrated)</option><option value="bonding" ${mig==='bonding'?'selected':''}>Bonding curve only</option><option value="migrated" ${mig==='migrated'?'selected':''}>Migrated only</option></select>
+<div class="row" style="gap:12px;flex-wrap:wrap;margin:8px 0">
+<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="s_requireSocials" ${s.requireSocials?'checked':''}> Require socials / profile</label>
+<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="s_requireProfile" ${s.requireProfile?'checked':''}> Require profile</label>
+<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="s_requireTwitter" ${s.requireTwitter?'checked':''}> Require X / Twitter</label>
+<label style="display:flex;gap:6px;align-items:center;margin:0"><input type="checkbox" id="s_requireWebsite" ${s.requireWebsite?'checked':''}> Require website</label>
+</div>
+<label>Min holders (0 = off)</label><input id="s_minHolders" type="number" step="1" value="${s.minHolders??0}">
+<label>Max holders (0 = off)</label><input id="s_maxHolders" type="number" step="1" value="${s.maxHolders??0}">
+<label>Max snipers %</label><input id="s_maxSniperPct" type="number" step="any" value="${s.maxSniperPct??40}">
+<label>Max dev holding %</label><input id="s_maxDevHoldingPct" type="number" step="any" value="${s.maxDevHoldingPct??15}">
+<label>Max top-holder %</label><input id="s_maxTopHolderPct" type="number" step="any" value="${s.maxTopHolderPct??35}">
+<label>Max position (SOL)</label><input id="s_maxPositionSol" type="number" step="any" value="${s.maxPositionSol??0.25}">
+<label>Max deployed (SOL)</label><input id="s_maxDeployedSol" type="number" step="any" value="${s.maxDeployedSol??2}">
+<label>Daily loss limit (SOL)</label><input id="s_dailyLossLimitSol" type="number" step="any" value="${s.dailyLossLimitSol??1}">
+<label>Allowed launchpads</label><input id="s_allowedLaunchpads" value="${s.allowedLaunchpads||'pump.fun'}"><p class="mu">Comma-separated: pump.fun, pumpswap, raydium</p>`:'';
+ $('#dr').innerHTML=`<div class="row sp"><h3>${e==='sniper'?'SNIPER':e.toUpperCase()} settings</h3><button class="btn sm" type="button" id="drClose">Close</button></div>`+(e==='sniper'?sniperExtra:'')+fields.map(fieldHtml).join('')+(e==='sniper'?'':sniperExtra)+`<p class="mu">Save writes to <b>your ${e==='sniper'?'SNIPER':e.toUpperCase()} mode only</b> — independent from other modes and accounts. ${e==='sniper'?'Sniper filters are fail-closed: missing market/safety data never buys. Recommended path: Monitor → On chain → Live with small SOL caps.':('Buy mode, TP/SL, allocation, reserve, MC/liquidity, slippage, max positions and deployment are what the worker reads for your live copy + exits.')} Units K/M convert to absolute USD on save. Host TRADING_ENABLED still overrides the dashboard switch.</p><p class="rd" id="se"></p><button class="btn pri" id="sv" type="button" style="width:100%;margin-top:8px">Save settings</button><button class="btn tg" id="tgConnect" type="button" aria-expanded="false" aria-controls="tgBox" style="width:100%;margin-top:10px">Connect Telegram BOT</button><div id="tgBox" class="tg-panel" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--ln)" hidden><div id="tgGuide">${tgGuideHtml}</div><label for="tgChat">Telegram chat ID</label><input id="tgChat" placeholder="e.g. 123456789" inputmode="numeric" autocomplete="off"><p class="mu" id="tgStatus" style="margin:8px 0 0">Loading…</p><div class="row" style="margin-top:10px;gap:8px"><button class="btn tg" id="tgSave" type="button" style="flex:1">Connect</button><button class="btn sm" id="tgDisconnect" type="button" hidden>Disconnect</button></div><p class="rd" id="tgErr"></p></div>`;
  dr.classList.add('o');
  $('#drClose')&&($('#drClose').onclick=()=>dr.classList.remove('o'));
- $('#sv').onclick=async()=>{const n={};FLD.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
-  n.buyMode=n.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';
+ $('#sv').onclick=async()=>{const n={};fields.forEach(([k,,t])=>{if(t===4||t===5){n[k]=+$('#s_'+k).value;return}const v=$('#s_'+k).value;n[k]=t>=2?v:+v});
+  if(e!=='sniper')n.buyMode=n.buyMode==='EVERY_BUY'?'EVERY_BUY':'FIRST_ONLY';
   n.minMcUnit=($('#s_minMcUnit')?.value==='M')?'M':'K';
   n.maxMcUnit=($('#s_maxMcUnit')?.value==='M')?'M':'K';
   n.liqUnit=($('#s_liqUnit')?.value==='M')?'M':'K';
@@ -1278,7 +1367,7 @@ function settings(e){const s=S[e].set;
    // Persist only this mode for this signed-in account (never overwrites the other mode).
    await api('PATCH','/api/settings',{
     mode:e,
-    exitStrategy:n.tpMode,firstBuyOnly:n.buyMode!=='EVERY_BUY',
+    exitStrategy:n.tpMode,firstBuyOnly:e==='sniper'?false:n.buyMode!=='EVERY_BUY',
     tradeAllocationPct:n.alloc,maxCapitalPerTokenPct:n.maxTok,
     minMarketCapUsd:minMcUsd,maxMarketCapUsd:maxMcUsd,maxDeploymentPct:n.maxDep,maxOpenPositions:n.maxPos,reservePct:n.res,
     minTradeUsd:(e==='sol'||e==='sniper')&&UI.sol.usd?n.min*UI.sol.usd:n.min,maxSlippageBps:Math.round(n.slip*100),maxPriceImpactPct:n.impact,minLiquidityUsd:minLiqUsd,
@@ -1286,6 +1375,20 @@ function settings(e){const s=S[e].set;
     ui:{...n,engine:S[e].bot||'PAUSED',
       ...(e==='sniper'?{
         sniperRuntimeMode:($('#s_sniperRuntimeMode')?.value||'monitor'),
+        tokenScope:($('#s_tokenScope')?.value||'NEW'),
+        maxTokenAgeMin:+($('#s_maxTokenAgeMin')?.value||120),
+        minTokenAgeMin:+($('#s_minTokenAgeMin')?.value||60),
+        minVolume24hUsd:+($('#s_minVolume24hUsd')?.value||0),
+        migratedFilter:($('#s_migratedFilter')?.value||'any'),
+        requireSocials:!!$('#s_requireSocials')?.checked,
+        requireProfile:!!$('#s_requireProfile')?.checked,
+        requireTwitter:!!$('#s_requireTwitter')?.checked,
+        requireWebsite:!!$('#s_requireWebsite')?.checked,
+        minHolders:+($('#s_minHolders')?.value||0),
+        maxHolders:+($('#s_maxHolders')?.value||0),
+        maxSniperPct:+($('#s_maxSniperPct')?.value||40),
+        maxDevHoldingPct:+($('#s_maxDevHoldingPct')?.value||15),
+        maxTopHolderPct:+($('#s_maxTopHolderPct')?.value||35),
         maxPositionSol:+($('#s_maxPositionSol')?.value||0.25),
         maxDeployedSol:+($('#s_maxDeployedSol')?.value||2),
         dailyLossLimitSol:+($('#s_dailyLossLimitSol')?.value||1),
@@ -1293,7 +1396,9 @@ function settings(e){const s=S[e].set;
         sniperEnabled:true,
       }:{})}
    },{mode:e});
-   dr.classList.remove('o');toast(`${e==='sniper'?'SNIPER':e.toUpperCase()} settings saved. ${e==='sniper'?'Runtime '+($('#s_sniperRuntimeMode')?.value||'monitor')+'. ':''}${n.buyMode==='EVERY_BUY'?'Every buy':'First buy only'}, MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
+   dr.classList.remove('o');
+   const scopeToast=$('#s_tokenScope')?.value||'NEW';
+   toast(`${e==='sniper'?'SNIPER':e.toUpperCase()} settings saved. ${e==='sniper'?`Runtime ${$('#s_sniperRuntimeMode')?.value||'monitor'} · ${scopeToast==='OLD'?'Old tokens':scopeToast==='BOTH'?'New+old':'New tokens'}. `:(n.buyMode==='EVERY_BUY'?'Every buy':'First buy only')+', '}MC ${fmtUsdU(n.minMc,n.minMcUnit)} to ${fmtUsdU(n.maxMc,n.maxMcUnit)}, liq ${fmtUsdU(n.minLiq,n.liqUnit)}.`);await refresh();
   }catch(err){$('#se').textContent=err.message}};
  // Paint Connect / Connected + Disconnect from link state (BUY/SELL alerts only).
  const paintTg=(linked,masked)=>{
