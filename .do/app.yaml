@@ -1,11 +1,14 @@
 # DigitalOcean App Platform — COPYRA
 # Push to GitHub main → autodeploy. See docs/DEPLOY.md.
 #
-# Architecture (phase-4 ready):
+# Architecture (phase-5 ready):
 #  * api     — HTTP + dashboard only (health checks stay green)
-#  * worker  — dedicated 24/7 copy-trade process (SOL + EVM + exits)
+#  * worker  — dedicated 24/7 copy-trade process (SOL + EVM + COPY exits)
+#  * sniper  — dedicated Pump.fun discovery + SNIPER exits (independent)
 # Keeping them on separate containers is what stops Degraded/503 when the
 # trading engine is busy.
+# If GitHub CI is green but live HTML last-modified is stale: DO → Actions →
+# Force rebuild and deploy (new worker components sometimes stall autodeploy).
 #
 # Domain: Cloudflare DNS must be DNS-only (grey cloud). Custom domain must
 # show Active (not Configuring) in DO → Networking → Domains.

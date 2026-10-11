@@ -117,8 +117,12 @@ The production Dockerfile expects the **repository root** as the build context.
 | Component | Type | HTTP port | Run command |
 |---|---|---|---|
 | `api` | Web service | **`8080`** | `/app/scripts/start-production.sh` |
+| `worker` | Worker | **`8080`** (health only) | `/app/scripts/start-worker.sh` |
+| `sniper` | Worker | **`8080`** (health only) | `/app/scripts/start-sniper-worker.sh` |
 
 The API serves the dashboard at `/` and JSON/WS under `/api` and `/health`, so **https://copyra.fun** is one same-origin app (session cookies + Reown SIWE/SIWS work). Set `PUBLIC_PLATFORM_URL` and `CORS_ORIGINS` to include your `*.ondigitalocean.app` host so the DO default URL behaves the same.
+
+If a push is green in GitHub Actions but `copyra.fun` still serves an old `last-modified` / no Sniper Mode UI: DO → **Actions → Force rebuild and deploy** (or rebuild `api` + `sniper`). Autodeploy can stall when a new worker component is first added — see `docs/SNIPER_DO.md`.
 
 ### API health checks
 

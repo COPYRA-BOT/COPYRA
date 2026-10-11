@@ -108,6 +108,7 @@ const heartbeatTimer = setInterval(() => {
     monitor: 'sniper+exits',
     sniperEnabled: env.SNIPER_ENABLED,
     sniperMode: env.SNIPER_MODE,
+    lastSolanaSyncAt: Date.now(),
     lastDiscoveryAt,
     discoveryCount,
     pid: process.pid,
@@ -117,6 +118,11 @@ const heartbeatTimer = setInterval(() => {
 void beat('running', {
   monitor: 'sniper+exits',
   sniperEnabled: env.SNIPER_ENABLED,
+  sniperMode: env.SNIPER_MODE,
+  // Keep a sync-style clock so dashboards that key off lastSolanaSyncAt stay honest.
+  lastSolanaSyncAt: Date.now(),
+  lastDiscoveryAt,
+  discoveryCount,
   boot: true,
   pid: process.pid,
 });

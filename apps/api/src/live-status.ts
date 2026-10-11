@@ -288,6 +288,8 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
       envGuard: env.TRADING_ENABLED,
       solTradingEnabled: env.SOL_TRADING_ENABLED,
       evmTradingEnabled: env.EVM_TRADING_ENABLED,
+      sniperEnabled: env.SNIPER_ENABLED,
+      sniperMode: env.SNIPER_MODE,
       settingsEnabled: settings.tradingEnabled,
       emergencyStop: settings.emergencyStop,
       blockedReason: tradingBlockedReason(settings, signerAvailable),
@@ -321,10 +323,17 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
       const wsAt = Number(detail.lastSolanaWsEventAt ?? 0);
       const syncAgeMs = syncAt > 0 ? Date.now() - syncAt : null;
       const wsAgeMs = wsAt > 0 ? Date.now() - wsAt : null;
-      // Beat alone is not enough — a zombie can keep beatAt + occasional WS
-      // while the subscription sync latch is stuck for hours (false "alive").
-      // Require a fresh sync clock (new code self-heals; zombies fail this).
-      const monitorFresh = syncAgeMs != null && syncAgeMs < 180_000;
+      // Copy worker: beat alone is not enough — a zombie can keep beatAt +
+      // occasional WS while the subscription sync latch is stuck for hours.
+      // Sniper worker has no wallet-sync latch; fresh running beat = live.
+      const isSniperWorker =
+        hb.name === 'copyra-sniper-worker' ||
+        String(hb.name ?? '')
+          .toLowerCase()
+          .includes('sniper');
+      const monitorFresh = isSniperWorker
+        ? Number.isFinite(ageMs) && ageMs < 90_000
+        : syncAgeMs != null && syncAgeMs < 180_000;
       const live =
         Number.isFinite(ageMs) &&
         ageMs < 90_000 &&
