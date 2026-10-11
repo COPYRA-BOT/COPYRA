@@ -322,7 +322,14 @@ export function qualifySniperToken(input: {
     }
   }
 
-  if (config.maxDevHoldingPct > 0 && enrich.devHoldingPct != null) {
+  if (config.maxDevHoldingPct > 0) {
+    if (enrich.devHoldingPct == null) {
+      return {
+        qualified: false,
+        reason: SkipReason.SNIPER_DATA_UNAVAILABLE,
+        detail: 'Dev holding % unavailable (fail-closed).',
+      };
+    }
     if (enrich.devHoldingPct > config.maxDevHoldingPct) {
       return {
         qualified: false,
