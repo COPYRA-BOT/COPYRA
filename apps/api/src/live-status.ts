@@ -321,11 +321,10 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
       const wsAt = Number(detail.lastSolanaWsEventAt ?? 0);
       const syncAgeMs = syncAt > 0 ? Date.now() - syncAt : null;
       const wsAgeMs = wsAt > 0 ? Date.now() - wsAt : null;
-      // Beat alone is not enough — a zombie worker can keep beatAt fresh while
-      // Solana sync has been stuck for hours (DO Degraded / false "alive").
-      const monitorFresh =
-        (syncAgeMs != null && syncAgeMs < 180_000) ||
-        (wsAgeMs != null && wsAgeMs < 180_000);
+      // Beat alone is not enough — a zombie can keep beatAt + occasional WS
+      // while the subscription sync latch is stuck for hours (false "alive").
+      // Require a fresh sync clock (new code self-heals; zombies fail this).
+      const monitorFresh = syncAgeMs != null && syncAgeMs < 180_000;
       const live =
         Number.isFinite(ageMs) &&
         ageMs < 90_000 &&
