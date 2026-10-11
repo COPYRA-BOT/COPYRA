@@ -363,6 +363,15 @@ export function qualifySniperToken(input: {
     };
   }
 
+  // Live buys broadcast via Jupiter only — bonding-curve-only is monitor/onchain OK.
+  if (config.runtimeMode === 'live' && enrich.executionRoute !== 'jupiter') {
+    return {
+      qualified: false,
+      reason: SkipReason.SNIPER_NO_ROUTE,
+      detail: `Live trading requires a Jupiter route (got ${enrich.executionRoute ?? 'none'}). Bonding-curve launches stay in Pending until Jupiter indexes them.`,
+    };
+  }
+
   if (enrich.priceImpactBps == null || enrich.expectedSlippageBps == null) {
     return {
       qualified: false,

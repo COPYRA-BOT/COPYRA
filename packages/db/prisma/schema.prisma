@@ -101,7 +101,7 @@ enum TradeReason {
   EMERGENCY_STOP
 }
 
-/// Which COPYRA strategy owns a position. Copy and sniper share custody but not settings.
+/// Which COPYRA strategy owns a position. Sniper uses CustodyFamily.SNIPER; copy uses SOLANA/EVM.
 enum TradingStrategy {
   COPY
   SNIPER
@@ -178,10 +178,12 @@ enum SkipReason {
   SNIPER_DISABLED
 }
 
-/// Per-user custody key family (one Solana wallet + one EVM address for all EVM chains).
+/// Per-user custody key family.
+/// SOLANA = copy-trade Solana · EVM = copy-trade EVM · SNIPER = sniper-only Solana wallet.
 enum CustodyFamily {
   SOLANA
   EVM
+  SNIPER
 }
 
 /// Dashboard / engine mode. SOL, EVM (copy), and SNIPER settings are independent per user.

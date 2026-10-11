@@ -216,41 +216,60 @@ export async function enrichSniperToken(
   let priceImpactBps: number | null = null;
   let expectedSlippageBps: number | null = null;
 
-  try {
-    const buy = await getJupiterQuote({
+  // Parallel buy + sell quotes when decimals known — cuts enrich RTT.
+  const sellAmount =
+    authorities.decimals != null
+      ? String(10 ** Math.min(authorities.decimals, 6))
+      : null;
+  const [buyRes, sellRes] = await Promise.all([
+    getJupiterQuote({
       inputMint: WRAPPED_SOL_MINT_STR,
       outputMint: mint,
       amountRaw: String(lamports),
       slippageBps: config.maxSlippageBps,
-    });
-    jupiterBuyOk = Boolean(buy.quote?.outAmount && BigInt(buy.quote.outAmount) > 0n);
-    if (buy.priceImpactPct != null && Number.isFinite(buy.priceImpactPct)) {
-      priceImpactBps = Math.round(buy.priceImpactPct * 100);
+    }).then(
+      (buy) => ({ ok: true as const, buy }),
+      (error: unknown) => ({ ok: false as const, error }),
+    ),
+    sellAmount
+      ? getJupiterQuote({
+          inputMint: mint,
+          outputMint: WRAPPED_SOL_MINT_STR,
+          amountRaw: sellAmount,
+          slippageBps: config.maxSlippageBps,
+        }).then(
+          (sell) => ({ ok: true as const, sell }),
+          (error: unknown) => ({ ok: false as const, error }),
+        )
+      : Promise.resolve(null),
+  ]);
+
+  if (buyRes.ok) {
+    jupiterBuyOk = Boolean(buyRes.buy.quote?.outAmount && BigInt(buyRes.buy.quote.outAmount) > 0n);
+    if (buyRes.buy.priceImpactPct != null && Number.isFinite(buyRes.buy.priceImpactPct)) {
+      priceImpactBps = Math.round(buyRes.buy.priceImpactPct * 100);
     }
     expectedSlippageBps = config.maxSlippageBps;
     if (!jupiterBuyOk) errors.push('buyRoute:empty');
-  } catch (error) {
+  } else {
     jupiterBuyOk = false;
-    errors.push(`buyRoute:${error instanceof Error ? error.message : String(error)}`);
+    errors.push(
+      `buyRoute:${buyRes.error instanceof Error ? buyRes.error.message : String(buyRes.error)}`,
+    );
   }
 
-  if (authorities.decimals != null && jupiterBuyOk) {
-    try {
-      const sellAmount = String(10 ** Math.min(authorities.decimals, 6));
-      const sell = await getJupiterQuote({
-        inputMint: mint,
-        outputMint: WRAPPED_SOL_MINT_STR,
-        amountRaw: sellAmount,
-        slippageBps: config.maxSlippageBps,
-      });
-      jupiterSellOk = Boolean(sell.quote?.outAmount && BigInt(sell.quote.outAmount) > 0n);
-      if (!jupiterSellOk) errors.push('sellRoute:empty');
-    } catch (error) {
-      jupiterSellOk = false;
-      errors.push(`sellRoute:${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else if (jupiterBuyOk) {
+  if (sellRes == null && jupiterBuyOk) {
     errors.push('sellRoute:decimals-unknown');
+  } else if (sellRes?.ok) {
+    jupiterSellOk = Boolean(
+      sellRes.sell.quote?.outAmount && BigInt(sellRes.sell.quote.outAmount) > 0n,
+    );
+    if (!jupiterSellOk) errors.push('sellRoute:empty');
+  } else if (sellRes && !sellRes.ok) {
+    jupiterSellOk = false;
+    errors.push(
+      `sellRoute:${sellRes.error instanceof Error ? sellRes.error.message : String(sellRes.error)}`,
+    );
   }
 
   const routed = resolveSniperExecutionRoute({
@@ -259,12 +278,12 @@ export async function enrichSniperToken(
     pump,
   });
 
-  let buyRouteOk: boolean | null = routed.buyRouteOk;
-  let sellRouteOk: boolean | null = routed.sellRouteOk;
+  // Keep pump.fun bonding as a valid discovery/qualify route for monitor+onchain.
+  // Live buys still require Jupiter (see qualifySniperToken).
+  const buyRouteOk: boolean | null = routed.buyRouteOk;
+  const sellRouteOk: boolean | null = routed.sellRouteOk;
   if (routed.route === 'pump.fun' && !jupiterBuyOk) {
-    buyRouteOk = false;
-    sellRouteOk = false;
-    errors.push('route:pump-curve-active-awaiting-jupiter-or-pumpswap');
+    errors.push('route:pump-curve-active-awaiting-jupiter-for-live');
   }
 
   if (expectedSlippageBps == null && jupiterBuyOk) {
@@ -282,8 +301,8 @@ export async function enrichSniperToken(
       if (!swapActivityOk) errors.push('activity:zero-volume');
     }
   } else if (pump?.tradeable && event.eventKind === 'create') {
-    swapActivityOk = null;
-    errors.push('activity:create-without-verified-swaps');
+    // Fresh create with an active curve — treat as nascent activity for discovery.
+    swapActivityOk = true;
   }
 
   if (authorities.mintAuthority === 'unknown') errors.push('mintAuthority:unread');

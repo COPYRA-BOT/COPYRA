@@ -84,7 +84,7 @@ h1{font:800 clamp(40px,9vw,64px)/1.02 'Inter Tight',system-ui;letter-spacing:-.0
 .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr))}.kp{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));margin-bottom:16px}
 .k{background:var(--sf);border:1px solid var(--ln);border-radius:16px;padding:14px}.k small,.mu{color:var(--mu)}.k b{display:block;font-size:22px}
 .n{font:800 38px/1.1 'Inter Tight',system-ui;letter-spacing:-.03em}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.sp{justify-content:space-between}
-.g{color:var(--g)}.rd{color:var(--r)}.wn{color:var(--w)}.bd{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;color:#fff}.bd.sol{background:var(--sol)}.bd.evm{background:var(--evm)}
+.g{color:var(--g)}.rd{color:var(--r)}.wn{color:var(--w)}.bd{font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;color:#fff}.bd.sol{background:var(--sol)}.bd.evm{background:var(--evm)}.bd.sniper{background:#00a8b8}
 .tw{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:14px}th{color:var(--mu);font-weight:500;text-align:left;position:sticky;top:0}td,th{padding:9px 8px;border-bottom:1px solid var(--ln);white-space:nowrap}
 .sw{width:64px;height:32px;border-radius:99px;border:0;background:var(--sf2);position:relative}.sw:after{content:"";position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.2s}.sw.on{background:var(--g)}.sw.on:after{left:36px}
 .ban{padding:12px 16px;border-radius:14px;background:rgba(245,185,66,.14);color:var(--w);margin:16px 0}.ban.live{background:rgba(255,107,107,.14);color:var(--r)}
@@ -149,7 +149,7 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 <div class="tabs" id="tabs"></div><input id="q" placeholder="Search traders, tokens, history" style="display:none;margin-top:14px"><div id="v"></div></main>
 <script>
 const $=s=>document.querySelector(s),UI={sol:{u:'SOL',k:1e9,usd:0,d:3,ch:['solana']},evm:{u:'USDC',k:1e6,usd:1,d:2,ch:['ethereum','base','arb','bnb']}};
-UI.sniper=UI.sol; // Sniper Mode shares SOL quote asset + custody
+UI.sniper=UI.sol; // Sniper Mode uses SOL quote asset; custody wallet is independent
 const CH={solana:'Solana',ethereum:'Ethereum',base:'Base',arb:'Arbitrum',bnb:'BNB Chain'};
 const EVM_CH_KEYS=['ethereum','base','arb','bnb'];
 const EVM_CH_TO_CHAIN={ethereum:'ETHEREUM',base:'BASE',arb:'ARBITRUM',bnb:'BSC'};
@@ -201,9 +201,11 @@ const unitMul=u=>u==='M'?1e6:1e3;
 const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp:0,sl:10,trTp:20,trFrac:50,trTrail:15,slip:1,impact:8,minLiq:50,liqUnit:'K',minMc:50,minMcUnit:'K',maxMc:20000,maxMcUnit:'K',mcUnit:'K',buyMode:'EVERY',maxDep:80,maxTok:50,bl:''});
 const empty=e=>({cash:e=='sol'||e=='sniper'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'||e=='sniper'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'||e=='sniper'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'||e=='sniper'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'||e=='sniper'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],sniperSig:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,balError:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm'),sniper:empty('sol')};
-const modeEng=e=>e==='sniper'?'sol':e; // sniper shares SOL custody shape
+const modeEng=e=>e==='sniper'?'sol':e; // sniper login session = Solana; custody ≠ SOL copy
+/** Wallet key for connect/sign-in UI — sniper prefers Solana, can also link EVM. */
+const connectEng=e=>e==='sniper'?'sol':e;
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
-/** Dashboard modes: sol | evm | sniper (sniper shares SOL custody session). */
+/** Dashboard modes: sol | evm | sniper (sniper has own Solana custody; Solana-first connect). */
 /** Live position chart: id + timeframe + last payload + poll handle. */
 let chartId=null,chartTf='15m',chartData=null,chartErr=null,chartTimer=null,chartLoading=false;
 /** Email/Google sentinel `acct_…` is not a real chain wallet — never treat as Connect Wallet. */
@@ -385,15 +387,16 @@ function hydrate(snap){
     next.sniperSig=(snap.sniperSignals||[]).filter(s=>owns(s)).slice(0,60);
    } else next.sniperSig=[];
   }
-  // Prefer mode-scoped balance payload so SOL/EVM accounts never cross-contaminate.
-  // Sniper Mode reuses Solana custody balances + SOL session.
+  // Prefer mode-scoped balance payload — SOL / EVM / SNIPER never share spendable buckets.
+  // Sniper login uses Solana session; custody address comes from balances.sniper.
   const eng=modeEng(e);
-  const modeBal=snap.balances?.[eng];
+  const balKey=e==='sniper'?'sniper':eng;
+  const modeBal=snap.balances?.[balKey]||(e==='sniper'?null:snap.balances?.[eng]);
   const multiCust=!!(modeBal?.multiUserCustody??snap.balances?.multiUserCustody);
-  const allWallets=modeBal?.wallets||(snap.balances?.wallets||[]).filter(w=>modeOf(w.chain)===eng);
+  const allWallets=modeBal?.wallets||(e==='sniper'?[]:(snap.balances?.wallets||[]).filter(w=>modeOf(w.chain)===eng));
   // Only this account's custody wallets. NEVER the shared bot signer (ExQW… / 0xc859…).
   const custodyWallets=allWallets.filter(w=>w.userScoped||w.role==='custody');
-  const signedIn=!!(wallet[eng]||snap.auth?.[eng]?.address);
+  const signedIn=!!(wallet[eng]||snap.auth?.[e==='sniper'?'sniper':eng]?.address||snap.auth?.[eng]?.address);
   const wallets=custodyWallets.length?custodyWallets:(multiCust||signedIn?[]:allWallets);
   const scopedAddr=modeBal?.custodyAddress||wallets.find(w=>w.address)?.address||null;
   next.wa=scopedAddr||null;
@@ -650,7 +653,7 @@ function liveBanner(e){
  return `<div class="ban" style="background:rgba(61,220,151,.12);color:var(--g)">Live market data. Balances, signals, and fills are read from chain RPC.</div>`;
 }
 // ---- UI (same markup as the uploaded COPYRA frontend) ----
-const bd=e=>`<span class="bd ${e}">${e.toUpperCase()}</span>`,pnlC=x=>x>=0?'g':'rd';
+const bd=e=>`<span class="bd ${e}">${e==='sniper'?'SNIPER':e.toUpperCase()}</span>`,pnlC=x=>x>=0?'g':'rd';
 function fmtUsdU(v,u){const n=Number(v);if(!Number.isFinite(n))return'*';return u==='M'?`$${n}M`:`$${n}K`}
 function fmtUsdCompact(n){const x=Number(n);if(!Number.isFinite(x))return'—';if(x>=1e6)return`$${(x/1e6).toFixed(2)}M`;if(x>=1e3)return`$${(x/1e3).toFixed(1)}K`;return`$${x.toFixed(0)}`}
 function sniperTermHtml(sigs){
@@ -740,17 +743,18 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
  const wrk=s.worker;
  // Custody cache refresh stays silent in the background (no public "last confirmed" banner).
  // Connect-wallet uses the same warm tone as other custody notes (not red .ban.live).
- const wrkNote=!wallet[e]
-  ?`<div class="ban" style="margin-bottom:12px">Connect your wallet and start copy trading smart wallets.</div>`
+ const sessW=wallet[connectEng(e)]||wallet.sol;
+ const wrkNote=!sessW
+  ?`<div class="ban" style="margin-bottom:12px">${e==='sniper'?'Connect a Solana wallet (preferred) to use Sniper Mode. You can also link an EVM wallet from Account.':'Connect your wallet and start copy trading smart wallets.'}</div>`
   :(!s.balReady
    ?`<div class="ban" style="margin-bottom:12px">Loading custody balances…</div>`
-   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0
+   :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0&&e!=='sniper'
     ?`<div class="ban" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
-    :''));
+    :(e==='sniper'&&s.wa&&cash===0?`<div class="ban" style="margin-bottom:12px">Sniper custody is empty (0 ${X.u}). Deposit SOL to this sniper-only address to fund buys — independent from SOL Mode.</div>`:'')));
  return `${liveBanner(e)}${wrkNote}
-<div class="grid"><div class="card"><h3>Trading Balance</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${usdLine()}</div>
+<div class="grid"><div class="card"><h3>${e==='sniper'?'Sniper Trading Balance':'Trading Balance'}</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${usdLine()}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
-<p class="mu">Next copy trade: <b style="color:var(--tx)">${nxLabel} ${X.u}</b>${(showAmt||Number(nx)===0)&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(wallet[e]?'Resolving custody…':'Connect and sign in')}${wallet[e]?' · signed in '+wallet[e].slice(0,4)+'…'+wallet[e].slice(-4):''}.</p>
+<p class="mu">Next ${e==='sniper'?'sniper':'copy'} trade: <b style="color:var(--tx)">${nxLabel} ${X.u}</b>${(showAmt||Number(nx)===0)&&X.usd?` (${usd(e,nx)})`:''}. Each trade uses ${s.set.alloc}% of spendable. ${s.wa?`Custody <b>${s.wa.slice(0,4)}…${s.wa.slice(-4)}</b> · live RPC`:(sessW?'Resolving custody…':'Connect and sign in')}${sessW?' · signed in '+sessW.slice(0,4)+'…'+sessW.slice(-4):''}${e==='sniper'?' · sniper-only wallet':''}.</p>
 <div class="row"><button class="btn pri" onclick="dep()">Deposit ${X.u}</button><button class="btn" onclick="mv('t2s')">Move to Savings</button></div></div>
 <div class="card"><h3>Savings Balance</h3><div class="n">${amt(s.sav)} ${X.u}</div><div class="mu">Reserved on your custody wallet. Not used for copy trades until you move it back to Trading.</div>
 <p class="mu">Only the Trading Balance is available to the trading engine.</p>
@@ -762,28 +766,34 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
 <p class="mu">Timings are measured from confirmed trades.${e=='evm'?' Gas is sponsored by COPYRA when execution is live.':''}</p></div>
 ${e=='evm'?`<div class="card"><h3>Chains and Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'*'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
 ${e==='sniper'?`${(()=>{const sigs=s.sniperSig||[];const withDet=sigs.filter(k=>k.detectLatencyMs!=null);const withExec=sigs.filter(k=>k.execLatencyMs!=null);const avg=a=>a.length?Math.round(a.reduce((x,y)=>x+y,0)/a.length):null;const avgDet=avg(withDet.map(k=>Number(k.detectLatencyMs)));const avgExec=avg(withExec.map(k=>Number(k.execLatencyMs)));const liveOn=!!(LIVE?.settings?.host?.sniperEnabled&&(s.set.sniperRuntimeMode||'monitor')==='live'&&s.bot==='ON');return`<div class="card"><h3>Sniper discovery</h3><p class="mu">Pump.fun / launch events via Helius. Fail-closed filters — missing safety data never buys.</p>
-<p class="${liveOn?'g':'wn'}" style="margin:8px 0">${liveOn?'● LIVE TRADING ENABLED':'● Live trading OFF — monitor/onchain or host SNIPER_ENABLED=false'}</p>
-<div class="kp"><div class="k"><small>Runtime</small><b>${(s.set.sniperRuntimeMode||'monitor').toUpperCase()}</b></div><div class="k"><small>Host</small><b>${LIVE?.settings?.host?.sniperEnabled?'ENABLED':'OFF'}</b></div><div class="k"><small>Max MC</small><b>$${(s.set.maxMc*unitMul(s.set.maxMcUnit)/1e6).toFixed(1)}M</b></div><div class="k"><small>Min liq</small><b>$${(s.set.minLiq*unitMul(s.set.liqUnit)/1e3).toFixed(0)}K</b></div></div>
+${(()=>{const sw=(LIVE?.status?.workers||[]).find(w=>String(w.name||'').includes('sniper'));const d=sw?.detail||{};const hostOn=!!(LIVE?.settings?.host?.sniperEnabled??LIVE?.status?.trading?.sniperEnabled);return`<p class="${liveOn?'g':'wn'}" style="margin:8px 0">${liveOn?'● LIVE TRADING ENABLED':hostOn?'● Host ENABLED — set runtime Live + bot ON to buy':'● Live trading OFF — monitor/onchain or host SNIPER_ENABLED=false'}</p>
+<div class="kp"><div class="k"><small>Runtime</small><b>${(s.set.sniperRuntimeMode||'monitor').toUpperCase()}</b></div><div class="k"><small>Host</small><b>${hostOn?'ENABLED':'OFF'}</b></div><div class="k"><small>Max MC</small><b>$${(s.set.maxMc*unitMul(s.set.maxMcUnit)/1e6).toFixed(1)}M</b></div><div class="k"><small>Min liq</small><b>$${(s.set.minLiq*unitMul(s.set.liqUnit)/1e3).toFixed(0)}K</b></div></div>
 <div class="kp" style="margin-top:8px"><div class="k"><small>Avg detect→qualify</small><b>${avgDet!=null?avgDet+' ms':'—'}</b></div><div class="k"><small>Avg exec</small><b>${avgExec!=null?avgExec+' ms':'—'}</b></div><div class="k"><small>Signals</small><b>${sigs.length}</b></div><div class="k"><small>Open sniper</small><b>${P.length}</b></div></div>
-<p class="mu">Size cap ${s.set.maxPositionSol??0.25} SOL · Deployed cap ${s.set.maxDeployedSol??2} SOL · Daily loss ${s.set.dailyLossLimitSol??1} SOL · Pads: ${s.set.allowedLaunchpads||'pump.fun'}</p>
+<div class="kp" style="margin-top:8px"><div class="k"><small>WS</small><b class="${d.wsConnected?'g':'wn'}">${d.wsConnected?'connected':'…'}</b></div><div class="k"><small>WS events</small><b>${d.wsNotifications??'—'}</b></div><div class="k"><small>Decoded</small><b>${d.decodeOk??'—'}</b></div><div class="k"><small>Decode fail</small><b>${d.decodeFail??'—'}</b></div></div>
+<p class="mu">Size cap ${s.set.maxPositionSol??0.25} SOL · Deployed cap ${s.set.maxDeployedSol??2} SOL · Daily loss ${s.set.dailyLossLimitSol??1} SOL · Pads: ${s.set.allowedLaunchpads||'pump.fun'} · Discovery count ${d.discoveryCount??0}</p>`})()}
 <div class="row"><button class="btn" onclick="settings('${e}')">Sniper settings</button><button class="btn red" onclick="killSwitch('${e}')">Kill Switch</button></div></div>`})()}
 <div class="card"><h3>Pending detections</h3><p class="mu">Live terminal of on-chain discoveries with metadata from enrich (age, MC, liq, holders, socials). Fail-closed rejects show exact reasons.</p><div class="snip-term">${sniperTermHtml(s.sniperSig)||'<p class="mu" style="padding:8px">No detections yet. When the sniper worker sees a Pump.fun create, rows stream here.</p>'}</div></div>`:`<div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>`}
 <div class="card"><h3>Open Positions</h3>${P.length?P.map(p=>posCardHtml(e,p,s,X)).join(''):`<p class="mu">${e==='sniper'?'No open sniper positions. A sniper entry opens only after a launch passes every fail-closed filter and a live buy confirms.':'No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.'}</p>`}</div>
 ${(()=>{const pg=pageSlice(s.act,actPage[e]||1);const emptyMsg=!LIVE?.auth?.[e]?.userId?`Sign in on ${e.toUpperCase()} to see this mode's Recent Activity.`:`No ${e.toUpperCase()} activity yet.`;return`<div class="card"><h3>Recent Activity · ${e.toUpperCase()}</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||`<p class="mu">${emptyMsg}</p>`}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
 <details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b>. ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, market cap or liquidity window, first buy mode, and similar checks).</p>'}</div></details>
 ${howItWorksHtml(e)}`}
-const allHist=()=>['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||h.tr.toLowerCase().includes(q));
+const allHist=()=>['sol','evm','sniper'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].hist.map(h=>({...h,e}))).sort((a,b)=>b.t-a.t).filter(h=>!q||h.sym.toLowerCase().includes(q)||(h.tr||'').toLowerCase().includes(q));
 const filteredHist=()=>allHist().filter(h=>histPnL==='profit'?h.usd>0:histPnL==='loss'?h.usd<0:true);
-const segF=()=>`<div class="seg">${['all','sol','evm'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';histPage=1;draw()">${x=='all'?'All':x.toUpperCase()}</button>`).join('')}</div>`;
+const segF=()=>`<div class="seg">${['all','sol','evm','sniper'].map(x=>`<button class="${F==x?'on':''}" onclick="F='${x}';histPage=1;draw()">${x=='all'?'All':x==='sniper'?'SNIPER':x.toUpperCase()}</button>`).join('')}</div>`;
 function monitor(){const tot=e=>UI[e].usd?(cashOf(e)+invOf(e)+S[e].sav)/UI[e].k*UI[e].usd:0,H=allHist(),today=H.filter(h=>Date.now()-h.t<864e5).reduce((a,h)=>a+h.usd,0);
  const heads=(LIVE?.status?.chains||[]).map(c=>`${c.code} ${c.head||'*'}`).slice(0,4).join(' · ');
  const pnlLive=LIVE?.pnl;
- return `${liveBanner('sol')}<div class="kp"><div class="k"><small>Total portfolio</small><b>$${(tot('sol')+tot('evm')).toLocaleString(undefined,{maximumFractionDigits:0})}</b></div><div class="k"><small>Solana</small><b>$${tot('sol').toFixed(0)}</b></div><div class="k"><small>EVM</small><b>$${tot('evm').toFixed(0)}</b></div><div class="k"><small>Open positions</small><b>${S.sol.pos.length} SOL · ${S.evm.pos.length} EVM</b></div><div class="k"><small>Realized (session)</small><b class="${pnlC(today)}">${sg(today)}</b></div>${pnlLive?`<div class="k"><small>Unrealized (RPC marks)</small><b class="${pnlC(Number(pnlLive.unrealizedQuote||0))}">${sg(Number(pnlLive.unrealizedQuote||0))}</b></div>`:''}</div>
-<p class="mu">Balances and positions are your signed-in custody wallet on live RPC. ${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>{const live=w.live===true?'live':(w.live===false?'stale':w.status);return `${w.name||'worker'} ${live}`;}).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
-<div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}</div>
-<div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON')">Resume all engines</button></div>
+ const snHist=S.sniper.hist||[];
+ const snToday=snHist.filter(h=>Date.now()-h.t<864e5).reduce((a,h)=>a+h.usd,0);
+ const sw=(LIVE?.status?.workers||[]).find(w=>String(w.name||'').includes('sniper'));
+ const sd=sw?.detail||{};
+ return `${liveBanner('sol')}<div class="kp"><div class="k"><small>Total portfolio</small><b>$${(tot('sol')+tot('evm')+tot('sniper')).toLocaleString(undefined,{maximumFractionDigits:0})}</b></div><div class="k"><small>Solana</small><b>$${tot('sol').toFixed(0)}</b></div><div class="k"><small>EVM</small><b>$${tot('evm').toFixed(0)}</b></div><div class="k"><small>Sniper</small><b>$${tot('sniper').toFixed(0)}</b></div><div class="k"><small>Open positions</small><b>${S.sol.pos.length} SOL · ${S.evm.pos.length} EVM · ${S.sniper.pos.length} SNIP</b></div><div class="k"><small>Realized (session)</small><b class="${pnlC(today)}">${sg(today)}</b></div>${pnlLive?`<div class="k"><small>Unrealized (RPC marks)</small><b class="${pnlC(Number(pnlLive.unrealizedQuote||0))}">${sg(Number(pnlLive.unrealizedQuote||0))}</b></div>`:''}</div>
+<p class="mu">Balances and positions are your signed-in custody wallets on live RPC (SOL / EVM / Sniper are independent). ${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>{const live=w.live===true?'live':(w.live===false?'stale':w.status);return `${w.name||'worker'} ${live}`;}).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
+<div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}<div class="card"><h3><span class="bd sniper">SNIPER</span> Sniper engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S.sniper.bot]} · Trading ${f('sniper',cashOf('sniper')+invOf('sniper'))} SOL · Savings ${f('sniper',S.sniper.sav)}</p><p class="mu">Signals ${(S.sniper.sniperSig||[]).length} · Open ${S.sniper.pos.length} · Today PnL <span class="${pnlC(snToday)}">${sg(snToday)}</span> · WS ${sd.wsConnected?'live':'…'} · decoded ${sd.decodeOk??0}</p><div class="row"><button class="btn sm" onclick="bot('sniper','PAUSED')">Pause</button><button class="btn sm" onclick="bot('sniper','ON')">Resume</button><button class="btn sm" onclick="M='sniper';T='trading';draw()">Open SNIPER</button></div></div></div>
+<div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED');bot('sniper','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON');bot('sniper','ON')">Resume all engines</button></div>
+<p class="mu" style="margin:-8px 0 16px">Pause / Kill on one mode never stops the others — copy and sniper workers stay independent.</p>
 <div class="card"><h3>Open positions (all chains)</h3>${['sol','evm','sniper'].flatMap(e=>S[e].pos.map(p=>posCardHtml(e,p,S[e],UI[e]||UI.sol))).join('')||'<p class="mu">None open.</p>'}</div>
-${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
+${(()=>{const all=['sol','evm','sniper'].flatMap(e=>S[e].act.map(a=>({...a,e}))).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
 function board(){const rows=['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].tr.map(t=>({e,t,...stats(S[e].hist.filter(h=>h.trId==t.id||h.tr==t.n))}))).sort((a,b)=>(b.n>0)-(a.n>0)||(b.score??-1e9)-(a.score??-1e9));
  return segF()+`<p class="mu" style="margin:0 0 12px">Leaderboard ranks <b>your</b> copy traders from closed on chain exits in this account. Wins, losses, and net USD P&amp;L. Other wallets never see this list.</p><div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'*'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'*'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'*'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet. Add a wallet on Trading. Stats appear after confirmed exits.</td></tr>'}</table></div>`}
 function pnlv(){const H=filteredHist(),all=allHist(),s=stats(all),W=[...H].reverse();let c=0;const pts=W.map(h=>c+=h.usd),mx=Math.max(0,...pts),mn=Math.min(0,...pts),rg=mx-mn||1;
@@ -1525,7 +1535,8 @@ function csv(){const l=['time,mode,chain,token,trader,exit,size_usd,pnl_usd,pnl_
 $('#mc').onclick=()=>{
   M=M=='sol'?'evm':M=='evm'?'sniper':'sol';T='trading';
   // Mode switch is display-only. never logout or wipe the other account.
-  try{window.CopyraWallet?.setMode?.(M)}catch{}
+  // Sniper connect is Solana-first (AppKit sol namespace).
+  try{window.CopyraWallet?.setMode?.(connectEng(M))}catch{}
   draw();
   // Refresh with the active mode header so the correct session is preferred for /me.
   refresh();
@@ -1636,10 +1647,11 @@ window.addEventListener('copyra-wallet-account',(ev)=>{
     draw();
   }catch{}
 });
-function conn(){const e=M,N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
+function conn(){const e=connectEng(M);const modeLabel=M==='sniper'?'Sniper (Solana)':M==='sol'?'Solana':'EVM';const N=e=='sol'?'Solana':'EVM';const a0=wallet[e];
  // Always show Open wallet list. including when already connected (same address ok).
- md(`<h3>${a0?'Reconnect ':'Connect '}${N} wallet</h3>
+ md(`<h3>${a0?'Reconnect ':'Connect '}${modeLabel} wallet</h3>
 ${a0?`<p class="mu">Connected Wallet: <b style="color:var(--tx)">${a0}</b>. You can open the list again anytime. The same address is fine.</p>`:''}
+${M==='sniper'?`<p class="mu">Sniper Mode is <b>Solana-first</b> (funding + buys on Solana). You can also link an EVM wallet from Account — it does not fund sniper custody.</p>`:''}
 <p class="mu">Tap the WalletConnect button (or <b>Open full wallet list</b>) to show every wallet: MetaMask, Phantom, Solflare, Trust, Coinbase, Rainbow, QR, and All Wallets.</p>
 <div id="akhost" style="width:100%;margin:14px 0;min-height:48px"></div>
 <button class="btn pri" id="bw" style="width:100%">Open full wallet list</button>
@@ -1695,13 +1707,13 @@ ${a0?`<button class="btn red" id="dx" style="width:100%;margin-top:8px">Disconne
  })();
 }
 window.addEventListener('copyra-wallet-ready',()=>{
-  try{window.CopyraWallet?.setMode?.(M)}catch{}
+  try{window.CopyraWallet?.setMode?.(connectEng(M))}catch{}
   // AppKit finished boot. re-hydrate sticky wallets without forcing disconnect.
   try{restoreWallets()}catch{}
 });
 let cnWait=false;
 function beginConnectFromClick(){
-  const e=M,N=e==='sol'?'Solana':'EVM';
+  const e=connectEng(M),N=e==='sol'?'Solana':'EVM';
   // Already signed-in for this mode → open panel (Disconnect / reconnect), do not re-stamp connected.
   if(wallet[e]){conn();return}
   const w=window.CopyraWallet;

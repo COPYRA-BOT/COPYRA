@@ -413,6 +413,8 @@ async function executeExit(
           idempotencyKey,
           userId: ownerUserId,
           urgency: 'exit',
+          custodyFamily:
+            position.strategy === TradingStrategy.SNIPER ? 'SNIPER' : 'SOLANA',
         })
       : await executeEvmSwap({
           chain: position.chain,
@@ -522,7 +524,9 @@ async function executeExit(
     },
   });
 
-  const tradingAddress = await resolveTradingAddress(position.chain, ownerUserId).catch(() => null);
+  const tradingAddress = await resolveTradingAddress(position.chain, ownerUserId, {
+    strategy: position.strategy === TradingStrategy.SNIPER ? TradingStrategy.SNIPER : TradingStrategy.COPY,
+  }).catch(() => null);
   const balance = tradingAddress
     ? await readOnChainBalanceForAddress(position.chain, tradingAddress).catch(() => null)
     : null;

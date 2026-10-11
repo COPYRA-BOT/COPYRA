@@ -12,6 +12,19 @@ export type DiscoveryHandler = (event: SniperDiscoveryEvent) => void | Promise<v
 
 const MINT_RE = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
 
+/** Live WS decode counters for sniper worker heartbeat (process-local). */
+const discoveryStats = {
+  wsNotifications: 0,
+  decodeOk: 0,
+  decodeFail: 0,
+  subs: 0,
+  wsConnected: false,
+};
+
+export function getSniperDiscoveryStats(): Readonly<typeof discoveryStats> {
+  return { ...discoveryStats };
+}
+
 function launchpadForProgram(programId: string): SniperLaunchpad {
   if (programId === (env.PUMP_FUN_PROGRAM_ID || DEFAULT_PUMP_FUN_PROGRAM_ID)) return 'pump.fun';
   if (programId === DEFAULT_PUMP_SWAP_PROGRAM_ID) return 'pumpswap';
@@ -113,25 +126,32 @@ export async function startPumpFunDiscovery(
 
   let closed = false;
   let ws: WebSocket | null = null;
-  let subIds: number[] = [];
   let reconnectTimer: NodeJS.Timeout | null = null;
   let reqId = 1;
+  /** JSON-RPC request id → program id (while waiting for subscribe ACK). */
   const pending = new Map<number, string>();
-
+  /** Subscription id → program id (stable mapping for notifications). */
+  const subToProgram = new Map<number, string>();
   const handleLogsNotification = (programId: string, value: {
     signature: string;
     err: unknown;
     logs: string[];
   }) => {
     if (value.err) return;
+    discoveryStats.wsNotifications += 1;
     void extractEvent(value.signature, programId, value.logs ?? []).then((event) => {
-      if (event) void onEvent(event);
+      if (event) {
+        discoveryStats.decodeOk += 1;
+        void onEvent(event);
+      } else {
+        discoveryStats.decodeFail += 1;
+      }
     });
   };
 
   const subscribeAll = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    subIds = [];
+    subToProgram.clear();
     for (const programId of programs) {
       try {
         // Validate program id early.
@@ -147,7 +167,7 @@ export async function startPumpFunDiscovery(
           jsonrpc: '2.0',
           id,
           method: 'logsSubscribe',
-          params: [{ mentions: [programId] }, { commitment: 'confirmed' }],
+          params: [{ mentions: [programId] }, { commitment: 'processed' }],
         }),
       );
     }
@@ -157,6 +177,7 @@ export async function startPumpFunDiscovery(
     if (closed) return;
     ws = new WebSocket(wsUrl);
     ws.on('open', () => {
+      discoveryStats.wsConnected = true;
       log.info({ programs }, 'Sniper Helius/WS logsSubscribe connected');
       subscribeAll();
     });
@@ -171,14 +192,14 @@ export async function startPumpFunDiscovery(
         if (msg.id != null && typeof msg.result === 'number') {
           const programId = pending.get(msg.id);
           pending.delete(msg.id);
-          if (programId) subIds.push(msg.result);
+          if (programId) subToProgram.set(msg.result, programId);
+          discoveryStats.subs = subToProgram.size;
           return;
         }
         if (msg.method === 'logsNotification' && msg.params?.result?.value) {
-          // Map subscription → program via round-robin order (same as subscribe).
           const sub = msg.params.subscription;
-          const idx = subIds.indexOf(sub ?? -1);
-          const programId = programs[idx >= 0 ? idx : 0] ?? programs[0]!;
+          const programId =
+            (sub != null ? subToProgram.get(sub) : undefined) ?? programs[0]!;
           handleLogsNotification(programId, msg.params.result.value);
         }
       } catch (error) {
@@ -186,9 +207,10 @@ export async function startPumpFunDiscovery(
       }
     });
     ws.on('close', () => {
+      discoveryStats.wsConnected = false;
       if (closed) return;
       log.warn({}, 'Sniper WS closed — reconnecting');
-      reconnectTimer = setTimeout(connect, 2_500);
+      reconnectTimer = setTimeout(connect, 1_500);
     });
     ws.on('error', (err) => {
       log.warn({ err }, 'Sniper WS error');
@@ -199,6 +221,7 @@ export async function startPumpFunDiscovery(
 
   return () => {
     closed = true;
+    discoveryStats.wsConnected = false;
     if (reconnectTimer) clearTimeout(reconnectTimer);
     try {
       ws?.close();

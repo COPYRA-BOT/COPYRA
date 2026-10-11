@@ -4,7 +4,7 @@ import {
   tradingWalletAddress,
   userCustodyAddress,
 } from '@copyra/core';
-import { Chain } from '@copyra/db';
+import { Chain, CustodyFamily } from '@copyra/db';
 
 /** Chains shown on the Solana dashboard. */
 const SOL_CHAINS = [Chain.SOLANA] as const;
@@ -77,17 +77,23 @@ function staleGood(chain: Chain, address: string): WalletEntry | null {
   };
 }
 
-async function fetchCustodyFunds(chain: Chain, userId: string, address: string): Promise<WalletEntry> {
+async function fetchCustodyFunds(
+  chain: Chain,
+  userId: string,
+  address: string,
+  opts?: { family?: CustodyFamily },
+): Promise<WalletEntry> {
   return withTimeout(
     (async () => {
       try {
-        const funds = await getTradingAvailableQuote(chain, userId);
+        const funds = await getTradingAvailableQuote(chain, userId, opts);
         const entry: WalletEntry = {
           chain,
           configured: true,
           address,
           userScoped: true,
           role: 'custody',
+          family: opts?.family ?? null,
           native: funds.onChainQuote,
           available: funds.availableQuote,
           withdrawable: funds.withdrawableQuote,
@@ -139,10 +145,15 @@ async function fetchCustodyFunds(chain: Chain, userId: string, address: string):
   );
 }
 
-function kickCustodyRefresh(chain: Chain, userId: string, address: string): void {
+function kickCustodyRefresh(
+  chain: Chain,
+  userId: string,
+  address: string,
+  opts?: { family?: CustodyFamily },
+): void {
   const key = cacheKey(chain, address);
   if (refreshInflight.has(key)) return;
-  const work = fetchCustodyFunds(chain, userId, address)
+  const work = fetchCustodyFunds(chain, userId, address, opts)
     .then(() => undefined)
     .finally(() => {
       refreshInflight.delete(key);
@@ -154,7 +165,12 @@ function kickCustodyRefresh(chain: Chain, userId: string, address: string): void
  * Stale-while-revalidate: return last confirmed custody balance immediately,
  * refresh RPC in the background. Only waits on RPC when there is no cache yet.
  */
-async function readCustodyFunds(chain: Chain, userId: string, address: string): Promise<WalletEntry> {
+async function readCustodyFunds(
+  chain: Chain,
+  userId: string,
+  address: string,
+  opts?: { family?: CustodyFamily },
+): Promise<WalletEntry> {
   const hit = balanceCache.get(cacheKey(chain, address));
   const age = hit ? Date.now() - hit.at : Number.POSITIVE_INFINITY;
 
@@ -163,7 +179,7 @@ async function readCustodyFunds(chain: Chain, userId: string, address: string): 
   }
 
   if (hit && age < BAL_CACHE_STALE_MS) {
-    kickCustodyRefresh(chain, userId, address);
+    kickCustodyRefresh(chain, userId, address, opts);
     return {
       ...hit.entry,
       source: 'rpc-cache',
@@ -171,7 +187,7 @@ async function readCustodyFunds(chain: Chain, userId: string, address: string): 
     };
   }
 
-  return fetchCustodyFunds(chain, userId, address);
+  return fetchCustodyFunds(chain, userId, address, opts);
 }
 
 /**
@@ -182,7 +198,11 @@ async function readCustodyFunds(chain: Chain, userId: string, address: string): 
  * last successful RPC read for that custody address is returned (stale cache)
  * so buckets do not disappear while the wallet still has funds.
  */
-async function walletEntry(chain: Chain, userId: string | undefined): Promise<WalletEntry> {
+async function walletEntry(
+  chain: Chain,
+  userId: string | undefined,
+  opts?: { family?: CustodyFamily },
+): Promise<WalletEntry> {
   const multi = multiUserCustodyEnabled();
 
   if (multi && !userId) {
@@ -192,6 +212,7 @@ async function walletEntry(chain: Chain, userId: string | undefined): Promise<Wa
       address: null,
       userScoped: true,
       role: 'custody',
+      family: opts?.family ?? null,
       needsAuth: true,
       native: null,
       available: null,
@@ -203,7 +224,11 @@ async function walletEntry(chain: Chain, userId: string | undefined): Promise<Wa
   if (multi && userId) {
     let address: string | null = null;
     try {
-      address = await userCustodyAddress(userId, chain);
+      address = await userCustodyAddress(
+        userId,
+        chain,
+        opts?.family ? { family: opts.family } : undefined,
+      );
     } catch (error) {
       return {
         chain,
@@ -211,10 +236,11 @@ async function walletEntry(chain: Chain, userId: string | undefined): Promise<Wa
         address: null,
         userScoped: true,
         role: 'custody',
+        family: opts?.family ?? null,
         error: error instanceof Error ? error.message : String(error),
       };
     }
-    return readCustodyFunds(chain, userId, address);
+    return readCustodyFunds(chain, userId, address, opts);
   }
 
   // Legacy single-bot mode (MULTI_USER_CUSTODY=false only).
@@ -278,20 +304,23 @@ async function walletEntry(chain: Chain, userId: string | undefined): Promise<Wa
 
 /**
  * Build balances for one mode using that mode's userId.
- * SOL and EVM are independent accounts — never mix userIds across modes.
+ * SOL / EVM / SNIPER are independent spenders — never mix custody families.
  */
 export async function buildModeBalances(
-  mode: 'sol' | 'evm',
+  mode: 'sol' | 'evm' | 'sniper',
   userId?: string,
 ): Promise<{
-  mode: 'sol' | 'evm';
+  mode: 'sol' | 'evm' | 'sniper';
   userId: string | null;
   wallets: WalletEntry[];
   multiUserCustody: boolean;
   custodyAddress: string | null;
 }> {
-  const chains = mode === 'sol' ? SOL_CHAINS : EVM_CHAINS;
-  const wallets = await Promise.all(chains.map((chain) => walletEntry(chain, userId)));
+  const chains = mode === 'evm' ? EVM_CHAINS : SOL_CHAINS;
+  const family = mode === 'sniper' ? CustodyFamily.SNIPER : undefined;
+  const wallets = await Promise.all(
+    chains.map((chain) => walletEntry(chain, userId, family ? { family } : undefined)),
+  );
   const custodyAddress =
     (wallets.find((w) => w.userScoped && typeof w.address === 'string')?.address as string | undefined) ??
     null;

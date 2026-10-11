@@ -870,7 +870,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
       };
     };
 
-    const [status, settingsRes, traders, positions, signals, sniperSignals, trades, solBal, evmBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
+    const [status, settingsRes, traders, positions, signals, sniperSignals, trades, solBal, evmBal, sniperBal, workerWallets, notifications, transfers, deposits, pnl, solUsd] =
       await Promise.all([
         buildLiveStatus(request),
         (async () => {
@@ -941,6 +941,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         // Independent custody reads — never the shared bot signer when a mode session exists.
         buildModeBalances('sol', solUserId),
         buildModeBalances('evm', evmUserId),
+        buildModeBalances('sniper', solUserId),
         // Transparent worker/bot signer balances (informational — not your trading custody).
         buildWorkerWalletBalances(),
         userIds.length
@@ -1003,6 +1004,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         getQuoteAssetPriceUsd(Chain.SOLANA).catch(() => 0),
       ]);
 
+    // Align dashboard host sniper flags with worker heartbeat (see buildLiveStatus).
+    const tradingStatus = status?.trading as
+      | { sniperEnabled?: boolean; sniperMode?: string }
+      | undefined;
+    if (settingsRes?.host && tradingStatus) {
+      (settingsRes.host as { sniperEnabled?: boolean; sniperMode?: string }).sniperEnabled =
+        tradingStatus.sniperEnabled;
+      (settingsRes.host as { sniperEnabled?: boolean; sniperMode?: string }).sniperMode =
+        tradingStatus.sniperMode;
+    }
+
     return jsonSafe({
       status,
       settings: settingsRes,
@@ -1043,14 +1055,25 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
               accountOnly: Boolean(sessions.evm.user.address?.startsWith('acct_')),
             }
           : null,
+        // Sniper shares Solana login identity; custody address is separate (balances.sniper).
+        sniper: sessions.sol
+          ? {
+              address: sessions.sol.user.address?.startsWith('acct_') ? null : sessions.sol.user.address,
+              chain: sessions.sol.user.chain,
+              userId: sessions.sol.user.id,
+              email: sessions.sol.user.email || sessions.sol.user.googleEmail || null,
+              accountOnly: Boolean(sessions.sol.user.address?.startsWith('acct_')),
+            }
+          : null,
       },
       balances: {
         multiUserCustody: solBal.multiUserCustody,
         sol: solBal,
         evm: evmBal,
+        sniper: sniperBal,
         worker: workerWallets,
         // Flat list is custody-only when multi-user is on (never mix in the bot signer).
-        wallets: [...solBal.wallets, ...evmBal.wallets],
+        wallets: [...solBal.wallets, ...evmBal.wallets, ...sniperBal.wallets],
       },
       solUsd,
       readAt: new Date().toISOString(),

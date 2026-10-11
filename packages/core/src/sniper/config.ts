@@ -187,8 +187,9 @@ export async function getSniperConfigFor(userId: string): Promise<SniperConfig> 
   return sniperConfigFromModeRow(modeRow, host);
 }
 
-export function sniperUsesSolCustody(): true {
-  return true;
+/** Sniper uses its own CustodyFamily.SNIPER Solana wallet (not copy SOL). */
+export function sniperUsesSolCustody(): false {
+  return false;
 }
 
 export function sniperChain(): Chain {

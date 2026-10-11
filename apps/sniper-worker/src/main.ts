@@ -5,6 +5,7 @@
  */
 import { ensureSettings, env, initSentry, logger, monitorOpenPositions, telegram } from '@copyra/core';
 import {
+  getSniperDiscoveryStats,
   handleSniperDiscovery,
   SNIPER_HEARTBEAT_NAME,
   startPumpFunDiscovery,
@@ -57,6 +58,7 @@ async function beat(status: string, detail: Prisma.InputJsonValue): Promise<void
 }
 
 function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue {
+  const stats = getSniperDiscoveryStats();
   return {
     monitor: 'sniper+exits',
     sniperEnabled: env.SNIPER_ENABLED,
@@ -64,6 +66,11 @@ function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue 
     lastSolanaSyncAt: Date.now(),
     lastDiscoveryAt,
     discoveryCount,
+    wsConnected: stats.wsConnected,
+    wsNotifications: stats.wsNotifications,
+    decodeOk: stats.decodeOk,
+    decodeFail: stats.decodeFail,
+    subs: stats.subs,
     bootError,
     pid: process.pid,
     ...extra,

@@ -283,13 +283,33 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
     })
     .filter((n): n is number => typeof n === 'number');
 
+  // Prefer sniper worker heartbeat for host sniper flags (API container may not
+  // have SNIPER_* env when only the sniper component was updated in DO).
+  const sniperHb = heartbeats.find(
+    (hb) =>
+      hb.name === 'copyra-sniper-worker' ||
+      String(hb.name ?? '')
+        .toLowerCase()
+        .includes('sniper'),
+  );
+  const sniperDetail =
+    sniperHb?.detail && typeof sniperHb.detail === 'object' && !Array.isArray(sniperHb.detail)
+      ? (sniperHb.detail as Record<string, unknown>)
+      : {};
+  const sniperEnabledLive =
+    typeof sniperDetail.sniperEnabled === 'boolean'
+      ? sniperDetail.sniperEnabled
+      : env.SNIPER_ENABLED;
+  const sniperModeLive =
+    typeof sniperDetail.sniperMode === 'string' ? String(sniperDetail.sniperMode) : env.SNIPER_MODE;
+
   const payload = jsonSafe({
     trading: {
       envGuard: env.TRADING_ENABLED,
       solTradingEnabled: env.SOL_TRADING_ENABLED,
       evmTradingEnabled: env.EVM_TRADING_ENABLED,
-      sniperEnabled: env.SNIPER_ENABLED,
-      sniperMode: env.SNIPER_MODE,
+      sniperEnabled: sniperEnabledLive,
+      sniperMode: sniperModeLive,
       settingsEnabled: settings.tradingEnabled,
       emergencyStop: settings.emergencyStop,
       blockedReason: tradingBlockedReason(settings, signerAvailable),

@@ -308,12 +308,13 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
       amountRaw: requestedRaw,
       slippageBps: config.maxSlippageBps,
       maxPriceImpactPct: Math.max(config.maxPriceImpactBps / 100, 8),
-      quoteMaxAgeMs: 2_000,
-      confirmTimeoutMs: 8_000,
+      quoteMaxAgeMs: 1_500,
+      confirmTimeoutMs: 6_000,
       maxAttempts: 3,
       telemetry,
       idempotencyKey,
       userId,
+      custodyFamily: 'SNIPER',
     });
 
     if (outcome.status !== TxStatus.CONFIRMED || !outcome.txHash) {

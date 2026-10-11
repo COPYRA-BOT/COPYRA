@@ -11,7 +11,7 @@ import {
   recordEvmCustodyDeposit,
   withdrawToWallet,
 } from '@copyra/core';
-import { Chain, prisma } from '@copyra/db';
+import { Chain, CustodyFamily, prisma } from '@copyra/db';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { consumeStepUp } from './account/redis-codes.js';
@@ -19,6 +19,8 @@ import { type AuthMode, readSession } from './auth.js';
 import { jsonSafe } from './serialize.js';
 
 const chainSchema = z.nativeEnum(Chain);
+const fundsModeSchema = z.enum(['sol', 'evm', 'sniper']);
+type FundsMode = z.infer<typeof fundsModeSchema>;
 
 async function requireSession(
   request: FastifyRequest,
@@ -35,11 +37,20 @@ async function requireSession(
   return session;
 }
 
-function modeChain(mode: 'sol' | 'evm', preferred?: Chain): Chain {
-  if (mode === 'sol') return Chain.SOLANA;
+function modeChain(mode: FundsMode, preferred?: Chain): Chain {
+  if (mode === 'sol' || mode === 'sniper') return Chain.SOLANA;
   if (preferred && preferred !== Chain.SOLANA) return preferred;
   // Fallback only — callers should pick via pickBestEvmChain when possible.
   return Chain.BSC;
+}
+
+/** Sniper Mode spends from its own Solana custody family. */
+function custodyFamilyFor(mode: FundsMode): CustodyFamily | undefined {
+  return mode === 'sniper' ? CustodyFamily.SNIPER : undefined;
+}
+
+function sessionModeFor(mode: FundsMode): AuthMode {
+  return mode === 'sniper' ? 'sniper' : mode;
 }
 
 export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
@@ -47,12 +58,13 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
     const query = z
       .object({
         chain: chainSchema.optional(),
-        mode: z.enum(['sol', 'evm']).optional(),
+        mode: fundsModeSchema.optional(),
       })
       .parse(request.query);
-    const mode: AuthMode = query.mode ?? (query.chain === Chain.SOLANA || !query.chain ? 'sol' : 'evm');
+    const mode: FundsMode =
+      query.mode ?? (query.chain === Chain.SOLANA || !query.chain ? 'sol' : 'evm');
     const chain = query.chain ?? modeChain(mode);
-    const session = await readSession(request, mode);
+    const session = await readSession(request, sessionModeFor(mode));
     const userId = session?.user.id;
     if (multiUserCustodyEnabled() && !userId) {
       return reply.code(401).send({
@@ -60,9 +72,11 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
       });
     }
     try {
-      const funds = await getTradingAvailableQuote(chain, userId);
+      const family = custodyFamilyFor(mode);
+      const funds = await getTradingAvailableQuote(chain, userId, family ? { family } : undefined);
       return jsonSafe({
         chain,
+        mode,
         ...funds,
         buckets: {
           trading: funds.availableQuote,
@@ -71,7 +85,9 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         },
         note: funds.configured
           ? funds.multiUser
-            ? 'Your personal custody wallet on-chain. Trading available = on-chain minus savings reservation and fee buffer.'
+            ? mode === 'sniper'
+              ? 'Your sniper-only Solana custody wallet. Independent from SOL copy-trade custody. Trading available = on-chain minus savings and fee buffer.'
+              : 'Your personal custody wallet on-chain. Trading available = on-chain minus savings reservation and fee buffer.'
             : 'Trading available = on-chain bot wallet minus savings reservation and fee buffer. Savings is a ledger reservation on the same wallet.'
           : multiUserCustodyEnabled()
             ? 'Could not read RPC balance for your custody wallet. Check SOLANA_RPC_URL / EVM RPC env vars on the API component.'
@@ -91,13 +107,13 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/funds/move', async (request, reply) => {
     const body = z
       .object({
-        mode: z.enum(['sol', 'evm']),
+        mode: fundsModeSchema,
         direction: z.enum(['t2s', 's2t']),
         amount: z.number().positive(),
         chain: chainSchema.optional(),
       })
       .parse(request.body);
-    const session = await requireSession(request, reply, body.mode);
+    const session = await requireSession(request, reply, sessionModeFor(body.mode));
     if (!session) return;
     let chain = modeChain(body.mode, body.chain);
     if (body.mode === 'evm') {
@@ -127,6 +143,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         direction: body.direction,
         amountQuote: body.amount,
         userId: session.user.id,
+        custodyFamily: custodyFamilyFor(body.mode),
       });
       return jsonSafe({ ok: true, ...result, chain });
     } catch (error) {
@@ -137,12 +154,12 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/funds/deposit/build', async (request, reply) => {
     const body = z
       .object({
-        mode: z.enum(['sol', 'evm']),
+        mode: fundsModeSchema,
         amount: z.number().positive(),
         chain: chainSchema.optional(),
       })
       .parse(request.body);
-    const session = await requireSession(request, reply, body.mode);
+    const session = await requireSession(request, reply, sessionModeFor(body.mode));
     if (!session) return;
 
     try {
@@ -154,7 +171,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
             'Connect a real wallet to deposit. Email / Google sign-in alone cannot send on-chain funds.',
         });
       }
-      if (body.mode === 'sol') {
+      if (body.mode === 'sol' || body.mode === 'sniper') {
         if (session.user.chain !== Chain.SOLANA) {
           return reply.code(400).send({ error: 'Sign in with a Solana wallet to deposit SOL.' });
         }
@@ -162,12 +179,16 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
           fromAddress: session.user.address,
           amountSol: body.amount,
           userId: session.user.id,
+          custodyFamily: custodyFamilyFor(body.mode),
         });
         return jsonSafe({
           kind: 'solana',
           ...built,
           fromAddress: session.user.address,
-          note: 'Sign this transfer in your wallet. Funds move on-chain to your COPYRA custody wallet.',
+          note:
+            body.mode === 'sniper'
+              ? 'Sign this transfer. Funds move on-chain to your SNIPER custody wallet (separate from SOL copy-trade).'
+              : 'Sign this transfer in your wallet. Funds move on-chain to your COPYRA custody wallet.',
         });
       }
       const chain = modeChain('evm', body.chain);
@@ -304,14 +325,14 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/funds/withdraw', async (request, reply) => {
     const body = z
       .object({
-        mode: z.enum(['sol', 'evm']),
+        mode: fundsModeSchema,
         amount: z.number().positive(),
         fromBucket: z.enum(['savings', 'trading']).default('trading'),
         chain: chainSchema.optional(),
         stepUpToken: z.string().min(10).optional(),
       })
       .parse(request.body);
-    const session = await requireSession(request, reply, body.mode);
+    const session = await requireSession(request, reply, sessionModeFor(body.mode));
     if (!session) return;
 
     // Step-up: email/2FA accounts need a fresh TOTP (or recovery) token; wallet-only
@@ -353,7 +374,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         }
       }
     }
-    if (body.mode === 'sol' && session.user.chain !== Chain.SOLANA) {
+    if ((body.mode === 'sol' || body.mode === 'sniper') && session.user.chain !== Chain.SOLANA) {
       return reply.code(400).send({ error: 'Sign in with a Solana wallet to withdraw SOL.' });
     }
     if (body.mode === 'evm' && session.user.chain === Chain.SOLANA) {
@@ -367,6 +388,7 @@ export async function registerFundsRoutes(app: FastifyInstance): Promise<void> {
         amountQuote: body.amount,
         fromBucket: body.fromBucket,
         userId: session.user.id,
+        custodyFamily: custodyFamilyFor(body.mode),
       });
       return jsonSafe({ ok: true, ...result, chain });
     } catch (error) {

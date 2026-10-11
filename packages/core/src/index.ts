@@ -22,6 +22,7 @@ export {
   provisionUserCustody,
   userCustodyAddress,
   deriveSolanaKeypair,
+  deriveSniperKeypair,
   deriveEvmAccount,
   encryptKeyMaterial,
   decryptKeyMaterial,

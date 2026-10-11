@@ -1,6 +1,7 @@
 import {
   BalanceBucket,
   Chain,
+  CustodyFamily,
   PositionStatus,
   TradingStrategy,
   prisma,
@@ -156,10 +157,13 @@ export async function readOnChainBalance(chain: Chain): Promise<OnChainBalance> 
 export async function resolveTradingAddress(
   chain: Chain,
   userId?: string,
+  opts?: { strategy?: TradingStrategy },
 ): Promise<string | null> {
   if (userId && multiUserCustodyEnabled()) {
     try {
-      return await userCustodyAddress(userId, chain);
+      const family =
+        opts?.strategy === TradingStrategy.SNIPER ? CustodyFamily.SNIPER : undefined;
+      return await userCustodyAddress(userId, chain, family ? { family } : undefined);
     } catch (error) {
       log.warn({ err: error, userId, chain }, 'Could not resolve user custody address');
       return null;
@@ -225,19 +229,25 @@ export async function buildPortfolioState(
   userId?: string,
   opts?: { strategy?: TradingStrategy },
 ): Promise<{ state: PortfolioState; balance: OnChainBalance }> {
-  const address = await resolveTradingAddress(chain, userId);
+  const address = await resolveTradingAddress(chain, userId, opts);
   if (!address) throw new NoTradingWalletError(chain);
   const balance = await readOnChainBalanceForAddress(chain, address);
   const savingsQuote = await savingsQuoteForAddress(chain, address).catch(() => 0);
 
   const owner = userId ? { userId } : {};
-  // Deployed capital is shared across strategies (atomic custody). Position
-  // counts / duplicate-token checks are scoped per strategy when requested.
+  // Sniper has its own custody wallet — deployed capital is strategy-scoped.
+  // Copy modes still share SOL/EVM custody within that family.
   const strategyFilter = opts?.strategy ? { strategy: opts.strategy } : {};
+  const deployFilter =
+    opts?.strategy === TradingStrategy.SNIPER
+      ? { strategy: TradingStrategy.SNIPER }
+      : opts?.strategy === TradingStrategy.COPY
+        ? { strategy: TradingStrategy.COPY }
+        : {};
   const tokenAddr = chain === Chain.SOLANA ? tokenAddress : tokenAddress.toLowerCase();
   const [allOpen, strategyOpen, tokenPosition] = await Promise.all([
     prisma.position.findMany({
-      where: { ...owner, status: { in: LIVE_POSITION_STATUSES } },
+      where: { ...owner, ...deployFilter, status: { in: LIVE_POSITION_STATUSES } },
       select: { id: true, entryValueUsd: true, realizedPnlUsd: true, chain: true },
     }),
     prisma.position.findMany({

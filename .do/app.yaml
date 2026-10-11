@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-11T22:55Z (force webhook — sniper filters UI retry)
+# last-deploy-nudge: 2026-10-11T23:10Z (sniper custody + discovery)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22
@@ -57,6 +57,13 @@ envs:
     scope: RUN_TIME
   - key: WEBAUTHN_RP_NAME
     value: "COPYRA"
+    scope: RUN_TIME
+  # App-Level so api + sniper + worker all see the same sniper host flags.
+  - key: SNIPER_ENABLED
+    value: "true"
+    scope: RUN_TIME
+  - key: SNIPER_MODE
+    value: "live"
     scope: RUN_TIME
 
 domains:
@@ -213,9 +220,9 @@ workers:
       - key: HEALTH_PORT
         value: "8080"
       - key: SNIPER_ENABLED
-        value: "false"
+        value: "true"
       - key: SNIPER_MODE
-        value: "monitor"
+        value: "live"
       - key: SNIPER_MAX_MARKET_CAP_USD
         value: "20000000"
       - key: SNIPER_MIN_LIQUIDITY_USD

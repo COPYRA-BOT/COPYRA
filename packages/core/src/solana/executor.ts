@@ -1,4 +1,4 @@
-import { Chain, TxStatus } from '@copyra/db';
+import { Chain, CustodyFamily, TxStatus } from '@copyra/db';
 import {
   VersionedTransaction,
   type ParsedTransactionWithMeta,
@@ -47,6 +47,11 @@ export interface SwapRequest {
    * confirm-before-retry so blockhashes do not expire mid-attempt.
    */
   urgency?: 'normal' | 'exit';
+  /**
+   * Sniper spends from CustodyFamily.SNIPER. Copy path leaves this unset
+   * (default SOLANA custody) — never pass sniper here from copy-trade code.
+   */
+  custodyFamily?: 'SOLANA' | 'SNIPER';
 }
 
 export interface ExecutionOutcome {
@@ -315,17 +320,26 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       new NoSignerError('solana').message,
     );
   }
+  const custodyFamily =
+    request.custodyFamily === 'SNIPER' ? CustodyFamily.SNIPER : CustodyFamily.SOLANA;
   let walletAddress: string;
   try {
     walletAddress = useUserCustody
-      ? await userCustodyAddress(request.userId as string, Chain.SOLANA)
+      ? await userCustodyAddress(request.userId as string, Chain.SOLANA, {
+          family: custodyFamily,
+        })
       : solanaSigner.requireAddress();
   } catch (error) {
     record(0, 'sign', 'error', describe(error));
     return failure(TxStatus.FAILED, 'NO_SIGNER', describe(error));
   }
   log.info(
-    { wallet: walletAddress, userId: request.userId ?? null, custody: useUserCustody },
+    {
+      wallet: walletAddress,
+      userId: request.userId ?? null,
+      custody: useUserCustody,
+      custodyFamily,
+    },
     'Solana swap will spend from trading wallet',
   );
 
@@ -422,7 +436,9 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       );
       blockhash = transaction.message.recentBlockhash;
       signature = useUserCustody
-        ? await signUserSolanaTransaction(request.userId as string, transaction)
+        ? await signUserSolanaTransaction(request.userId as string, transaction, {
+            family: custodyFamily,
+          })
         : solanaSigner.sign(transaction);
       telemetry.mark('signed');
       record(attempt, 'sign', 'ok', `signature=${signature}`, signature);

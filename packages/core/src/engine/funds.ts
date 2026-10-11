@@ -1,6 +1,7 @@
 import {
   BalanceBucket,
   Chain,
+  CustodyFamily,
   TxStatus,
   prisma,
 } from '@copyra/db';
@@ -144,9 +145,13 @@ export async function getSavingsRaw(chain: Chain): Promise<bigint> {
   return getSavingsRawForAddress(chain, address);
 }
 
-async function resolveFundsWallet(chain: Chain, userId?: string): Promise<string> {
+async function resolveFundsWallet(
+  chain: Chain,
+  userId?: string,
+  opts?: { family?: CustodyFamily },
+): Promise<string> {
   if (multiUserCustodyEnabled() && userId) {
-    return userCustodyAddress(userId, chain);
+    return userCustodyAddress(userId, chain, opts?.family ? { family: opts.family } : undefined);
   }
   const address = tradingWalletAddress(chain);
   if (!address) throw new NoSignerError(chainConfig(chain).kind);
@@ -166,6 +171,7 @@ export async function getSavingsQuote(chain: Chain): Promise<number> {
 export async function getTradingAvailableQuote(
   chain: Chain,
   userId?: string,
+  opts?: { family?: CustodyFamily },
 ): Promise<{
   onChainQuote: number;
   savingsQuote: number;
@@ -197,7 +203,11 @@ export async function getTradingAvailableQuote(
   let address: string | null = null;
   if (multiUserCustodyEnabled() && userId) {
     try {
-      address = await userCustodyAddress(userId, chain);
+      address = await userCustodyAddress(
+        userId,
+        chain,
+        opts?.family ? { family: opts.family } : undefined,
+      );
     } catch {
       address = null;
     }
@@ -371,6 +381,8 @@ export async function moveBucket(input: {
   direction: 't2s' | 's2t';
   amountQuote: number;
   userId: string;
+  /** Sniper Mode deposits/moves use CustodyFamily.SNIPER. */
+  custodyFamily?: CustodyFamily;
 }): Promise<{
   savingsQuote: number;
   availableQuote: number;
@@ -381,7 +393,9 @@ export async function moveBucket(input: {
     throw new Error('Amount must be a positive number.');
   }
   await assertCustodyOperationsAllowed(input.userId);
-  const address = await resolveFundsWallet(input.chain, input.userId);
+  const address = await resolveFundsWallet(input.chain, input.userId, {
+    family: input.custodyFamily,
+  });
   const asset = quoteAsset(input.chain);
   const scale = 10 ** asset.decimals;
   // parseUnits avoids JS float drift on 18-decimal BSC USDC.
@@ -445,6 +459,7 @@ export async function buildSolanaDepositTransaction(input: {
   fromAddress: string;
   amountSol: number;
   userId: string;
+  custodyFamily?: CustodyFamily;
 }): Promise<{
   transactionBase64: string;
   toAddress: string;
@@ -459,7 +474,9 @@ export async function buildSolanaDepositTransaction(input: {
     chain: Chain.SOLANA,
     amountQuote: input.amountSol,
   });
-  const toAddress = await resolveFundsWallet(Chain.SOLANA, input.userId);
+  const toAddress = await resolveFundsWallet(Chain.SOLANA, input.userId, {
+    family: input.custodyFamily,
+  });
   if (!(input.amountSol > 0)) throw new Error('Deposit amount must be positive.');
   const lamports = BigInt(Math.floor(input.amountSol * 1e9));
   if (lamports <= 0n) throw new Error('Deposit amount is too small.');
@@ -720,6 +737,7 @@ export async function withdrawToWallet(input: {
   amountQuote: number;
   fromBucket: 'savings' | 'trading';
   userId: string;
+  custodyFamily?: CustodyFamily;
 }): Promise<{
   txHash: string;
   explorerUrl: string;
@@ -741,9 +759,13 @@ export async function withdrawToWallet(input: {
     toAddress: input.toAddress,
   });
 
-  const walletAddress = await resolveFundsWallet(input.chain, input.userId);
+  const walletAddress = await resolveFundsWallet(input.chain, input.userId, {
+    family: input.custodyFamily,
+  });
 
-  const funds = await getTradingAvailableQuote(input.chain, input.userId);
+  const funds = await getTradingAvailableQuote(input.chain, input.userId, {
+    family: input.custodyFamily,
+  });
   if (input.fromBucket === 'savings') {
     if (input.amountQuote > funds.savingsQuote + 1e-12) {
       throw new Error(`Savings only holds ${funds.savingsQuote.toFixed(6)} ${asset.symbol}.`);
@@ -777,7 +799,9 @@ export async function withdrawToWallet(input: {
     }).compileToV0Message();
     const tx = new VersionedTransaction(message);
     if (multiUserCustodyEnabled()) {
-      await signUserSolanaTransaction(input.userId, tx);
+      await signUserSolanaTransaction(input.userId, tx, {
+        family: input.custodyFamily ?? CustodyFamily.SOLANA,
+      });
     } else {
       solanaSigner.sign(tx);
     }
@@ -973,8 +997,9 @@ export async function assertLedgerWalletOwnedByUser(
   userId: string,
   chain: Chain,
   address: string,
+  opts?: { family?: CustodyFamily },
 ): Promise<void> {
-  const owned = await resolveFundsWallet(chain, userId);
+  const owned = await resolveFundsWallet(chain, userId, opts);
   const config = chainConfig(chain);
   const a = config.kind === 'evm' ? address.toLowerCase() : address;
   const b = config.kind === 'evm' ? owned.toLowerCase() : owned;
