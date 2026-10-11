@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-11T21:22Z (force webhook)
+# last-deploy-nudge: 2026-10-11T22:40Z (force webhook — sniper filters UI)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22

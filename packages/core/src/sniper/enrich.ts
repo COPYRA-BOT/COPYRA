@@ -54,12 +54,12 @@ async function readHolderStats(
 
     type Row = { address: string; amount: number; uiAmount: number };
     const parsed: Row[] = rows
-      .map((r: { address: string; amount?: string; uiAmount?: number | null }) => ({
-        address: r.address,
+      .map((r) => ({
+        address: typeof r.address === 'string' ? r.address : r.address.toBase58(),
         amount: Number(r.amount ?? 0),
         uiAmount: Number(r.uiAmount ?? 0),
       }))
-      .filter((r: Row) => Number.isFinite(r.uiAmount) && r.uiAmount > 0);
+      .filter((r) => Number.isFinite(r.uiAmount) && r.uiAmount > 0);
 
     const total = parsed.reduce((a, b) => a + b.uiAmount, 0);
     if (!(total > 0)) {
@@ -82,9 +82,29 @@ async function readHolderStats(
 
     let devHoldingPct: number | null = null;
     if (opts.creatorAddress) {
-      // Creator match is best-effort; token accounts ≠ owner wallets on this RPC call.
-      // Leave null unless we later resolve ATA owners (fail-closed when required).
-      devHoldingPct = null;
+      // Resolve token-account owners so we can match the creator wallet.
+      const probe = ranked.slice(0, 8);
+      try {
+        const infos = await solanaPool().call('getMultipleParsedAccounts', (c) =>
+          c.getMultipleParsedAccounts(probe.map((r) => new PublicKey(r.address))),
+        );
+        const values = infos.value.value ?? [];
+        let devAmt = 0;
+        for (let i = 0; i < probe.length; i++) {
+          const data = values[i]?.data as
+            | { parsed?: { info?: { owner?: string } } }
+            | undefined;
+          const owner = data?.parsed?.info?.owner;
+          if (owner && owner === opts.creatorAddress) {
+            devAmt += probe[i]!.uiAmount;
+          }
+        }
+        // If creator not in top accounts, treat as ~0% of sampled supply.
+        devHoldingPct = (devAmt / total) * 100;
+      } catch (error) {
+        log.warn({ mint, err: error }, 'dev holding owner resolve failed');
+        devHoldingPct = null;
+      }
     }
 
     return {
