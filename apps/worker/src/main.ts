@@ -45,6 +45,36 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
+      // During DO rolling deploys two worker containers briefly share one row.
+      // Never let a stuck/old instance overwrite a peer with a fresher sync clock
+      // (that was flipping status between healthy pid and syncAge=37h → Degraded).
+      if (status === 'running') {
+        const existing = await prisma.workerHeartbeat.findUnique({
+          where: { name: 'copyra-worker' },
+        });
+        const prior =
+          existing?.detail && typeof existing.detail === 'object' && !Array.isArray(existing.detail)
+            ? (existing.detail as Record<string, unknown>)
+            : {};
+        const priorSync = Number(prior.lastSolanaSyncAt ?? 0);
+        const ourSync = Number(detail.lastSolanaSyncAt ?? workerActivity.lastSolanaSyncAt ?? 0);
+        const priorPid = Number(prior.pid ?? 0);
+        const ourPid = Number(detail.pid ?? process.pid);
+        const peerFresh =
+          existing?.status === 'running' &&
+          existing.beatAt &&
+          Date.now() - existing.beatAt.getTime() < 30_000;
+        if (
+          peerFresh &&
+          priorPid > 0 &&
+          priorPid !== ourPid &&
+          priorSync > ourSync + 30_000
+        ) {
+          writeWorkerStatusFile({ status, ...detail, heartbeatDeferred: true });
+          return;
+        }
+      }
+
       await prisma.workerHeartbeat.upsert({
         where: { name: 'copyra-worker' },
         create: {
