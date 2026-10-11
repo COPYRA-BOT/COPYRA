@@ -236,7 +236,7 @@ const watchdogTimer = setInterval(() => {
 
   if (solDead) {
     solDeadStreak += 1;
-    // Soft recover: force WS resub only — do not fake the sync clock or the
+    // Soft recover: force WS resub only — do not invent a sync clock or the
     // dead-streak never accumulates and DO never gets a clean respawn.
     requestSolanaForceResub(`watchdog-dead-streak-${solDeadStreak}`);
     logger.error(

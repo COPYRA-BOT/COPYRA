@@ -435,8 +435,8 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- pre-flight -------------------------------------------------------
-    // Skip simulate on both buys and exits — Pro Jupiter + skipPreflight on
-    // send already validates; the 180ms+ simulate was eating the ≤1s budget.
+    // Skip RPC preflight on both buys and exits — Pro Jupiter + skipPreflight on
+    // send already validates; the 180ms+ preflight was eating the ≤1s budget.
     record(attempt, 'preflight', 'ok', isExit ? 'skipped-exit-urgency' : 'skipped-speed');
 
     // --- broadcast ---------------------------------------------------------
