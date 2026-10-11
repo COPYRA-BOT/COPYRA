@@ -39,7 +39,7 @@ envs:
   - key: PUBLIC_API_URL
     value: "https://copyra.fun"
     scope: RUN_TIME
-  # Admin ops chat — receives ALL worker notifications (skip/detect/buy/sell/errors).
+  # Admin ops chat — buys/sells/failures/ops only (skip/detection/airdrop suppressed).
   # TELEGRAM_BOT_TOKEN stays an encrypted App-Level secret.
   - key: TELEGRAM_CHAT_ID
     value: "-5389164510"

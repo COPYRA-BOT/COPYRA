@@ -16,8 +16,8 @@ const log = componentLogger('dexscreener');
  * the trade.
  *
  * When Dexscreener has no pair for a token, the snapshot is returned with
- * `missing: true` and the qualifier skips the trade. It never falls back to a
- * guessed market cap.
+ * `missing: true`. Qualify still allows the copy (mid tier) when MC is unknown;
+ * known MC/liquidity gates still apply. It never falls back to a guessed market cap.
  */
 
 const BASE_URL = 'https://api.dexscreener.com';

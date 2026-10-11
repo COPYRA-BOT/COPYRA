@@ -17,7 +17,7 @@ import {
   renderSkip,
   renderDetection,
 } from '@copyra/core';
-import { Chain, prisma, SignalStatus, TxClassification } from '@copyra/db';
+import { Chain, prisma, SignalStatus, SkipReason, TxClassification } from '@copyra/db';
 import { PublicKey, type ParsedTransactionWithMeta } from '@solana/web3.js';
 import {
   touchSolanaProcessed,
@@ -649,21 +649,24 @@ async function handleSignature(traderId: string, signature: string, slot: number
         qualifiedAt: new Date(),
       },
     });
-    telegram.send(
-      renderSkip({
-        chain: Chain.SOLANA,
-        tokenSymbol: market.symbol,
-        tokenAddress,
-        traderLabel: trader.label,
-        traderAddress: trader.address,
-        reason: qualification.reason,
-        detail: qualification.detail,
-        marketCapUsd: market.marketCapUsd,
-        liquidityUsd: market.liquidityUsd,
-        sourceTxHash: signature,
-      }),
-      { kind: 'skip', userId: trader.userId },
-    );
+    // skip/detection/airdrop are suppressed in telegram.ts; never notify admin for airdrops.
+    if (qualification.reason !== SkipReason.IS_AIRDROP) {
+      telegram.send(
+        renderSkip({
+          chain: Chain.SOLANA,
+          tokenSymbol: market.symbol,
+          tokenAddress,
+          traderLabel: trader.label,
+          traderAddress: trader.address,
+          reason: qualification.reason,
+          detail: qualification.detail,
+          marketCapUsd: market.marketCapUsd,
+          liquidityUsd: market.liquidityUsd,
+          sourceTxHash: signature,
+        }),
+        { kind: 'skip', userId: trader.userId },
+      );
+    }
     await prisma.processedSignature.create({
       data: { chain: Chain.SOLANA, signature, traderId, outcome: `skipped:${qualification.reason}` },
     });

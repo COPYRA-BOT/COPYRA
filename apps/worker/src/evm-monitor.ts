@@ -16,7 +16,7 @@ import {
   telegram,
   traderHasPriorBuyOfToken,
 } from '@copyra/core';
-import { Chain, mapPool, prisma, SignalStatus, TxClassification } from '@copyra/db';
+import { Chain, mapPool, prisma, SignalStatus, SkipReason, TxClassification } from '@copyra/db';
 import { getAddress } from 'viem';
 import { touchEvmProcessed, touchEvmTick } from './activity.js';
 
@@ -396,21 +396,23 @@ async function handleEvmHash(chain: Chain, traderId: string, hash: string): Prom
         qualifiedAt: new Date(),
       },
     });
-    telegram.send(
-      renderSkip({
-        chain,
-        tokenSymbol: market.symbol,
-        tokenAddress,
-        traderLabel: trader.label,
-        traderAddress: trader.address,
-        reason: qualification.reason,
-        detail: qualification.detail,
-        marketCapUsd: market.marketCapUsd,
-        liquidityUsd: market.liquidityUsd,
-        sourceTxHash: hash,
-      }),
-      { kind: 'skip', userId: trader.userId },
-    );
+    if (qualification.reason !== SkipReason.IS_AIRDROP) {
+      telegram.send(
+        renderSkip({
+          chain,
+          tokenSymbol: market.symbol,
+          tokenAddress,
+          traderLabel: trader.label,
+          traderAddress: trader.address,
+          reason: qualification.reason,
+          detail: qualification.detail,
+          marketCapUsd: market.marketCapUsd,
+          liquidityUsd: market.liquidityUsd,
+          sourceTxHash: hash,
+        }),
+        { kind: 'skip', userId: trader.userId },
+      );
+    }
     await prisma.processedSignature.create({
       data: { chain, signature: hash, traderId, outcome: `skipped:${qualification.reason}` },
     });

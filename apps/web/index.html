@@ -96,6 +96,32 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 .seg button{padding:10px 6px;font-size:15px}#md{align-items:flex-end;padding:0}#md>div{width:100%;border-radius:22px 22px 0 0;padding:20px 18px calc(20px + env(safe-area-inset-bottom,0))}#dr{width:100%}.row>.btn{flex:1 1 auto}#ts{width:max-content;max-width:90vw;text-align:center}}
 @media(max-width:380px){#ml{display:none}.logo{font-size:21px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.pos-card{border:1px solid var(--ln);border-radius:16px;padding:14px 14px 12px;margin-top:10px;background:var(--bg)}
+.pos-card:first-of-type{margin-top:4px}
+.pos-card .pos-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.pos-card .pos-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 12px;margin:12px 0;font-size:13px}
+.pos-card .pos-meta span{color:var(--mu);display:block;font-size:11px}
+.pos-card .pos-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+.chart-shell{display:flex;flex-direction:column;gap:12px}
+.chart-head{display:flex;flex-direction:column;gap:8px}
+.chart-head .row.sp{align-items:flex-start}
+.chart-mc{font:800 clamp(28px,7vw,42px)/1.05 'Inter Tight',system-ui;letter-spacing:-.03em}
+.chart-chg{display:inline-flex;align-items:center;gap:4px;font-weight:700;font-size:14px;padding:4px 10px;border-radius:10px}
+.chart-chg.up{background:rgba(61,220,151,.14);color:var(--g)}.chart-chg.dn{background:rgba(255,107,107,.14);color:var(--r)}
+.chart-stage{position:relative;background:#12131a;border:1px solid var(--ln);border-radius:18px;overflow:hidden;min-height:320px}
+.chart-stage svg{display:block;width:100%;height:auto}
+.chart-tf{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+.chart-tf button{border:0;background:transparent;color:var(--mu);padding:8px 10px;border-radius:10px;font-weight:600;min-height:36px}
+.chart-tf button.on{background:var(--sf2);color:var(--tx)}
+.chart-mark-leg{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--mu)}
+.chart-mark-leg i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.chart-side{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.chart-side .k small{display:block}
+.chart-empty{display:grid;place-items:center;min-height:280px;color:var(--mu);padding:24px;text-align:center}
+.chart-live{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--g);font-weight:600}
+.chart-live:before{content:"";width:7px;height:7px;border-radius:50%;background:var(--g);box-shadow:0 0 0 0 rgba(61,220,151,.5);animation:pulse 1.6s ease infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(61,220,151,.45)}70%{box-shadow:0 0 0 8px rgba(61,220,151,0)}100%{box-shadow:0 0 0 0 rgba(61,220,151,0)}}
+@media(prefers-reduced-motion:reduce){.chart-live:before{animation:none}}
 </style></head><body>
 <header class="h"><button class="ib" onclick="nav.classList.toggle('o')" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M3 7h18M3 12h18M3 17h18"/></svg></button>
 <div class="logo"><img class="brand" src="/icons/copyra.webp" width="36" height="36" alt="COPYRA" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div>
@@ -160,6 +186,8 @@ const dflt=e=>({alloc:50,min:e=='sol'?.05:25,res:20,maxPos:10,tpMode:'MANUAL',tp
 const empty=e=>({cash:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},availByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},savByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},wdByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},gasResByCh:e=='sol'?{solana:0}:{ethereum:0,base:0,arb:0,bnb:0},sav:0,bot:'PAUSED',set:dflt(e),tr:[],pos:[],hist:[],act:[],skip:[],seen:new Set(),m:null,id:1,wa:null,worker:null,balReady:false,balError:false,needsAuth:false});
 const S={sol:empty('sol'),evm:empty('evm')};
 let M='sol',T='trading',F='all',wallet={sol:null,evm:null},q='',LIVE=null,ERR=null;
+/** Live position chart: id + timeframe + last payload + poll handle. */
+let chartId=null,chartTf='15m',chartData=null,chartErr=null,chartTimer=null,chartLoading=false;
 /** Email/Google sentinel `acct_…` is not a real chain wallet — never treat as Connect Wallet. */
 const isRealWallet=(a,e)=>{
   if(!a||typeof a!=='string')return false;
@@ -240,7 +268,7 @@ async function api(method,path,body,opts){
   const mode=(opts&&opts.mode)||M||'sol';
   const headers={'x-copyra-mode':mode};
   if(body)headers['content-type']='application/json';
-  const r=await fetch(path,{method,credentials:'include',headers,body:body?JSON.stringify(body):undefined});
+  const r=await fetch(path,{method,credentials:'include',headers,body:body!=null?JSON.stringify(body):undefined});
   const j=await r.json().catch(()=>({}));
   if(!r.ok){
     const err=new Error(j.error||('Request failed '+r.status));
@@ -654,7 +682,7 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
 <p class="mu">Timings are measured from confirmed trades.${e=='evm'?' Gas is sponsored by COPYRA when execution is live.':''}</p></div>
 ${e=='evm'?`<div class="card"><h3>Chains and Gas</h3><div class="tw"><table><tr><th>Chain</th><th>USDC (trading)</th><th>In positions</th><th>RPC head</th></tr>${(LIVE?.status?.chains||[]).filter(c=>c.kind==='evm').map(c=>`<tr><td>${c.label}${c.canExecute?'':' <span class="mu">monitor only</span>'}</td><td>${f(e,S.evm.cash[chOf(c.chain)]||0)}</td><td>${f(e,s.pos.filter(p=>p.ch==chOf(c.chain)).reduce((a,p)=>a+p.inv*p.rem,0))}</td><td>${c.error||c.head||'*'}${c.latencyMs!=null?' · '+c.latencyMs+' ms':''}</td></tr>`).join('')}</table></div></div>`:''}
 <div class="card"><div class="row sp"><h3>Copy Traders</h3><button class="btn sm" onclick="addT()">+ Add Trader</button></div>${s.tr.length?s.tr.filter(t=>!q||t.n.toLowerCase().includes(q)||t.a.toLowerCase().includes(q)).map(t=>`<div class="row sp" style="padding:10px 0;border-top:1px solid var(--ln)"><div><b>${t.n}</b> <span class="mu">${t.a.slice(0,5)}…${t.a.slice(-4)}</span><br><span class="mu">${t.on?'● Active':'● Stopped'} · ${t.chain||''}</span></div><div class="row"><button class="btn sm" onclick="tg('${t.id}',${t.on?0:1})">${t.on?'Stop copying':'Start copying'}</button><button class="btn sm" onclick="rm('${t.id}','${t.n.replace(/'/g,'')}')">Remove</button></div></div>`).join(''):'<p class="mu">No traders yet. Tap “+ Add Trader” and paste a real wallet address. The worker will subscribe on Helius.</p>'}</div>
-<div class="card"><h3>Open Positions</h3><div class="tw">${P.length?`<table><tr><th>Token</th><th>Trader</th><th>Invested</th><th>Entry</th><th>Current</th><th>P&amp;L</th><th>TP</th><th>SL</th><th>Status</th></tr>${P.map(p=>`<tr><td><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}</td><td>${p.tr.n}</td><td>${f(e,p.inv*p.rem)} <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></td><td>1.000x</td><td>${p.price.toFixed(3)}x</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>${p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%'}</td><td>−${p.sl}%</td><td>OPEN · MC $${(p.mc/1e6).toFixed(1)}M${p.score>1?' · signals ×'+p.score:''}${p.half?' · ½ sold, trailing on':''}</td></tr>`).join('')}</table>`:'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.</p>'}</div></div>
+<div class="card"><h3>Open Positions</h3>${P.length?P.map(p=>posCardHtml(e,p,s,X)).join(''):'<p class="mu">No open positions. A position opens only after a watched wallet’s first qualifying buy is confirmed on chain.</p>'}</div>
 ${(()=>{const pg=pageSlice(s.act,actPage[e]||1);const emptyMsg=!LIVE?.auth?.[e]?.userId?`Sign in on ${e.toUpperCase()} to see this mode's Recent Activity.`:`No ${e.toUpperCase()} activity yet.`;return`<div class="card"><h3>Recent Activity · ${e.toUpperCase()}</h3><div class="act">${pg.rows.map(a=>`<div><time>${a.t}</time>${a.h}</div>`).join('')||`<p class="mu">${emptyMsg}</p>`}</div>${pagerHtml('act-'+e,pg.page,pg.pages,`setActPage('${e}',__P__)`)}</div>`})()}
 <details class="card"><summary><b>Skipped Trades (${s.skip.length})</b></summary><div class="act">${s.skip.map(k=>`<div><time>${k.t}</time>${k.w} · <b class="wn">${k.r}</b>. ${SKIP[k.r]||k.r}</div>`).join('')||'<p class="mu">No skips recorded. Skips appear when a watched wallet trades but qualification fails (airdrop, market cap or liquidity window, first buy mode, and similar checks).</p>'}</div></details>
 ${howItWorksHtml()}`}
@@ -668,7 +696,7 @@ function monitor(){const tot=e=>UI[e].usd?(cashOf(e)+invOf(e)+S[e].sav)/UI[e].k*
 <p class="mu">Balances and positions are your signed-in custody wallet on live RPC. ${heads||'Waiting for chain heads'} · worker ${(LIVE?.status?.workers||[]).map(w=>{const live=w.live===true?'live':(w.live===false?'stale':w.status);return `${w.name||'worker'} ${live}`;}).join(', ')||'offline'} · Telegram ${LIVE?.status?.telegram?.canPostToChat?'@'+(LIVE.status.telegram.botUsername||'bot'):'unreachable'}</p>
 <div class="grid">${['sol','evm'].map(e=>`<div class="card"><h3>${bd(e)} ${e=='sol'?'Solana':'EVM'} engine</h3><p>${{ON:'<span class="g">● ACTIVE</span>',PAUSED:'<span class="wn">● PAUSED</span>',STOPPED:'<span class="rd">● STOPPED</span>'}[S[e].bot]} · Trading ${f(e,cashOf(e)+invOf(e))} ${UI[e].u} · Savings ${f(e,S[e].sav)}</p><p class="mu">${S[e].tr.filter(t=>t.on).length}/${S[e].tr.length} traders active · ${S[e].pos.length} open positions</p><div class="row"><button class="btn sm" onclick="bot('${e}','PAUSED')">Pause</button><button class="btn sm" onclick="bot('${e}','ON')">Resume</button><button class="btn sm" onclick="M='${e}';T='trading';draw()">Open ${e.toUpperCase()}</button></div></div>`).join('')}</div>
 <div class="row" style="margin-bottom:16px"><button class="btn" onclick="bot('sol','PAUSED');bot('evm','PAUSED')">Pause all engines</button><button class="btn" onclick="bot('sol','ON');bot('evm','ON')">Resume all engines</button></div>
-<div class="card"><h3>Open positions (all chains)</h3><div class="tw"><table><tr><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Invested</th><th>P&amp;L</th><th>MC</th></tr>${['sol','evm'].flatMap(e=>S[e].pos.map(p=>`<tr><td>${bd(e)}</td><td><b>${p.sym}</b></td><td>${CH[p.ch]||p.ch}</td><td>${p.tr.n}</td><td>${UI[e].usd?usd(e,p.inv*p.rem):f(e,p.inv*p.rem)}</td><td class="${pnlC(p.price-1)}">${sg((p.price-1)*100)}%</td><td>$${(p.mc/1e6).toFixed(1)}M</td></tr>`)).join('')||'<tr><td class="mu">None</td></tr>'}</table></div></div>
+<div class="card"><h3>Open positions (all chains)</h3>${['sol','evm'].flatMap(e=>S[e].pos.map(p=>posCardHtml(e,p,S[e],UI[e]))).join('')||'<p class="mu">None open.</p>'}</div>
 ${(()=>{const all=['sol','evm'].flatMap(e=>S[e].act).sort((a,b)=>(b.ts||0)-(a.ts||0));const pg=pageSlice(all,actPage.unified||1);return`<div class="card"><h3>Unified activity</h3><div class="act">${pg.rows.map(a=>`<div>${bd(a.e)} <time>${a.t}</time>${a.h}</div>`).join('')||'<p class="mu">Nothing yet. On chain deposits, withdrawals, and fills appear here.</p>'}</div>${pagerHtml('act-unified',pg.page,pg.pages,'setUnifiedActPage(__P__)')}</div>`})()}`}
 function board(){const rows=['sol','evm'].filter(e=>F=='all'||F==e).flatMap(e=>S[e].tr.map(t=>({e,t,...stats(S[e].hist.filter(h=>h.trId==t.id||h.tr==t.n))}))).sort((a,b)=>(b.n>0)-(a.n>0)||(b.score??-1e9)-(a.score??-1e9));
  return segF()+`<p class="mu" style="margin:0 0 12px">Leaderboard ranks <b>your</b> copy traders from closed on chain exits in this account. Wins, losses, and net USD P&amp;L. Other wallets never see this list.</p><div class="card tw"><table><tr><th>#</th><th>Trader</th><th>Mode</th><th>Exits</th><th>W / L</th><th>Win rate</th><th>Net P&amp;L (USD)</th><th>Best / Worst</th><th>Score</th><th>Status</th><th></th></tr>${rows.map((r,i)=>`<tr><td>${i+1}</td><td><b>${r.t.n}</b></td><td>${bd(r.e)}</td><td>${r.n}</td><td>${r.w} / ${r.l}</td><td>${r.n?r.wr.toFixed(0)+'%':'*'}</td><td class="${pnlC(r.pnl)}">${r.n?sg(r.pnl):'*'}</td><td>${r.n?sg(r.best)+' / '+sg(r.worst):'*'}</td><td>${r.n?r.score.toFixed(2):'new'}</td><td>${r.t.on?'● Active':'● Stopped'}</td><td><button class="btn sm" onclick="tg('${r.t.id}',${r.t.on?0:1})">${r.t.on?'Stop':'Start'}</button> <button class="btn sm" onclick="rm('${r.t.id}','${r.t.n.replace(/'/g,'')}')">Remove</button></td></tr>`).join('')||'<tr><td class="mu">No traders yet. Add a wallet on Trading. Stats appear after confirmed exits.</td></tr>'}</table></div>`}
@@ -679,15 +707,129 @@ function pnlv(){const H=filteredHist(),all=allHist(),s=stats(all),W=[...H].rever
  return segF()+`<div class="kp"><div class="k"><small>Net P&amp;L</small><b class="${pnlC(s.pnl)}">${sg(s.pnl)}</b></div><div class="k"><small>Win rate</small><b>${s.n?s.wr.toFixed(0)+'%':'*'}</b><small>${s.w}W / ${s.l}L</small></div><div class="k"><small>Exits</small><b>${s.n}</b></div><div class="k"><small>Best</small><b class="g">${s.n?sg(s.best):'*'}</b></div><div class="k"><small>Worst</small><b class="rd">${s.n?sg(s.worst):'*'}</b></div></div>
 <div class="card"><h3>Cumulative realized P&amp;L (USD)</h3>${path?`<svg viewBox="0 0 600 100" width="100%" height="150" preserveAspectRatio="none"><line x1="0" x2="600" y1="${100-(0-mn)/rg*90-5}" y2="${100-(0-mn)/rg*90-5}" stroke="var(--mu)" stroke-dasharray="4"/><path d="${path}" fill="none" stroke="var(--ac)" stroke-width="2.5" vector-effect="non-scaling-stroke"/></svg><div class="row sp mu"><span>min ${sg(mn)}</span><span>max ${sg(mx)}</span></div>`:'<p class="mu">The chart appears after two closed trades.</p>'}</div>
 ${(()=>{const pg=pageSlice(H,histPage||1);return`<div class="card"><div class="row sp" style="gap:10px;flex-wrap:wrap"><h3 style="margin:0">Trade history</h3><div class="row" style="margin-left:auto;gap:8px;flex-wrap:wrap"><select id="histPnL" aria-label="Filter by profit or loss" style="width:auto;min-width:140px" onchange="histPnL=this.value;histPage=1;draw()">${filt.map(([v,l])=>`<option value="${v}" ${histPnL===v?'selected':''}>${l} trades</option>`).join('')}</select><button class="btn sm" onclick="csv()">Copy CSV</button></div></div><div class="tw"><table><tr><th>Time</th><th>Mode</th><th>Token</th><th>Chain</th><th>Trader</th><th>Exit</th><th>Size (USD)</th><th>P&amp;L (USD)</th><th>P&amp;L %</th></tr>${pg.rows.map(h=>`<tr><td>${new Date(h.t).toLocaleTimeString()}</td><td>${bd(h.e)}</td><td><b>${h.sym}</b></td><td>${CH[h.ch]||h.ch}</td><td>${h.tr}</td><td>${nm[h.why]||h.why}${h.partial?' (half)':''}</td><td>${Number(h.size||0).toFixed(2)}</td><td class="${pnlC(h.usd)}">${sg(h.usd)}</td><td class="${pnlC(h.pct)}">${sg(h.pct)}%</td></tr>`).join('')||`<tr><td class="mu" colspan="9">${histPnL==='profit'?'No profit trades in this view.':histPnL==='loss'?'No loss trades in this view.':'No exits yet. Closed positions appear here.'}</td></tr>`}</table></div>${pagerHtml('hist',pg.page,pg.pages,'setHistPage(__P__)')}</div>`})()}`}
-function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';draw()">${l}</button>`).join('');
+function posCardHtml(e,p,s,X){
+  const pnl=(p.price-1)*100;
+  const tp=p.mode=='MANUAL'?'+'+p.tp+'%':'+'+s.set.trTp+'% ½ → trail −'+s.set.trTrail+'%';
+  return `<div class="pos-card"><div class="pos-top"><div><b>${p.sym}</b> ${e=='evm'?`<span class="mu">${CH[p.ch]||p.ch}</span>`:''}<div class="mu" style="margin-top:2px">${p.tr.n} · ${p.addr?p.addr.slice(0,4)+'…'+p.addr.slice(-4):''}</div></div><div style="text-align:right"><b class="${pnlC(p.price-1)}">${sg(pnl)}%</b><div class="mu">${p.price.toFixed(3)}x</div></div></div>
+<div class="pos-meta"><div><span>Invested</span><b>${f(e,p.inv*p.rem)}</b> <span class="mu">${X.usd?usd(e,p.inv*p.rem):''}</span></div><div><span>Entry → Now</span><b>1.000x → ${p.price.toFixed(3)}x</b></div><div><span>TP / SL</span><b>${tp} · −${p.sl}%</b></div><div><span>Status</span><b>OPEN${p.mc?` · MC $${(p.mc/1e6).toFixed(1)}M`:''}${p.score>1?' · ×'+p.score:''}${p.half?' · trailing':''}</b></div></div>
+<div class="pos-actions"><button class="btn sm pri" type="button" onclick="openChart('${p.id}')">View Chart</button>${p.addr?`<a class="btn sm" href="${e==='sol'?'https://solscan.io/token/':'https://etherscan.io/token/'}${p.addr}" target="_blank" rel="noopener noreferrer">Explorer</a>`:''}</div></div>`;
+}
+function stopChartPoll(){if(chartTimer){clearInterval(chartTimer);chartTimer=null}}
+function startChartPoll(){stopChartPoll();chartTimer=setInterval(()=>{if(chartId&&T==='chart')loadChart(true)},8_000)}
+window.openChart=(id)=>{chartId=id;chartData=null;chartErr=null;chartTf=chartTf||'15m';T='chart';draw();loadChart(false);startChartPoll();scrollTo(0,0)};
+window.closeChart=()=>{stopChartPoll();chartId=null;chartData=null;chartErr=null;T='trading';draw()};
+window.setChartTf=(tf)=>{chartTf=tf;loadChart(false)};
+async function loadChart(silent){
+  if(!chartId)return;
+  if(!silent){chartLoading=true;chartErr=null;draw()}
+  try{
+    const data=await api('GET',`/api/positions/${encodeURIComponent(chartId)}/chart?tf=${encodeURIComponent(chartTf)}`,null,{mode:M});
+    if(chartId!==(data?.position?.id||chartId))return;
+    chartData=data;chartErr=null;
+  }catch(err){
+    chartErr=err instanceof Error?err.message:String(err);
+  }finally{
+    chartLoading=false;
+    if(T==='chart')draw();
+  }
+}
+function fmtCompactUsd(n){
+  if(n==null||!Number.isFinite(Number(n)))return'n/a';
+  const v=Number(n),a=Math.abs(v);
+  if(a>=1e9)return'$'+(v/1e9).toFixed(2)+'B';
+  if(a>=1e6)return'$'+(v/1e6).toFixed(2)+'M';
+  if(a>=1e3)return'$'+(v/1e3).toFixed(2)+'K';
+  if(a>=1)return'$'+v.toFixed(2);
+  return'$'+v.toPrecision(3);
+}
+function chartSvg(data){
+  const candles=data.candles||[],markers=data.markers||[];
+  const W=720,H=360,padL=12,padR=64,padT=18,padB=28;
+  const plotW=W-padL-padR,plotH=H-padT-padB;
+  if(!candles.length){
+    return `<div class="chart-empty">No live candles yet for this token on this timeframe.<br>Markers and strategy still refresh below.</div>`;
+  }
+  let lo=Math.min(...candles.map(c=>c.l)),hi=Math.max(...candles.map(c=>c.h));
+  for(const m of markers){if(m.priceUsd>0){lo=Math.min(lo,m.priceUsd);hi=Math.max(hi,m.priceUsd)}}
+  if(!(hi>lo)){hi=lo*1.02||1;lo=lo*0.98||0}
+  const span=hi-lo||1;
+  const t0=candles[0].t,t1=candles[candles.length-1].t,tSpan=Math.max(1,t1-t0);
+  const xOf=t=>padL+((t-t0)/tSpan)*plotW;
+  const yOf=p=>padT+plotH*((hi-p)/span);
+  const cw=Math.max(2,Math.min(14,plotW/Math.max(candles.length,1)*0.62));
+  const bodies=candles.map(c=>{
+    const x=xOf(c.t),up=c.c>=c.o,y1=yOf(c.h),y2=yOf(c.l),yo=yOf(c.o),yc=yOf(c.c);
+    const top=Math.min(yo,yc),bot=Math.max(yo,yc),bh=Math.max(1,bot-top);
+    const col=up?'#3DDC97':'#FF6B6B';
+    return `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${y1.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="1"/><rect x="${(x-cw/2).toFixed(1)}" y="${top.toFixed(1)}" width="${cw.toFixed(1)}" height="${bh.toFixed(1)}" fill="${col}" rx="1"/>`;
+  }).join('');
+  const yTicks=5,grid=[];
+  for(let i=0;i<=yTicks;i++){
+    const p=lo+(span*i)/yTicks,y=yOf(p);
+    grid.push(`<line x1="${padL}" x2="${W-padR}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="rgba(255,255,255,.06)" stroke-dasharray="3 4"/><text x="${W-padR+6}" y="${(y+4).toFixed(1)}" fill="#8E9096" font-size="11" font-family="Figtree,system-ui">${fmtCompactUsd(p)}</text>`);
+  }
+  const last=candles[candles.length-1];
+  const lastY=yOf(last.c);
+  grid.push(`<line x1="${padL}" x2="${W-padR}" y1="${lastY.toFixed(1)}" y2="${lastY.toFixed(1)}" stroke="#FF6B6B" stroke-dasharray="4 4" stroke-width="1.2"/><rect x="${W-padR+2}" y="${(lastY-10).toFixed(1)}" width="58" height="18" rx="4" fill="#FF6B6B"/><text x="${W-padR+31}" y="${(lastY+3).toFixed(1)}" text-anchor="middle" fill="#1A1410" font-size="10" font-weight="700" font-family="Figtree,system-ui">${fmtCompactUsd(data.market?.marketCapUsd??last.c)}</text>`);
+  const xLabels=[];
+  for(let i=0;i<3;i++){
+    const t=t0+(tSpan*i)/2,x=xOf(t);
+    xLabels.push(`<text x="${x.toFixed(1)}" y="${H-8}" text-anchor="middle" fill="#8E9096" font-size="11" font-family="Figtree,system-ui">${new Date(t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</text>`);
+  }
+  const markCol={trader_entry:'#D87558',user_entry:'#3DDC97',user_exit:'#FF6B6B'};
+  const markLbl={trader_entry:'T',user_entry:'Y',user_exit:'X'};
+  const marks=markers.map(m=>{
+    const t=new Date(m.at).getTime();
+    if(!Number.isFinite(t))return'';
+    const px=m.priceUsd>0?m.priceUsd:(last.c);
+    const x=Math.min(W-padR-8,Math.max(padL+8,xOf(t)));
+    const y=Math.min(padT+plotH-8,Math.max(padT+8,yOf(px)));
+    const col=markCol[m.kind]||'#9D86FF';
+    const lab=markLbl[m.kind]||'·';
+    return `<g><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="#1F2024" stroke="${col}" stroke-width="2.2"/><text x="${x.toFixed(1)}" y="${(y+4).toFixed(1)}" text-anchor="middle" fill="${col}" font-size="10" font-weight="800" font-family="Inter Tight,system-ui">${lab}</text></g>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Live token chart">${grid.join('')}${bodies}${marks}${xLabels.join('')}</svg>`;
+}
+function chartView(){
+  const tfs=['1m','5m','15m','1h','4h','1d'];
+  const d=chartData,p=d?.position,m=d?.market,tr=d?.trader,st=d?.strategy,mk=d?.markers||[];
+  const chg=m?.changePct,chgUp=chg!=null&&chg>=0;
+  const mc=m?.marketCapUsd??p?.entryMarketCapUsd;
+  const title=p?.tokenName||p?.tokenSymbol||'Position';
+  const sym=p?.tokenSymbol||'TOKEN';
+  const addr=p?.tokenAddress||'';
+  return `<div class="chart-shell">
+<div class="chart-head">
+<div class="row sp"><button class="btn sm" type="button" onclick="closeChart()">← Back</button><span class="chart-live">Live on chain</span></div>
+<div class="row sp" style="gap:12px;flex-wrap:wrap">
+<div><div class="logo" style="font-size:22px;margin-bottom:4px"><img class="brand" src="/icons/copyra.webp" width="28" height="28" alt="" onerror="this.onerror=null;this.src='/icons/copyra.png'">copyra<i>.</i></div>
+<h1 style="font-size:clamp(26px,6vw,36px);margin:0">${title}</h1>
+<div class="mu">$${sym} · ${addr?addr.slice(0,4)+'…'+addr.slice(-4):''}${tr?` · Copying ${tr.label}`:''}</div></div>
+<div style="text-align:right"><div class="chart-mc">${fmtCompactUsd(mc)}</div>${chg!=null?`<span class="chart-chg ${chgUp?'up':'dn'}">${chgUp?'↑':'↓'} ${Math.abs(chg).toFixed(1)}%</span>`:'<span class="mu">vs entry</span>'}</div>
+</div></div>
+<div class="chart-stage">${chartLoading&&!d?`<div class="chart-empty">Loading live chart…</div>`:chartErr?`<div class="chart-empty">${chartErr}<br><button class="btn sm" style="margin-top:12px" onclick="loadChart(false)">Retry</button></div>`:d?chartSvg(d):`<div class="chart-empty">Loading…</div>`}</div>
+<div class="row sp" style="flex-wrap:wrap;gap:8px"><div class="chart-tf">${tfs.map(tf=>`<button type="button" class="${chartTf===tf?'on':''}" onclick="setChartTf('${tf}')">${tf==='1d'?'1D':tf}</button>`).join('')}</div>
+<div class="chart-mark-leg"><span><i style="background:#D87558"></i>Copy trader entry</span><span><i style="background:#3DDC97"></i>Your entry</span><span><i style="background:#FF6B6B"></i>Your exit</span></div></div>
+<div class="chart-side">
+<div class="k"><small>Strategy</small><b>${p?.exitStrategy||st?.exitStrategy||'—'}</b><span class="mu">TP ${st?.takeProfitPct!=null?st.takeProfitPct+'%':'—'} · SL ${st?.stopLossPct!=null?st.stopLossPct+'%':'—'}</span></div>
+<div class="k"><small>Sizing</small><b>${st?.sizingQuote!=null?Number(st.sizingQuote).toFixed(4)+' '+(st.quoteSymbol||''):'—'}</b><span class="mu">Alloc ${st?.tradeAllocationPct!=null?st.tradeAllocationPct+'%':'—'} · ${st?.firstBuyOnly?'First buy':'Every buy'}</span></div>
+<div class="k"><small>Entry / Mark</small><b>${fmtCompactUsd(p?.entryPriceUsd)} → ${fmtCompactUsd(m?.priceUsd??p?.lastPriceUsd)}</b><span class="mu">Liq ${fmtCompactUsd(m?.liquidityUsd??p?.entryLiquidityUsd)}</span></div>
+<div class="k"><small>Unrealized</small><b class="${pnlC((p?.unrealizedPnlPct||0)/100)}">${p?.unrealizedPnlPct!=null?sg(p.unrealizedPnlPct)+'%':'—'}</b><span class="mu">${d?.refreshedAt?('Updated '+new Date(d.refreshedAt).toLocaleTimeString()):''}</span></div>
+</div>
+<div class="card" style="margin:0"><h3>Trade markers</h3>${mk.length?`<div class="act">${mk.map(x=>`<div><time>${new Date(x.at).toLocaleString()}</time><b>${x.label}</b> · ${x.priceUsd!=null?fmtCompactUsd(x.priceUsd):'price n/a'}${x.explorerUrl?` · <a href="${x.explorerUrl}" target="_blank" rel="noopener noreferrer">tx</a>`:''}</div>`).join('')}</div>`:'<p class="mu">No confirmed trader/user fills on this position yet.</p>'}
+${d?.explorer?.token?`<p class="mu" style="margin-top:10px"><a href="${d.explorer.token}" target="_blank" rel="noopener noreferrer">Open token on ${d.explorer.name||'explorer'}</a></p>`:''}</div>
+</div>`;
+}
+function draw(){const w=M=='sol';$('#ml').textContent=M.toUpperCase();const chip=$('#mc');chip?.classList.toggle('evm',!w);const solI=chip?.querySelector('.ico.sol');const evmI=chip?.querySelector('.ico.evm');solI?.classList.toggle('on',!!w);evmI?.classList.toggle('on',!w);$('#tabs').innerHTML=[['trading','Trading'],['monitor','Monitor'],['board','Leaderboard'],['pnl','PnL History']].map(([k,l])=>`<button class="tab ${T==k?'on':''}" onclick="T='${k}';if(T!=='chart'){stopChartPoll();chartId=null};draw()">${l}</button>`).join('');
  {const a=isRealWallet(wallet[M],M)?wallet[M]:null;const st=window.CopyraWallet?.getAccountStatus?.();
   if(M==='evm'&&st?.evm?.isConnecting)paintConnectBtn('Connecting…','EVM wallet connecting',false);
   else if(a)paintConnectBtn(a.slice(0,4)+'…'+a.slice(-4),M.toUpperCase()+' wallet connected',true);
   else paintConnectBtn('Connect Wallet','Connect your '+(M=='sol'?'Solana':'EVM')+' wallet',false);
   paintAcctLine()}
  $('#th').innerHTML=document.documentElement.dataset.theme=='dark'?'<svg viewBox="0 0 24 24" class="ib" style="width:26px"><circle cx="12" cy="12" r="4" stroke="currentColor" fill="none" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.8"/></svg>':'<svg viewBox="0 0 24 24" style="width:26px"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10z" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>';
+ if(T==='chart'&&chartId){$('#v').innerHTML=chartView();return}
  $('#v').innerHTML=T=='trading'?`<div class="seg">${['sol','evm'].map(x=>`<button class="${M==x?'on':''}" onclick="switchMode('${x}')">${x=='sol'?'SOL Mode':'EVM Mode'}</button>`).join('')}</div>`+trading(M):T=='monitor'?monitor():T=='board'?board():pnlv()}
-window.switchMode=(x)=>{if(M===x)return;M=x;T='trading';try{window.CopyraWallet?.setMode?.(M)}catch{};draw();refresh()};
+window.switchMode=(x)=>{if(M===x)return;stopChartPoll();chartId=null;M=x;T='trading';try{window.CopyraWallet?.setMode?.(M)}catch{};draw();refresh()};
 const md=(h)=>{const s=$('#md');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow='';box.innerHTML=h}s.classList.add('o')};
 const cl=()=>{const s=$('#md');s.classList.remove('o');s.style.background='';s.style.pointerEvents='';const box=s.firstElementChild;if(box){box.style.pointerEvents='';box.style.boxShadow=''}};
 async function patchModeEngine(e,engine){
@@ -1459,7 +1601,7 @@ const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){ref
 <p><b>Telegram</b><br>${st.telegram?.canPostToChat?'@'+(st.telegram.botUsername||'bot')+' can post':'unreachable'}${st.telegram?.error?' · '+st.telegram.error:''}</p>
 <p><b>Chains</b><br>${chains||'*'}</p>
 <div class="row"><button class="btn pri" onclick="cl();refresh();toast('Refreshed')">Refresh</button><button class="btn" onclick="cl()">Close</button></div>`)};
-document.addEventListener('keydown',e=>{if(e.key=='Escape'){cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
+document.addEventListener('keydown',e=>{if(e.key=='Escape'){if(T==='chart'&&chartId)closeChart();cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
 paintLocalCustody();
 setInterval(()=>{refresh()},5000);

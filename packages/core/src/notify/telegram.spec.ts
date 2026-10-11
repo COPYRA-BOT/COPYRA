@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { HttpError } from '../util/retry.js';
 import {
+  isAirdropTelegramNoise,
   parseTelegramMigrateTo,
   resolveTelegramTargets,
   shouldSuppressTelegramKind,
@@ -76,5 +77,21 @@ describe('resolveTelegramTargets', () => {
         userChat: user,
       }),
     ).toEqual([]);
+  });
+
+  it('never routes airdrop noise to the admin chat', () => {
+    expect(shouldSuppressTelegramKind('airdrop')).toBe(true);
+    expect(isAirdropTelegramNoise('👁 TRADER ACTIVITY · SOL\nWhale. AIRDROP', 'detection')).toBe(
+      true,
+    );
+    expect(
+      isAirdropTelegramNoise(
+        '⚪️ SKIPPED · SOL\nReason: IS_AIRDROP\nClassified as AIRDROP',
+        'skip',
+      ),
+    ).toBe(true);
+    expect(resolveTelegramTargets({ kind: 'airdrop', adminChat: admin, userChat: user })).toEqual(
+      [],
+    );
   });
 });

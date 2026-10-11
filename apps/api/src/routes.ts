@@ -417,6 +417,32 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     return jsonSafe(positions);
   });
 
+  /** Live on-chain chart for one position (candles + trader/user markers). */
+  app.get('/api/positions/:id/chart', async (request, reply) => {
+    const sessions = await readBothSessions(request);
+    const mode = authModeFromRequest(request);
+    const userId = mode === 'evm' ? sessions.evm?.user.id : sessions.sol?.user.id;
+    if (!userId) {
+      return reply.code(401).send({ error: 'Sign in to view this position chart.' });
+    }
+    const params = z.object({ id: z.string().min(1) }).parse(request.params);
+    const query = z
+      .object({
+        tf: z.enum(['1m', '5m', '15m', '1h', '4h', '1d']).optional(),
+      })
+      .parse(request.query ?? {});
+    try {
+      const { buildPositionChart } = await import('./position-chart.js');
+      const chart = await buildPositionChart(userId, params.id, query.tf ?? '15m');
+      return jsonSafe(chart);
+    } catch (error) {
+      const status = (error as { statusCode?: number }).statusCode ?? 502;
+      return reply
+        .code(status)
+        .send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   app.get('/api/signals', async (request, reply) => {
     const sessions = await readBothSessions(request);
     const mode = authModeFromRequest(request);

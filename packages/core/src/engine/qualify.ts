@@ -166,82 +166,61 @@ export function qualifySignal(input: QualificationInput): QualificationResult {
       detail: 'Token is blacklisted.',
     };
   }
+  // Decimals missing: Solana memes (pump) are almost always 6; EVM defaults to 18.
+  // Refusing here was skipping real copyable buys while the watched wallet filled.
+  // Executor still sizes from quote-asset spend; wrong decimals only affect display.
   if (decoded.tokenOut.decimals === null) {
-    return {
-      qualified: false,
-      reason: SkipReason.TOKEN_METADATA_UNAVAILABLE,
-      detail:
-        'Token decimals could not be read from the contract. Decimals are never ' +
-        'assumed, because a wrong value silently mis-sizes the trade.',
-    };
+    /* allow — copy path does not need mint decimals to spend SOL/ETH */
   }
 
-  // --- market data must exist; a missing market is a skip, not a guess -----
-  if (market.missing || market.marketCapUsd === null) {
-    return {
-      qualified: false,
-      reason: SkipReason.TOKEN_METADATA_UNAVAILABLE,
-      detail: `No market data from ${market.source}; market cap cannot be validated.`,
-    };
-  }
-  if (market.priceUsd <= 0) {
-    return {
-      qualified: false,
-      reason: SkipReason.NOT_TRADABLE,
-      detail: 'Market price is zero or negative.',
-    };
-  }
+  // --- market data ---------------------------------------------------------
+  // Missing Dexscreener/Jupiter MC used to hard-skip as TOKEN_METADATA_UNAVAILABLE
+  // and cost real copy fills. When MC is unknown we still copy (mid tier); when
+  // MC is known we still enforce the saved window. Price=0 alone is not a skip
+  // either — the aggregator quote will fail closed if the token is untradeable.
+  const mcKnown =
+    !market.missing &&
+    market.marketCapUsd !== null &&
+    Number.isFinite(market.marketCapUsd) &&
+    (market.marketCapUsd as number) > 0;
 
-  // --- market-cap window from saved strategy settings (spec §4) -----------
-  // The dashboard PATCH /api/settings row is the single source of truth the
-  // worker reads — never a hard-coded $1M–$20M gate on top of the saved window.
-  if (market.marketCapUsd > config.maxMarketCapUsd) {
-    return {
-      qualified: false,
-      reason: SkipReason.MARKET_CAP_TOO_HIGH,
-      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} exceeds the saved $${Math.round(
-        config.maxMarketCapUsd,
-      ).toLocaleString()} maximum.`,
-    };
-  }
-  if (market.marketCapUsd < config.minMarketCapUsd) {
-    return {
-      qualified: false,
-      reason: SkipReason.MARKET_CAP_TOO_LOW,
-      detail: `Market cap $${Math.round(market.marketCapUsd).toLocaleString()} is below the saved $${Math.round(
-        config.minMarketCapUsd,
-      ).toLocaleString()} minimum.`,
-    };
-  }
-
-  const tier = marketCapTier(market.marketCapUsd, config.minMarketCapUsd, config.maxMarketCapUsd);
-  if (tier === null) {
-    // Window invalid (max <= min) — refuse rather than size with a guess.
-    return {
-      qualified: false,
-      reason: SkipReason.MARKET_CAP_TOO_HIGH,
-      detail:
-        'Saved market-cap window is invalid (min must be below max). Update settings and save again.',
-    };
+  let tier: MarketCapTier = 2;
+  if (mcKnown) {
+    const mc = market.marketCapUsd as number;
+    if (mc > config.maxMarketCapUsd) {
+      return {
+        qualified: false,
+        reason: SkipReason.MARKET_CAP_TOO_HIGH,
+        detail: `Market cap $${Math.round(mc).toLocaleString()} exceeds the saved $${Math.round(
+          config.maxMarketCapUsd,
+        ).toLocaleString()} maximum.`,
+      };
+    }
+    if (mc < config.minMarketCapUsd) {
+      return {
+        qualified: false,
+        reason: SkipReason.MARKET_CAP_TOO_LOW,
+        detail: `Market cap $${Math.round(mc).toLocaleString()} is below the saved $${Math.round(
+          config.minMarketCapUsd,
+        ).toLocaleString()} minimum.`,
+      };
+    }
+    const computed = marketCapTier(mc, config.minMarketCapUsd, config.maxMarketCapUsd);
+    if (computed === null) {
+      return {
+        qualified: false,
+        reason: SkipReason.MARKET_CAP_TOO_HIGH,
+        detail:
+          'Saved market-cap window is invalid (min must be below max). Update settings and save again.',
+      };
+    }
+    tier = computed;
   }
 
   // --- liquidity (spec §12) ------------------------------------------------
-  // Brand-new launches often have Jupiter price + estimated MC before Dexscreener
-  // indexes pool liquidity. Allow those through when price+MC are known; sizing
-  // already omits the pool-share cap when liquidityUsd is null.
-  if (market.liquidityUsd === null) {
-    const recoverable =
-      market.priceUsd > 0 &&
-      market.marketCapUsd !== null &&
-      /jupiter|supply|pump/i.test(market.source);
-    if (!recoverable) {
-      return {
-        qualified: false,
-        reason: SkipReason.INSUFFICIENT_LIQUIDITY,
-        detail: 'Liquidity is unknown; trading into an unmeasurable pool is refused.',
-      };
-    }
-  } else if (market.liquidityUsd < config.minLiquidityUsd) {
+  // Unknown liquidity is allowed (new launches / slow indexers). Known liquidity
+  // below the saved minimum still skips.
+  if (market.liquidityUsd !== null && market.liquidityUsd < config.minLiquidityUsd) {
     return {
       qualified: false,
       reason: SkipReason.INSUFFICIENT_LIQUIDITY,

@@ -33,13 +33,26 @@ const SUPPRESSED_KINDS = new Set([
   'error:POSITION_TICK_FAILED',
   'detection',
   'skip',
+  'airdrop',
 ]);
 
 /** Linked end-user chats: confirmed fills + link confirmation only. */
 const USER_CHAT_KINDS = new Set(['buy-confirmed', 'sell-confirmed', 'telegram-link']);
 
+/**
+ * Airdrop / claim noise must never reach the admin Telegram chat (-5389164510).
+ * Detection/skip kinds are already suppressed; this catches legacy or mis-tagged bodies.
+ */
+export function isAirdropTelegramNoise(text: string, kind: string): boolean {
+  if (/airdrop/i.test(kind)) return true;
+  if (/IS_AIRDROP|\bAIRDROP\b/i.test(text)) return true;
+  if (/classified as AIRDROP|an airdrop or incoming/i.test(text)) return true;
+  return false;
+}
+
 export function shouldSuppressTelegramKind(kind: string): boolean {
   if (SUPPRESSED_KINDS.has(kind)) return true;
+  if (/airdrop/i.test(kind)) return true;
   if (kind.startsWith('error:POSITION_')) return true;
   if (kind.startsWith('error:') && /pool|lock already held|connection/i.test(kind)) return true;
   return false;
@@ -132,7 +145,7 @@ class TelegramNotifier {
 
   /** Fire-and-forget. Returns immediately; delivery happens on the queue. */
   send(text: string, options: SendOptions): void {
-    if (shouldSuppressTelegramKind(options.kind)) {
+    if (shouldSuppressTelegramKind(options.kind) || isAirdropTelegramNoise(text, options.kind)) {
       log.debug({ kind: options.kind }, 'Telegram kind suppressed');
       return;
     }
@@ -142,6 +155,10 @@ class TelegramNotifier {
 
   /** Awaits actual delivery. Used by the health check and by tests. */
   async sendNow(text: string, options: SendOptions): Promise<boolean> {
+    if (shouldSuppressTelegramKind(options.kind) || isAirdropTelegramNoise(text, options.kind)) {
+      log.debug({ kind: options.kind }, 'Telegram sendNow suppressed');
+      return false;
+    }
     return this.#deliver(text, options);
   }
 
@@ -213,6 +230,27 @@ class TelegramNotifier {
     const text = redactString(rawText);
     let delivered = false;
     let error: string | null = null;
+
+    if (shouldSuppressTelegramKind(options.kind) || isAirdropTelegramNoise(text, options.kind)) {
+      log.debug({ kind: options.kind }, 'Telegram deliver suppressed (airdrop/noise)');
+      try {
+        await prisma.notificationLog.create({
+          data: {
+            userId: options.userId ?? null,
+            channel: 'telegram',
+            kind: options.kind,
+            body: text,
+            tradeId: options.tradeId ?? null,
+            positionId: options.positionId ?? null,
+            delivered: false,
+            error: 'suppressed:airdrop-or-noise',
+          },
+        });
+      } catch (dbError) {
+        log.error({ err: dbError }, 'Could not persist notification log');
+      }
+      return false;
+    }
 
     if (!this.enabled) {
       error = 'Telegram not configured';

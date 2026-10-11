@@ -135,7 +135,7 @@ describe('qualifySignal', () => {
     if (!result.qualified) expect(result.reason).toBe(SkipReason.BLACKLISTED);
   });
 
-  it('skips when decimals cannot be read', () => {
+  it('still qualifies when decimals cannot be read (copy spends quote asset)', () => {
     const result = qualifySignal(
       qualifyInput({
         decoded: decodedBuy({
@@ -143,14 +143,16 @@ describe('qualifySignal', () => {
         }),
       }),
     );
-    expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.TOKEN_METADATA_UNAVAILABLE);
+    expect(result.qualified).toBe(true);
+    if (result.qualified) expect(result.marketCapTier).toBeGreaterThanOrEqual(1);
   });
 
-  it('skips when market data is missing rather than guessing a cap', () => {
-    const result = qualifySignal(qualifyInput({ market: market({ missing: true, marketCapUsd: null }) }));
-    expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.TOKEN_METADATA_UNAVAILABLE);
+  it('still qualifies when market cap metadata is missing (mid tier)', () => {
+    const result = qualifySignal(
+      qualifyInput({ market: market({ missing: true, marketCapUsd: null, priceUsd: 0, liquidityUsd: null }) }),
+    );
+    expect(result.qualified).toBe(true);
+    if (result.qualified) expect(result.marketCapTier).toBe(2);
   });
 
   it('skips market cap above the saved maximum', () => {
@@ -186,10 +188,10 @@ describe('qualifySignal', () => {
     if (!result.qualified) expect(result.reason).toBe(SkipReason.INSUFFICIENT_LIQUIDITY);
   });
 
-  it('skips unknown liquidity rather than treating it as unlimited', () => {
+  it('allows unknown liquidity (new launches) when other gates pass', () => {
     const result = qualifySignal(qualifyInput({ market: market({ liquidityUsd: null }) }));
-    expect(result.qualified).toBe(false);
-    if (!result.qualified) expect(result.reason).toBe(SkipReason.INSUFFICIENT_LIQUIDITY);
+    expect(result.qualified).toBe(true);
+    if (result.qualified) expect(result.marketCapTier).toBe(2);
   });
 
   it('enforces first-buy-only: the trader’s later buy of the same token is skipped', () => {
