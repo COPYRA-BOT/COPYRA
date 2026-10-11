@@ -5,6 +5,15 @@ Platform URL (same deploy): **https://copyra-nl7kz.ondigitalocean.app**
 
 Every push to GitHub `COPYRA-BOT/COPYRA` branch `main` auto-deploys on DigitalOcean App Platform (`deploy_on_push: true`).
 
+**Important:** DO only watches the `github` remote (`COPYRA-BOT/COPYRA`). After commits, push both:
+
+```bash
+git push origin main
+git push github main
+```
+
+If the worker heartbeat shows `syncAge` of hours while `beatAt` is fresh, a zombie worker is stuck — DO → **worker** → **Force rebuild** (or Redeploy).
+
 ## Architecture (keeps the site up while trading runs)
 
 | Component | Role | Health |
