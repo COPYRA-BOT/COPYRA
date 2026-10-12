@@ -299,7 +299,8 @@ export async function startPumpFunDiscovery(
         }
       }
     }, 8_000);
-    ws.on('open', () => {
+    const socket = ws;
+    socket.on('open', () => {
       opened = true;
       clearTimeout(openTimeout);
       connectedAt = Date.now();
@@ -316,18 +317,18 @@ export async function startPumpFunDiscovery(
           'Sniper logsSubscribe ACK timeout — rotating endpoint',
         );
         try {
-          ws?.close();
+          socket.close();
         } catch {
           scheduleReconnect(500);
         }
       }, 12_000);
-      ws.once('close', () => clearTimeout(ackTimer));
+      socket.once('close', () => clearTimeout(ackTimer));
       // Keepalive — some Helius idle sockets drop without a close event.
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = setInterval(() => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (socket.readyState !== WebSocket.OPEN) return;
         try {
-          ws.ping();
+          socket.ping();
         } catch {
           /* ignore */
         }
