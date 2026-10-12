@@ -71,6 +71,8 @@ function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue 
     decodeOk: stats.decodeOk,
     decodeFail: stats.decodeFail,
     subs: stats.subs,
+    hasSolanaRpc: Boolean(env.SOLANA_RPC_URL),
+    hasSolanaWs: Boolean(env.SOLANA_WS_URL || env.SOLANA_BACKUP_WS_URL),
     bootError,
     pid: process.pid,
     ...extra,
