@@ -4,6 +4,7 @@ import {
   decryptKeyMaterial,
   deriveCustodySeed,
   deriveEvmAccount,
+  deriveSniperKeypair,
   deriveSolanaKeypair,
   encryptKeyMaterial,
 } from './user-custody.js';
@@ -16,6 +17,13 @@ describe('user custody derivation', () => {
     const bEvm = deriveEvmAccount('user-b').address;
     expect(aSol).not.toBe(bSol);
     expect(aEvm).not.toBe(bEvm);
+  });
+
+  it('derives sniper custody distinct from SOL copy custody', () => {
+    const sol = deriveSolanaKeypair('user-a').publicKey.toBase58();
+    const snip = deriveSniperKeypair('user-a').publicKey.toBase58();
+    expect(snip).not.toBe(sol);
+    expect(deriveSniperKeypair('user-a').publicKey.toBase58()).toBe(snip);
   });
 
   it('is deterministic for the same user', () => {

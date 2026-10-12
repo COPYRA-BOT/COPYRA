@@ -19,6 +19,9 @@ const discoveryStats = {
   decodeFail: 0,
   subs: 0,
   wsConnected: false,
+  wsUrlHost: null as string | null,
+  lastNotificationAt: null as string | null,
+  reconnects: 0,
 };
 
 export function getSniperDiscoveryStats(): Readonly<typeof discoveryStats> {
@@ -43,6 +46,43 @@ function classifyLogs(logs: string[]): { eventKind: SniperDiscoveryEvent['eventK
   return { eventKind: 'pool', migrated: false };
 }
 
+const QUOTE_MINTS = new Set([
+  'So11111111111111111111111111111111111111112',
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+]);
+
+function programSkipSet(programId: string): Set<string> {
+  return new Set([
+    programId,
+    env.PUMP_FUN_PROGRAM_ID || DEFAULT_PUMP_FUN_PROGRAM_ID,
+    DEFAULT_PUMP_FUN_PROGRAM_ID,
+    DEFAULT_PUMP_SWAP_PROGRAM_ID,
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+    '11111111111111111111111111111111',
+    'ComputeBudget111111111111111111111111111111',
+    'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+    'metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s',
+  ]);
+}
+
+/** Best-effort mint from raw logs (works when getParsedTransaction lags). */
+function mintFromLogs(logs: string[], programId: string): string | null {
+  const skip = programSkipSet(programId);
+  const fromLogs = logs.join(' ').match(MINT_RE) ?? [];
+  for (const a of fromLogs) {
+    if (a.length < 32 || QUOTE_MINTS.has(a) || skip.has(a)) continue;
+    try {
+      new PublicKey(a);
+      return a;
+    } catch {
+      /* continue */
+    }
+  }
+  return null;
+}
+
 /**
  * Extract candidate mints from a confirmed tx involving pump.fun.
  * Prefers token balances created/received; falls back to log pubkeys.
@@ -54,6 +94,7 @@ async function extractEvent(
 ): Promise<SniperDiscoveryEvent | null> {
   const launchpad = launchpadForProgram(programId);
   const { eventKind, migrated } = classifyLogs(logs);
+  const logMint = mintFromLogs(logs, programId);
 
   try {
     const result = await solanaPool().call('getParsedTransaction', (c) =>
@@ -63,62 +104,79 @@ async function extractEvent(
       }),
     );
     const tx = result.value;
-    if (!tx) return null;
+    if (tx) {
+      const mints = new Set<string>();
+      for (const bal of tx.meta?.postTokenBalances ?? []) {
+        if (bal.mint) mints.add(bal.mint);
+      }
+      for (const bal of tx.meta?.preTokenBalances ?? []) {
+        if (bal.mint) mints.add(bal.mint);
+      }
+      for (const q of QUOTE_MINTS) mints.delete(q);
 
-    const mints = new Set<string>();
-    for (const bal of tx.meta?.postTokenBalances ?? []) {
-      if (bal.mint) mints.add(bal.mint);
+      const tokenAddress = [...mints][0] ?? logMint;
+      if (!tokenAddress) return null;
+
+      const creator =
+        tx.transaction.message.accountKeys
+          .find((k: { signer?: boolean }) => k.signer)
+          ?.pubkey.toBase58() ?? null;
+
+      return {
+        launchpad,
+        eventKind,
+        sourceTxHash: signature,
+        tokenAddress,
+        creatorAddress: creator,
+        bondingState: migrated ? 'migrated' : launchpad === 'pump.fun' ? 'bonding_curve' : 'unknown',
+        migrated,
+        observedAt: new Date(),
+        slot: tx.slot ?? null,
+        rawLog: logs.slice(0, 8).join(' | '),
+      };
     }
-    for (const bal of tx.meta?.preTokenBalances ?? []) {
-      if (bal.mint) mints.add(bal.mint);
-    }
-    // Drop well-known quote mints.
-    mints.delete('So11111111111111111111111111111111111111112');
-    mints.delete('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+  } catch (error) {
+    log.warn({ signature, err: error }, 'sniper tx fetch/decode failed — trying log mint');
+  }
 
-    let tokenAddress = [...mints][0] ?? null;
-    if (!tokenAddress) {
-      const fromLogs = logs.join(' ').match(MINT_RE) ?? [];
-      tokenAddress = fromLogs.find((a) => a.length >= 32) ?? null;
-    }
-    if (!tokenAddress) return null;
-
-    const creator =
-      tx.transaction.message.accountKeys
-        .find((k: { signer?: boolean }) => k.signer)
-        ?.pubkey.toBase58() ?? null;
-
+  // Fail-open to log mint so Pump.fun creates still reach Discovery while RPC lags.
+  if (logMint && (eventKind === 'create' || eventKind === 'migrate' || eventKind === 'pool')) {
     return {
       launchpad,
       eventKind,
       sourceTxHash: signature,
-      tokenAddress,
-      creatorAddress: creator,
+      tokenAddress: logMint,
+      creatorAddress: null,
       bondingState: migrated ? 'migrated' : launchpad === 'pump.fun' ? 'bonding_curve' : 'unknown',
       migrated,
       observedAt: new Date(),
-      slot: tx.slot ?? null,
+      slot: null,
       rawLog: logs.slice(0, 8).join(' | '),
     };
-  } catch (error) {
-    log.warn({ signature, err: error }, 'sniper tx fetch/decode failed');
-    return null;
   }
+  return null;
+}
+
+function candidateWsUrls(): string[] {
+  const urls: string[] = [];
+  // Prefer backup so Pump.fun flood does not starve copy-trade primary subscriptions.
+  if (env.SOLANA_BACKUP_WS_URL) urls.push(env.SOLANA_BACKUP_WS_URL);
+  if (env.SOLANA_WS_URL && env.SOLANA_WS_URL !== env.SOLANA_BACKUP_WS_URL) {
+    urls.push(env.SOLANA_WS_URL);
+  }
+  return urls;
 }
 
 /**
  * Helius / Solana WS logsSubscribe for Pump.fun (+ PumpSwap) program events.
- * Reuses SOLANA_WS_URL (same Helius stream family as the copy worker).
+ * Rotates across backup + primary WS so a dead endpoint cannot idle discovery forever.
  */
 export async function startPumpFunDiscovery(
   onEvent: DiscoveryHandler,
   opts?: { programIds?: string[] },
 ): Promise<() => void> {
-  // Prefer backup WS when available so Pump.fun flood does not starve copy-trade
-  // primary SOLANA_WS_URL subscriptions on the same Helius key.
-  const wsUrl =
-    env.SOLANA_BACKUP_WS_URL || env.SOLANA_WS_URL || null;
-  if (!wsUrl) {
+  const urls = candidateWsUrls();
+  if (!urls.length) {
     discoveryStats.wsConnected = false;
     const msg = 'SNIPER discovery idle — SOLANA_WS_URL / SOLANA_BACKUP_WS_URL not configured';
     log.error({}, msg);
@@ -126,10 +184,11 @@ export async function startPumpFunDiscovery(
   }
   log.info(
     {
-      usingBackup: Boolean(env.SOLANA_BACKUP_WS_URL),
+      endpoints: urls.length,
+      usingBackupFirst: Boolean(env.SOLANA_BACKUP_WS_URL),
       hasPrimary: Boolean(env.SOLANA_WS_URL),
     },
-    'Sniper discovery WS endpoint selected (backup preferred for isolation)',
+    'Sniper discovery WS endpoints selected (backup preferred for isolation)',
   );
 
   const programs = opts?.programIds?.length
@@ -139,11 +198,17 @@ export async function startPumpFunDiscovery(
   let closed = false;
   let ws: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let watchdogTimer: NodeJS.Timeout | null = null;
   let reqId = 1;
+  let urlIndex = 0;
+  let connectedAt = 0;
   /** JSON-RPC request id → program id (while waiting for subscribe ACK). */
   const pending = new Map<number, string>();
   /** Subscription id → program id (stable mapping for notifications). */
   const subToProgram = new Map<number, string>();
+  const seenSig = new Set<string>();
+  const SEEN_CAP = 4_000;
+
   const handleLogsNotification = (programId: string, value: {
     signature: string;
     err: unknown;
@@ -151,6 +216,13 @@ export async function startPumpFunDiscovery(
   }) => {
     if (value.err) return;
     discoveryStats.wsNotifications += 1;
+    discoveryStats.lastNotificationAt = new Date().toISOString();
+    if (seenSig.has(value.signature)) return;
+    seenSig.add(value.signature);
+    if (seenSig.size > SEEN_CAP) {
+      const drop = [...seenSig].slice(0, SEEN_CAP / 2);
+      for (const s of drop) seenSig.delete(s);
+    }
     void extractEvent(value.signature, programId, value.logs ?? []).then((event) => {
       if (event) {
         discoveryStats.decodeOk += 1;
@@ -164,9 +236,9 @@ export async function startPumpFunDiscovery(
   const subscribeAll = () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     subToProgram.clear();
+    pending.clear();
     for (const programId of programs) {
       try {
-        // Validate program id early.
         new PublicKey(programId);
       } catch {
         log.warn({ programId }, 'invalid sniper program id — skip');
@@ -185,12 +257,52 @@ export async function startPumpFunDiscovery(
     }
   };
 
+  const scheduleReconnect = (delayMs: number) => {
+    if (closed || reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delayMs);
+  };
+
   const connect = () => {
     if (closed) return;
+    if (ws) {
+      try {
+        ws.removeAllListeners();
+        ws.close();
+      } catch {
+        /* ignore */
+      }
+      ws = null;
+    }
+    const wsUrl = urls[urlIndex % urls.length]!;
+    urlIndex += 1;
+    discoveryStats.reconnects += 1;
+    try {
+      discoveryStats.wsUrlHost = new URL(wsUrl).host;
+    } catch {
+      discoveryStats.wsUrlHost = 'invalid';
+    }
+    log.info({ host: discoveryStats.wsUrlHost, attempt: discoveryStats.reconnects }, 'Sniper WS connecting');
     ws = new WebSocket(wsUrl);
+    let opened = false;
+    const openTimeout = setTimeout(() => {
+      if (!opened && ws && ws.readyState !== WebSocket.OPEN) {
+        log.warn({ host: discoveryStats.wsUrlHost }, 'Sniper WS open timeout — rotate endpoint');
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 12_000);
     ws.on('open', () => {
+      opened = true;
+      clearTimeout(openTimeout);
+      connectedAt = Date.now();
       discoveryStats.wsConnected = true;
-      log.info({ programs }, 'Sniper Helius/WS logsSubscribe connected');
+      log.info({ programs, host: discoveryStats.wsUrlHost }, 'Sniper Helius/WS logsSubscribe connected');
       subscribeAll();
     });
     ws.on('message', (raw) => {
@@ -219,15 +331,47 @@ export async function startPumpFunDiscovery(
       }
     });
     ws.on('close', () => {
+      clearTimeout(openTimeout);
       discoveryStats.wsConnected = false;
+      discoveryStats.subs = 0;
       if (closed) return;
-      log.warn({}, 'Sniper WS closed — reconnecting');
-      reconnectTimer = setTimeout(connect, 1_500);
+      log.warn({ host: discoveryStats.wsUrlHost }, 'Sniper WS closed — rotating reconnect');
+      scheduleReconnect(1_200);
     });
     ws.on('error', (err) => {
-      log.warn({ err }, 'Sniper WS error');
+      log.warn({ err, host: discoveryStats.wsUrlHost }, 'Sniper WS error');
     });
   };
+
+  // Pump.fun is busy — silence while "connected" means a stale socket; force rotate.
+  watchdogTimer = setInterval(() => {
+    if (closed) return;
+    if (!discoveryStats.wsConnected) {
+      if (!reconnectTimer) scheduleReconnect(500);
+      return;
+    }
+    const last = discoveryStats.lastNotificationAt
+      ? Date.parse(discoveryStats.lastNotificationAt)
+      : 0;
+    const quietMs = last ? Date.now() - last : Date.now() - connectedAt;
+    const forceClose = () => {
+      log.warn({ quietMs, host: discoveryStats.wsUrlHost }, 'Sniper WS quiet — forcing reconnect');
+      try {
+        ws?.close();
+      } catch {
+        scheduleReconnect(500);
+      }
+    };
+    // After first notification, 90s quiet is abnormal for pump.fun.
+    if (discoveryStats.wsNotifications > 0 && quietMs > 90_000) {
+      forceClose();
+      return;
+    }
+    // Connected but never received anything for 45s after open — rotate endpoint.
+    if (discoveryStats.wsNotifications === 0 && connectedAt > 0 && Date.now() - connectedAt > 45_000) {
+      forceClose();
+    }
+  }, 20_000);
 
   connect();
 
@@ -235,6 +379,7 @@ export async function startPumpFunDiscovery(
     closed = true;
     discoveryStats.wsConnected = false;
     if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (watchdogTimer) clearInterval(watchdogTimer);
     try {
       ws?.close();
     } catch {

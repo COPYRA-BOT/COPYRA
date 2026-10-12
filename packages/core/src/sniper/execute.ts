@@ -63,18 +63,28 @@ async function dailySniperLossSol(userId: string): Promise<number> {
 }
 
 /**
- * Process one discovery for every user with Sniper engine ON.
- * Uses shared Solana signer + Jupiter execution + Redis locks.
+ * Process one discovery for every user with a Sniper mode row.
+ * Signals are recorded for Discovery even when the engine is PAUSED;
+ * qualify() fail-closes buys unless engine ON + live + host enabled.
+ * Uses sniper custody + Jupiter execution + Redis locks (never SOL copy wallet).
  */
 export async function handleSniperDiscovery(event: SniperDiscoveryEvent): Promise<void> {
+  // Prefer engine-ON users first so live buys are not starved behind paused monitors.
   const users = await prisma.userModeSettings.findMany({
-    where: { mode: TradingMode.SNIPER, engine: 'ON' },
-    select: { userId: true },
+    where: { mode: TradingMode.SNIPER },
+    select: { userId: true, engine: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 200,
   });
   if (!users.length) {
-    log.debug({ mint: event.tokenAddress }, 'No sniper engines ON — discovery ignored for exec');
+    log.debug({ mint: event.tokenAddress }, 'No sniper mode users — discovery ignored');
     return;
   }
+  users.sort((a, b) => {
+    const aOn = (a.engine || '').toUpperCase() === 'ON' ? 0 : 1;
+    const bOn = (b.engine || '').toUpperCase() === 'ON' ? 0 : 1;
+    return aOn - bOn;
+  });
 
   for (const { userId } of users) {
     try {

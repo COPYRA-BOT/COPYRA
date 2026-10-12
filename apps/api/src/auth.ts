@@ -16,7 +16,7 @@ const SESSION_DAYS = 7;
 
 export type AuthMode = 'sol' | 'evm' | 'sniper';
 
-/** Cookie namespace for SOL/EVM wallet sessions. Sniper reuses the SOL session (same custody). */
+/** Cookie namespace for SOL/EVM wallet sessions. Sniper reuses the SOL login cookie; custody is CustodyFamily.SNIPER. */
 const MODE_COOKIES: Record<'sol' | 'evm', string> = {
   sol: 'copyra_session_sol',
   evm: 'copyra_session_evm',

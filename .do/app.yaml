@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-12T19:10Z (force DO roll — heal Degraded copy worker)
+# last-deploy-nudge: 2026-10-12T20:05Z (chart stability + sniper custody/discovery heal)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22

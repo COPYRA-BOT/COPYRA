@@ -26,8 +26,9 @@ let workerCache: { at: number; value: Awaited<ReturnType<typeof fetchWorkerWalle
   null;
 const WORKER_CACHE_MS = 60_000;
 
-function cacheKey(chain: Chain, address: string): string {
-  return `${chain}:${address.toLowerCase()}`;
+function cacheKey(chain: Chain, address: string, family?: CustodyFamily | null): string {
+  const fam = family ? `:${family}` : '';
+  return `${chain}${fam}:${address.toLowerCase()}`;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
@@ -63,11 +64,19 @@ function rememberSuccess(entry: WalletEntry): void {
   const chain = entry.chain as Chain | undefined;
   if (!address || !chain) return;
   if (typeof entry.onChainNative !== 'number' && typeof entry.native !== 'number') return;
-  balanceCache.set(cacheKey(chain, address), { at: Date.now(), entry: { ...entry, source: 'rpc' } });
+  const family = (entry.family as CustodyFamily | null | undefined) ?? null;
+  balanceCache.set(cacheKey(chain, address, family), {
+    at: Date.now(),
+    entry: { ...entry, source: 'rpc' },
+  });
 }
 
-function staleGood(chain: Chain, address: string): WalletEntry | null {
-  const hit = balanceCache.get(cacheKey(chain, address));
+function staleGood(
+  chain: Chain,
+  address: string,
+  family?: CustodyFamily | null,
+): WalletEntry | null {
+  const hit = balanceCache.get(cacheKey(chain, address, family));
   if (!hit) return null;
   if (Date.now() - hit.at > BAL_CACHE_STALE_MS) return null;
   return {
@@ -83,6 +92,7 @@ async function fetchCustodyFunds(
   address: string,
   opts?: { family?: CustodyFamily },
 ): Promise<WalletEntry> {
+  const family = opts?.family ?? null;
   return withTimeout(
     (async () => {
       try {
@@ -93,7 +103,7 @@ async function fetchCustodyFunds(
           address,
           userScoped: true,
           role: 'custody',
-          family: opts?.family ?? null,
+          family,
           native: funds.onChainQuote,
           available: funds.availableQuote,
           withdrawable: funds.withdrawableQuote,
@@ -107,7 +117,7 @@ async function fetchCustodyFunds(
         rememberSuccess(entry);
         return entry;
       } catch (error) {
-        const cached = staleGood(chain, address);
+        const cached = staleGood(chain, address, family);
         if (cached) {
           return { ...cached, staleError: error instanceof Error ? error.message : String(error) };
         }
@@ -117,6 +127,7 @@ async function fetchCustodyFunds(
           address,
           userScoped: true,
           role: 'custody',
+          family,
           error: error instanceof Error ? error.message : String(error),
           native: null,
           available: null,
@@ -127,7 +138,7 @@ async function fetchCustodyFunds(
     })(),
     BALANCE_RPC_TIMEOUT_MS,
     () => {
-      const cached = staleGood(chain, address);
+      const cached = staleGood(chain, address, family);
       if (cached) return { ...cached, staleError: `rpc-timeout>${BALANCE_RPC_TIMEOUT_MS}ms` };
       return {
         chain,
@@ -135,6 +146,7 @@ async function fetchCustodyFunds(
         address,
         userScoped: true,
         role: 'custody',
+        family,
         error: `rpc-timeout>${BALANCE_RPC_TIMEOUT_MS}ms`,
         native: null,
         available: null,
@@ -151,7 +163,7 @@ function kickCustodyRefresh(
   address: string,
   opts?: { family?: CustodyFamily },
 ): void {
-  const key = cacheKey(chain, address);
+  const key = cacheKey(chain, address, opts?.family);
   if (refreshInflight.has(key)) return;
   const work = fetchCustodyFunds(chain, userId, address, opts)
     .then(() => undefined)
@@ -171,7 +183,8 @@ async function readCustodyFunds(
   address: string,
   opts?: { family?: CustodyFamily },
 ): Promise<WalletEntry> {
-  const hit = balanceCache.get(cacheKey(chain, address));
+  const family = opts?.family ?? null;
+  const hit = balanceCache.get(cacheKey(chain, address, family));
   const age = hit ? Date.now() - hit.at : Number.POSITIVE_INFINITY;
 
   if (hit && age < BAL_CACHE_FRESH_MS) {
@@ -315,21 +328,51 @@ export async function buildModeBalances(
   wallets: WalletEntry[];
   multiUserCustody: boolean;
   custodyAddress: string | null;
+  family: CustodyFamily | null;
 }> {
   const chains = mode === 'evm' ? EVM_CHAINS : SOL_CHAINS;
-  const family = mode === 'sniper' ? CustodyFamily.SNIPER : undefined;
+  const family =
+    mode === 'sniper'
+      ? CustodyFamily.SNIPER
+      : mode === 'sol'
+        ? CustodyFamily.SOLANA
+        : undefined;
   const wallets = await Promise.all(
     chains.map((chain) => walletEntry(chain, userId, family ? { family } : undefined)),
   );
-  const custodyAddress =
+  let custodyAddress =
     (wallets.find((w) => w.userScoped && typeof w.address === 'string')?.address as string | undefined) ??
     null;
+
+  // Hard isolation: sniper custody must never resolve to the SOL copy address.
+  if (mode === 'sniper' && userId && custodyAddress) {
+    try {
+      const solAddr = await userCustodyAddress(userId, Chain.SOLANA, {
+        family: CustodyFamily.SOLANA,
+      });
+      if (solAddr && custodyAddress === solAddr) {
+        custodyAddress = null;
+        for (const w of wallets) {
+          w.address = null;
+          w.native = 0;
+          w.available = 0;
+          w.onChainNative = 0;
+          w.savings = 0;
+          w.error = 'sniper-custody-collided-with-sol — refusing to paint SOL balance';
+        }
+      }
+    } catch {
+      /* keep sniper wallets as-is when SOL address lookup fails */
+    }
+  }
+
   return {
     mode,
     userId: userId ?? null,
     wallets,
     multiUserCustody: multiUserCustodyEnabled(),
     custodyAddress,
+    family: family ?? null,
   };
 }
 
