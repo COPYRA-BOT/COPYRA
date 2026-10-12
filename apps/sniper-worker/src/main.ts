@@ -119,9 +119,21 @@ if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
       hasWs: Boolean(env.SOLANA_WS_URL),
       hasBackupWs: Boolean(env.SOLANA_BACKUP_WS_URL),
       derivedFromRpc: Boolean(env.SOLANA_RPC_URL && env.SOLANA_WS_URL),
+      preferBackup: Boolean(env.SOLANA_BACKUP_WS_URL),
     },
     'Sniper Solana WS endpoint available',
   );
+  if (env.SNIPER_ENABLED && !env.SOLANA_BACKUP_WS_URL) {
+    logger.warn(
+      {},
+      'SNIPER_ENABLED without SOLANA_BACKUP_WS_URL — Pump.fun flood shares the copy-trade primary WSS and can blind detection',
+    );
+    telegram.send(
+      '⚠️ <b>SNIPER SHARES COPY WS</b>\n' +
+        'Set App-Level <code>SOLANA_BACKUP_WS_URL</code> (<b>wss://</b>, separate provider/key) so sniper does not starve copy-trade <code>SOLANA_WS_URL</code>.',
+      { kind: 'sniper-ws-shared' },
+    );
+  }
 }
 
 try {

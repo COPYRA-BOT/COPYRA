@@ -79,11 +79,16 @@ export function startOpsWatch(): () => void {
       if (!looksDown && watching > 0 && (!wsAt || wsAt <= 0) && syncAt > 0) {
         const syncAge = Date.now() - syncAt;
         if (syncAge < 60_000) {
+          const wsHost = typeof detail.wsHost === 'string' ? detail.wsHost : 'unknown';
+          const wsOpen = detail.wsOpen === true;
+          const slotAt = Number(detail.lastWsSlotAt ?? 0);
+          const slotFresh = slotAt > 0 && Date.now() - slotAt < 30_000;
           await alertOps(
             'copy-ws-blind',
-            `Copy-trade worker heartbeat is <b>live</b> but <b>no Solana WS events</b> while watching ${watching} traders.\n` +
-              `Detection is blind — no copy trades can fire.\n` +
-              `Check App-Level <code>SOLANA_WS_URL</code> on the <b>worker</b> component, then Force rebuild worker.`,
+            `Copy-trade worker heartbeat is <b>live</b> but <b>no Solana WS trader events</b> while watching ${watching} traders.\n` +
+              `wsOpen=${wsOpen} · wsHost=<code>${wsHost}</code> · slotStream=${slotFresh ? 'live' : 'idle'}\n` +
+              `Detection relies on HTTP catch-up until onLogs recovers.\n` +
+              `Fix: App-Level <code>SOLANA_WS_URL</code> must be <b>wss://</b> (not https). Keep sniper on <code>SOLANA_BACKUP_WS_URL</code> (separate provider/key) so Pump.fun flood does not starve copy. Then Force rebuild <b>worker</b> + <b>sniper</b>.`,
             { cooldownSec: 30 * 60 },
           );
         }
@@ -105,12 +110,14 @@ export function startOpsWatch(): () => void {
           { cooldownSec: 15 * 60 },
         );
       } else if (sniperDetail.wsConnected === false || sniperDetail.bootError) {
+        const sniperHost =
+          typeof sniperDetail.wsUrlHost === 'string' ? sniperDetail.wsUrlHost : 'unknown';
         await alertOps(
           'sniper-ws-idle',
           `Sniper worker is live but discovery WS is <b>idle</b>.\n` +
-            `wsConnected=${String(sniperDetail.wsConnected)} · decodeOk=${String(sniperDetail.decodeOk ?? 0)}\n` +
+            `wsConnected=${String(sniperDetail.wsConnected)} · decodeOk=${String(sniperDetail.decodeOk ?? 0)} · host=<code>${sniperHost}</code>\n` +
             `${sniperDetail.bootError ? `bootError: ${String(sniperDetail.bootError)}\n` : ''}` +
-            `Ensure App-Level <code>SOLANA_WS_URL</code> reaches the <b>sniper</b> component (prefer backup WS to isolate from copy).`,
+            `Set App-Level <code>SOLANA_BACKUP_WS_URL</code> as <b>wss://</b> on a <b>separate</b> Helius/QuickNode key for sniper (isolates Pump.fun flood from copy). Primary <code>SOLANA_WS_URL</code> stays on the worker. Force rebuild <b>sniper</b>.`,
           { cooldownSec: 30 * 60 },
         );
       }

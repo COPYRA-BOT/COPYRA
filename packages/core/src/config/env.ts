@@ -262,10 +262,32 @@ export function httpRpcToWsUrl(rpcUrl: string | undefined | null): string | unde
   }
 }
 
+/**
+ * Normalize DO/App secrets that were pasted as https:// (or bare host) into wss://.
+ * A https WS URL makes raw `ws` + web3.js onLogs silently blind.
+ */
+export function normalizeSolanaWsUrl(url: string | undefined | null): string | undefined {
+  const raw = url?.trim();
+  if (!raw) return undefined;
+  if (/^wss?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).toString();
+    } catch {
+      return raw;
+    }
+  }
+  if (/^https?:\/\//i.test(raw)) return httpRpcToWsUrl(raw);
+  // Bare host or host/path — assume TLS.
+  if (/^[a-z0-9.-]+[./?]/i.test(raw)) return httpRpcToWsUrl(`https://${raw}`);
+  return undefined;
+}
+
 const solanaWs =
-  parsed.data.SOLANA_WS_URL || httpRpcToWsUrl(parsed.data.SOLANA_RPC_URL) || undefined;
+  normalizeSolanaWsUrl(parsed.data.SOLANA_WS_URL) ||
+  httpRpcToWsUrl(parsed.data.SOLANA_RPC_URL) ||
+  undefined;
 const solanaBackupWs =
-  parsed.data.SOLANA_BACKUP_WS_URL ||
+  normalizeSolanaWsUrl(parsed.data.SOLANA_BACKUP_WS_URL) ||
   httpRpcToWsUrl(parsed.data.SOLANA_BACKUP_RPC_URL) ||
   undefined;
 

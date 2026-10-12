@@ -81,26 +81,42 @@ let pool: RpcPool<Connection> | undefined;
 let subscriptionConnection: Connection | undefined;
 /** Index into subscription endpoint pairs; advanced on each forced recreate. */
 let subscriptionEndpointIndex = 0;
+/** Host of the active copy-trade subscription WSS (never logs secrets). */
+let subscriptionWsHost: string | null = null;
 
 type SubEndpoint = { rpc: string; ws?: string };
+
+function wsHostOf(ws?: string): string | null {
+  if (!ws) return null;
+  try {
+    return new URL(ws).host;
+  } catch {
+    return 'invalid-ws';
+  }
+}
 
 function subscriptionEndpoints(config: ReturnType<typeof chainConfig>): SubEndpoint[] {
   if (!config.rpcUrl) {
     throw new Error('SOLANA_RPC_URL is not configured; Solana monitoring is unavailable.');
   }
+  // Copy-trade stays on PRIMARY first. Backup is only for failover so sniper can
+  // keep SOLANA_BACKUP_WS_URL without starving wallet onLogs on the same socket.
   const pairs: SubEndpoint[] = [{ rpc: config.rpcUrl, ws: config.wsUrl }];
-  // Pair each paid backup WSS with the matching paid backup RPC (first rpcFallbacks entry).
   for (let i = 0; i < config.wsFallbacks.length; i += 1) {
     pairs.push({
       rpc: config.rpcFallbacks[i] ?? config.rpcUrl,
       ws: config.wsFallbacks[i],
     });
   }
-  // Deduplicate identical rpc+ws pairs.
   return pairs.filter(
     (p, idx, all) =>
       all.findIndex((q) => q.rpc === p.rpc && q.ws === p.ws) === idx,
   );
+}
+
+/** Safe host label for heartbeats / ops alerts (no API keys). */
+export function solanaSubscriptionWsHost(): string | null {
+  return subscriptionWsHost;
 }
 
 export function solanaPool(): RpcPool<Connection> {
@@ -158,9 +174,11 @@ export function solanaSubscriptionConnection(recreate = false): Connection {
     const pair = endpoints[subscriptionEndpointIndex % endpoints.length]!;
     // Replace the Connection object; web3.js does not reliably recover onLogs after idle WS death.
     subscriptionConnection = createConnection(pair.rpc, pair.ws);
+    subscriptionWsHost = wsHostOf(pair.ws);
     log.info(
       {
         ws: Boolean(pair.ws),
+        wsHost: subscriptionWsHost,
         recreate,
         endpointIndex: subscriptionEndpointIndex,
         endpoints: endpoints.length,
@@ -169,6 +187,42 @@ export function solanaSubscriptionConnection(recreate = false): Connection {
     );
   }
   return subscriptionConnection;
+}
+
+type RpcWs = {
+  readyState?: number;
+  connect?: () => void;
+  on?: (ev: string, fn: (...args: unknown[]) => void) => void;
+};
+
+/**
+ * Wait until the copy-trade subscription WebSocket is OPEN.
+ * Subscribing onLogs before open is a common cause of permanent blindness.
+ */
+export async function waitForSolanaSubscriptionWs(timeoutMs = 10_000): Promise<boolean> {
+  const conn = solanaSubscriptionConnection();
+  const ws = (conn as unknown as { _rpcWebSocket?: RpcWs })._rpcWebSocket;
+  if (!ws) return false;
+  // 0 CONNECTING, 1 OPEN (ws / rpc-websockets)
+  if (ws.readyState === 1) return true;
+  try {
+    ws.connect?.();
+  } catch {
+    /* already connecting */
+  }
+  if (ws.readyState === 1) return true;
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    ws.on?.('open', () => finish(true));
+    ws.on?.('error', () => finish(false));
+  });
 }
 
 /** Current slot, confirming the RPC is genuinely live. */

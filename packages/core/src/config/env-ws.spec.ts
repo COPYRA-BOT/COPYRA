@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { httpRpcToWsUrl } from './env.js';
+import { httpRpcToWsUrl, normalizeSolanaWsUrl } from './env.js';
 
 describe('httpRpcToWsUrl', () => {
   it('maps https Helius RPC to wss', () => {
@@ -20,5 +20,25 @@ describe('httpRpcToWsUrl', () => {
     expect(httpRpcToWsUrl(undefined)).toBeUndefined();
     expect(httpRpcToWsUrl('')).toBeUndefined();
     expect(httpRpcToWsUrl('not-a-url')).toBeUndefined();
+  });
+});
+
+describe('normalizeSolanaWsUrl', () => {
+  it('converts accidental https WS secrets to wss', () => {
+    expect(normalizeSolanaWsUrl('https://mainnet.helius-rpc.com/?api-key=abc')).toBe(
+      'wss://mainnet.helius-rpc.com/?api-key=abc',
+    );
+  });
+
+  it('keeps valid wss', () => {
+    expect(normalizeSolanaWsUrl('wss://mainnet.helius-rpc.com/?api-key=abc')).toBe(
+      'wss://mainnet.helius-rpc.com/?api-key=abc',
+    );
+  });
+
+  it('accepts bare Helius host', () => {
+    expect(normalizeSolanaWsUrl('mainnet.helius-rpc.com/?api-key=abc')).toBe(
+      'wss://mainnet.helius-rpc.com/?api-key=abc',
+    );
   });
 });

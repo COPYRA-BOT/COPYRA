@@ -12,6 +12,8 @@ import {
   sleep,
   solanaPool,
   solanaSubscriptionConnection,
+  solanaSubscriptionWsHost,
+  waitForSolanaSubscriptionWs,
   telegram,
   traderHasPriorBuyOfToken,
   renderSkip,
@@ -75,9 +77,9 @@ const SILENT_CLASSIFICATIONS = new Set<string>([
  * (processed log → confirmed fetch returns null) are not permanently lost.
  */
 /** Rebuild every onLogs subscription on this interval so a dead Helius WS cannot strand the worker. */
-const FORCE_RESUB_MS = 180_000;
+const FORCE_RESUB_MS = 120_000;
 /** If WS delivers nothing while we are watching traders, force a fresh socket sooner. */
-const WS_QUIET_RESUB_MS = 120_000;
+const WS_QUIET_RESUB_MS = 45_000;
 
 /** Latest Solana monitor stats — merged into worker heartbeat by main. */
 export const solanaMonitorStats: {
@@ -88,6 +90,10 @@ export const solanaMonitorStats: {
   catchUpAt: string | null;
   lastForceResubAt: string | null;
   wsBound: boolean;
+  wsOpen: boolean;
+  wsHost: string | null;
+  /** Last slotSubscribe tick — proves the socket delivers even if trader logs are quiet. */
+  lastWsSlotAt: number | null;
 } = {
   watching: 0,
   catchUpOk: 0,
@@ -96,6 +102,9 @@ export const solanaMonitorStats: {
   catchUpAt: null,
   lastForceResubAt: null,
   wsBound: false,
+  wsOpen: false,
+  wsHost: null,
+  lastWsSlotAt: null,
 };
 
 /** Set by watchdog soft-recovery so the next sync() force-resubscribes. */
@@ -111,6 +120,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
   monitorBootAt = Date.now();
   let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
+  let slotSubId: number | null = null;
   let syncing = false;
   /** Only one catch-up pass at a time — stacked ticks starved Prisma/API → site 504s. */
   let catchingUp = false;
@@ -124,27 +134,52 @@ export async function startSolanaMonitor(): Promise<() => void> {
   let recoveryUntil = Date.now() + 3 * 60_000;
 
   const bindWsLifecycle = (conn: typeof connection) => {
+    solanaMonitorStats.wsHost = solanaSubscriptionWsHost();
     try {
-      const ws = (conn as unknown as { _rpcWebSocket?: { on?: (ev: string, fn: () => void) => void } })
-        ._rpcWebSocket;
+      const ws = (
+        conn as unknown as {
+          _rpcWebSocket?: {
+            readyState?: number;
+            on?: (ev: string, fn: () => void) => void;
+          };
+        }
+      )._rpcWebSocket;
       if (!ws?.on) {
         solanaMonitorStats.wsBound = false;
+        solanaMonitorStats.wsOpen = false;
         return;
       }
+      solanaMonitorStats.wsOpen = ws.readyState === 1;
+      ws.on('open', () => {
+        solanaMonitorStats.wsOpen = true;
+      });
       ws.on('close', () => {
-        log.warn({}, 'Solana subscription WebSocket closed — scheduling force resub');
+        solanaMonitorStats.wsOpen = false;
+        log.warn({ wsHost: solanaMonitorStats.wsHost }, 'Solana subscription WebSocket closed — scheduling force resub');
         forceResubSoon = true;
       });
       ws.on('error', () => {
-        log.warn({}, 'Solana subscription WebSocket error — scheduling force resub');
+        solanaMonitorStats.wsOpen = false;
+        log.warn({ wsHost: solanaMonitorStats.wsHost }, 'Solana subscription WebSocket error — scheduling force resub');
         forceResubSoon = true;
       });
       solanaMonitorStats.wsBound = true;
     } catch {
       solanaMonitorStats.wsBound = false;
+      solanaMonitorStats.wsOpen = false;
     }
   };
   bindWsLifecycle(connection);
+  // Do not subscribe before the socket is OPEN — that permanently blinds onLogs.
+  const opened = await waitForSolanaSubscriptionWs(12_000);
+  solanaMonitorStats.wsOpen = opened;
+  if (!opened) {
+    log.error(
+      { wsHost: solanaMonitorStats.wsHost },
+      'Solana subscription WS failed to open — will force-rotate and rely on HTTP catch-up',
+    );
+    forceResubSoon = true;
+  }
 
   const dropAll = async () => {
     const pending = [...subscriptions.entries()];
@@ -195,14 +230,44 @@ export async function startSolanaMonitor(): Promise<() => void> {
       if (force) {
         forceResubSoon = false;
         requestForceResub = false;
+        if (slotSubId != null) {
+          try {
+            await connection.removeSlotChangeListener(slotSubId);
+          } catch {
+            /* ignore */
+          }
+          slotSubId = null;
+        }
         await dropAll();
         touchSolanaSync();
         connection = solanaSubscriptionConnection(true);
         bindWsLifecycle(connection);
+        const ready = await waitForSolanaSubscriptionWs(10_000);
+        solanaMonitorStats.wsOpen = ready;
         lastForceResub = Date.now();
         solanaMonitorStats.lastForceResubAt = new Date().toISOString();
         recoveryUntil = Date.now() + 3 * 60_000;
-        log.info({ quietForce, wsQuietMs }, 'Forced Solana log resubscribe (fresh WS)');
+        log.info(
+          { quietForce, wsQuietMs, ready, wsHost: solanaMonitorStats.wsHost },
+          'Forced Solana log resubscribe (fresh WS)',
+        );
+        if (!ready) {
+          // Still blind — leave forceResubSoon so the next tick rotates again.
+          forceResubSoon = true;
+        }
+      }
+
+      // Slot stream proves the WSS delivers frames (independent of trader activity).
+      if (slotSubId == null && solanaMonitorStats.wsOpen) {
+        try {
+          slotSubId = connection.onSlotChange(() => {
+            solanaMonitorStats.lastWsSlotAt = Date.now();
+            solanaMonitorStats.wsOpen = true;
+          });
+        } catch (error) {
+          log.warn({ err: error }, 'Solana slotSubscribe failed — socket may be dead');
+          forceResubSoon = true;
+        }
       }
 
       const traders = await prisma.trader.findMany({
@@ -364,6 +429,10 @@ export async function startSolanaMonitor(): Promise<() => void> {
 
   return () => {
     clearInterval(timer);
+    if (slotSubId != null) {
+      void connection.removeSlotChangeListener(slotSubId).catch(() => undefined);
+      slotSubId = null;
+    }
     void dropAll();
   };
 }

@@ -159,12 +159,11 @@ async function extractEvent(
 
 function candidateWsUrls(): string[] {
   const urls: string[] = [];
-  // Primary first so a dead/mis-scoped backup cannot idle discovery forever.
-  // Backup is still rotated in on close/quiet so Pump.fun flood can leave
-  // the copy-trade primary when the backup endpoint is healthy.
-  if (env.SOLANA_WS_URL) urls.push(env.SOLANA_WS_URL);
-  if (env.SOLANA_BACKUP_WS_URL && env.SOLANA_BACKUP_WS_URL !== env.SOLANA_WS_URL) {
-    urls.push(env.SOLANA_BACKUP_WS_URL);
+  // Backup FIRST — Pump.fun flood must not share the copy-trade primary WSS.
+  // If backup is dead/mis-scoped, rotate to primary (never stick on a dead socket).
+  if (env.SOLANA_BACKUP_WS_URL) urls.push(env.SOLANA_BACKUP_WS_URL);
+  if (env.SOLANA_WS_URL && env.SOLANA_WS_URL !== env.SOLANA_BACKUP_WS_URL) {
+    urls.push(env.SOLANA_WS_URL);
   }
   return urls;
 }
@@ -190,7 +189,7 @@ export async function startPumpFunDiscovery(
       usingBackupFirst: Boolean(env.SOLANA_BACKUP_WS_URL),
       hasPrimary: Boolean(env.SOLANA_WS_URL),
     },
-    'Sniper discovery WS endpoints selected (primary first, backup failover)',
+    'Sniper discovery WS endpoints selected (backup first for copy isolation, primary failover)',
   );
 
   const programs = opts?.programIds?.length
