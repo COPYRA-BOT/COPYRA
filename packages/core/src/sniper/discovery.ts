@@ -159,10 +159,12 @@ async function extractEvent(
 
 function candidateWsUrls(): string[] {
   const urls: string[] = [];
-  // Prefer backup so Pump.fun flood does not starve copy-trade primary subscriptions.
-  if (env.SOLANA_BACKUP_WS_URL) urls.push(env.SOLANA_BACKUP_WS_URL);
-  if (env.SOLANA_WS_URL && env.SOLANA_WS_URL !== env.SOLANA_BACKUP_WS_URL) {
-    urls.push(env.SOLANA_WS_URL);
+  // Primary first so a dead/mis-scoped backup cannot idle discovery forever.
+  // Backup is still rotated in on close/quiet so Pump.fun flood can leave
+  // the copy-trade primary when the backup endpoint is healthy.
+  if (env.SOLANA_WS_URL) urls.push(env.SOLANA_WS_URL);
+  if (env.SOLANA_BACKUP_WS_URL && env.SOLANA_BACKUP_WS_URL !== env.SOLANA_WS_URL) {
+    urls.push(env.SOLANA_BACKUP_WS_URL);
   }
   return urls;
 }
@@ -188,7 +190,7 @@ export async function startPumpFunDiscovery(
       usingBackupFirst: Boolean(env.SOLANA_BACKUP_WS_URL),
       hasPrimary: Boolean(env.SOLANA_WS_URL),
     },
-    'Sniper discovery WS endpoints selected (backup preferred for isolation)',
+    'Sniper discovery WS endpoints selected (primary first, backup failover)',
   );
 
   const programs = opts?.programIds?.length
@@ -287,6 +289,7 @@ export async function startPumpFunDiscovery(
     log.info({ host: discoveryStats.wsUrlHost, attempt: discoveryStats.reconnects }, 'Sniper WS connecting');
     ws = new WebSocket(wsUrl);
     let opened = false;
+    let pingTimer: NodeJS.Timeout | null = null;
     const openTimeout = setTimeout(() => {
       if (!opened && ws && ws.readyState !== WebSocket.OPEN) {
         log.warn({ host: discoveryStats.wsUrlHost }, 'Sniper WS open timeout — rotate endpoint');
@@ -296,7 +299,7 @@ export async function startPumpFunDiscovery(
           /* ignore */
         }
       }
-    }, 12_000);
+    }, 8_000);
     ws.on('open', () => {
       opened = true;
       clearTimeout(openTimeout);
@@ -304,15 +307,40 @@ export async function startPumpFunDiscovery(
       discoveryStats.wsConnected = true;
       log.info({ programs, host: discoveryStats.wsUrlHost }, 'Sniper Helius/WS logsSubscribe connected');
       subscribeAll();
+      // Keepalive — some Helius idle sockets drop without a close event.
+      if (pingTimer) clearInterval(pingTimer);
+      pingTimer = setInterval(() => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        try {
+          ws.ping();
+        } catch {
+          /* ignore */
+        }
+      }, 25_000);
     });
     ws.on('message', (raw) => {
       try {
         const msg = JSON.parse(String(raw)) as {
           id?: number;
           result?: number;
+          error?: { code?: number; message?: string };
           method?: string;
           params?: { result?: { value?: { signature: string; err: unknown; logs: string[] } }; subscription?: number };
         };
+        if (msg.id != null && msg.error) {
+          const programId = pending.get(msg.id);
+          pending.delete(msg.id);
+          log.warn(
+            { host: discoveryStats.wsUrlHost, programId, err: msg.error },
+            'Sniper logsSubscribe rejected — rotating endpoint',
+          );
+          try {
+            ws?.close();
+          } catch {
+            scheduleReconnect(800);
+          }
+          return;
+        }
         if (msg.id != null && typeof msg.result === 'number') {
           const programId = pending.get(msg.id);
           pending.delete(msg.id);
@@ -332,6 +360,7 @@ export async function startPumpFunDiscovery(
     });
     ws.on('close', () => {
       clearTimeout(openTimeout);
+      if (pingTimer) clearInterval(pingTimer);
       discoveryStats.wsConnected = false;
       discoveryStats.subs = 0;
       if (closed) return;
