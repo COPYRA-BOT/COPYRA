@@ -45,6 +45,8 @@ function writeStatus(extra: Record<string, unknown> = {}): void {
 }
 
 async function beat(status: string, detail: Prisma.InputJsonValue): Promise<void> {
+  // Disk first — supervisor stale-kill must see life even when Prisma is slow.
+  writeStatus({ status, detail });
   try {
     await prisma.workerHeartbeat.upsert({
       where: { name: SNIPER_HEARTBEAT_NAME },
@@ -54,7 +56,6 @@ async function beat(status: string, detail: Prisma.InputJsonValue): Promise<void
   } catch (error) {
     logger.warn({ err: error }, 'Sniper heartbeat write failed');
   }
-  writeStatus({ status, detail });
 }
 
 function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue {
