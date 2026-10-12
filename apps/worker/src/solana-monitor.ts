@@ -39,12 +39,18 @@ const CATCHUP_MAX_AGE_MS = 120_000;
 const CATCHUP_RECOVERY_AGE_MS = 3 * 60_000;
 /** Minimum gap between catch-up passes (subscriptions still refresh every sync). */
 const CATCHUP_MIN_GAP_MS = 45_000;
+/** Faster catch-up while WS is blind so copy is not silent for hours. */
+const CATCHUP_BLIND_MIN_GAP_MS = 15_000;
 /** Traders per catch-up pass — round-robin so each pass finishes fast and /health stays green. */
 const CATCHUP_PER_PASS = 3;
+/** Traders per pass when WS never delivered — cover 20 wallets in ~2–3 passes. */
+const CATCHUP_BLIND_PER_PASS = 10;
 /** Per-trader catch-up budget (must exceed getSignatures timeout inside catchUpTrader). */
 const CATCHUP_TRADER_TIMEOUT_MS = 20_000;
 /** Hard cap for one catch-up pass (must always clear `catchingUp`). */
 const CATCHUP_PASS_TIMEOUT_MS = 60_000;
+/** If catch-up latch sticks, clear it so HTTP detection resumes. */
+const CATCHUP_LATCH_STUCK_MS = 90_000;
 /** Outcomes that mean "try again later" — never treat as final. */
 const RETRYABLE_OUTCOMES = new Set(['tx-not-found', 'deferred']);
 /** Classifications that are noise for Telegram (no copy path). */
@@ -225,7 +231,12 @@ export async function startSolanaMonitor(): Promise<() => void> {
           log.warn({ trader: trader.label, address: trader.address }, 'Skipping invalid Solana address');
           continue;
         }
-        // 'processed' fires as soon as a leader sees the tx — shaves hundreds of ms vs confirmed.
+        // Prefer 'processed' for speed; fall back to 'confirmed' after WS silence —
+        // some Helius plans drop processed log streams while confirmed still works.
+        const commitment =
+          !workerActivity.lastSolanaWsEventAt && Date.now() - bootAt > 90_000
+            ? 'confirmed'
+            : 'processed';
         const id = connection.onLogs(
           pubkey,
           (logs, ctx) => {
@@ -240,7 +251,7 @@ export async function startSolanaMonitor(): Promise<() => void> {
               log.error({ err: error, signature: logs.signature }, 'Failed to handle trader log');
             });
           },
-          'processed',
+          commitment,
         );
         subscriptions.set(trader.id, id);
         log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
@@ -254,10 +265,15 @@ export async function startSolanaMonitor(): Promise<() => void> {
         wsBlind || Date.now() < recoveryUntil || Date.now() - bootAt < 3 * 60_000
           ? Math.max(CATCHUP_RECOVERY_AGE_MS, 10 * 60_000)
           : CATCHUP_MAX_AGE_MS;
+      const catchUpGapMs = wsBlind ? CATCHUP_BLIND_MIN_GAP_MS : CATCHUP_MIN_GAP_MS;
+      const catchUpPerPass = wsBlind ? CATCHUP_BLIND_PER_PASS : CATCHUP_PER_PASS;
 
       solanaMonitorStats.watching = subscriptions.size;
       solanaMonitorStats.maxAgeMs = maxAgeMs;
-      log.info({ watching: subscriptions.size, maxAgeMs }, 'Solana wallet subscriptions are current');
+      log.info(
+        { watching: subscriptions.size, maxAgeMs, wsBlind, catchUpPerPass },
+        'Solana wallet subscriptions are current',
+      );
       touchSolanaSync();
 
       // Catch-up OUTSIDE the subscription critical path. Never stack passes —
@@ -265,16 +281,23 @@ export async function startSolanaMonitor(): Promise<() => void> {
       // host), froze heartbeats, and made Cloudflare return 504 on copyra.fun.
       // Round-robin a few traders per pass so WS detection stays primary and
       // each pass finishes before App Platform health checks flap.
-      const catchUpDue = Date.now() - lastCatchUpStartedAt >= CATCHUP_MIN_GAP_MS;
+      if (catchingUp && Date.now() - lastCatchUpStartedAt > CATCHUP_LATCH_STUCK_MS) {
+        log.warn(
+          { stuckMs: Date.now() - lastCatchUpStartedAt },
+          'Solana catch-up latch stuck — forcing clear so HTTP detection resumes',
+        );
+        catchingUp = false;
+      }
+      const catchUpDue = Date.now() - lastCatchUpStartedAt >= catchUpGapMs;
       if (catchingUp || !catchUpDue || traders.length === 0) {
         log.debug(
-          { watching: subscriptions.size, catchingUp, catchUpDue },
+          { watching: subscriptions.size, catchingUp, catchUpDue, wsBlind },
           'Solana catch-up skipped (in-flight or min gap)',
         );
       } else {
         const n = traders.length;
         const slice: typeof traders = [];
-        for (let i = 0; i < Math.min(CATCHUP_PER_PASS, n); i++) {
+        for (let i = 0; i < Math.min(catchUpPerPass, n); i++) {
           slice.push(traders[(catchUpCursor + i) % n]!);
         }
         catchUpCursor = (catchUpCursor + slice.length) % n;

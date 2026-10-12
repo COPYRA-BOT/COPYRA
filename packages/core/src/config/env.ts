@@ -243,12 +243,41 @@ function resolveListenPort(apiPort: number): number {
   return apiPort;
 }
 
+/**
+ * Derive wss:// from https:// RPC (Helius / Alchemy / QuickNode same-host pattern).
+ * Lets sniper/worker keep discovering when only SOLANA_RPC_URL is scoped on a component.
+ */
+export function httpRpcToWsUrl(rpcUrl: string | undefined | null): string | undefined {
+  const raw = rpcUrl?.trim();
+  if (!raw) return undefined;
+  try {
+    const u = new URL(raw);
+    if (u.protocol === 'https:') u.protocol = 'wss:';
+    else if (u.protocol === 'http:') u.protocol = 'ws:';
+    else if (u.protocol === 'wss:' || u.protocol === 'ws:') return u.toString();
+    else return undefined;
+    return u.toString();
+  } catch {
+    return undefined;
+  }
+}
+
+const solanaWs =
+  parsed.data.SOLANA_WS_URL || httpRpcToWsUrl(parsed.data.SOLANA_RPC_URL) || undefined;
+const solanaBackupWs =
+  parsed.data.SOLANA_BACKUP_WS_URL ||
+  httpRpcToWsUrl(parsed.data.SOLANA_BACKUP_RPC_URL) ||
+  undefined;
+
 export const env = {
   ...parsed.data,
   /** Host the HTTP server binds to. Always force a public bind in production. */
   API_HOST: parsed.data.NODE_ENV === 'production' ? '0.0.0.0' : parsed.data.API_HOST,
   /** Actual listen port: `PORT` env if set, otherwise `API_PORT`. */
   listenPort: resolveListenPort(parsed.data.API_PORT),
+  /** Explicit WS, or derived from SOLANA_RPC_URL when DO only scoped RPC onto a component. */
+  SOLANA_WS_URL: solanaWs,
+  SOLANA_BACKUP_WS_URL: solanaBackupWs,
   /** Solana execution guard. Defaults to master TRADING_ENABLED when unset. */
   SOL_TRADING_ENABLED:
     process.env.SOL_TRADING_ENABLED === undefined

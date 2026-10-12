@@ -422,5 +422,12 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
       { userId, mint: event.tokenAddress, tx: outcome.txHash, sizeQuote },
       'Sniper buy confirmed',
     );
+    telegram.send(
+      `✅ <b>SNIPER BUY</b>\n` +
+        `$${enrich.symbol ?? event.tokenAddress.slice(0, 6)} · ${sizeQuote.toFixed(4)} SOL\n` +
+        `score ${entryScore} · TP/SL from Sniper settings\n` +
+        `<code>${outcome.txHash}</code>`,
+      { kind: 'sniper-buy', userId, tradeId: trade.id, positionId: position.id },
+    );
   });
 }

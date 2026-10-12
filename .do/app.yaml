@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-12T15:25Z (copy WS blind + sniper discovery UI)
+# last-deploy-nudge: 2026-10-12T16:30Z (WS derive + catch-up + TradingView charts)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22

@@ -7,7 +7,7 @@
 <link rel="preload" as="image" href="/icons/solana.webp" type="image/webp">
 <link rel="preload" as="image" href="/icons/evm.webp" type="image/webp">
 <link rel="preload" as="image" href="/icons/sniper.png" type="image/png">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Inter+Tight:wght@800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Space+Grotesk:wght@600;700;800&display=swap">
 <style>
 :root{--bg:#F6F5F3;--sf:#fff;--sf2:#E6E3DC;--ln:#E3E0DA;--tx:#1C1D21;--mu:#7B7D84;--ac:#D57658;--gl:0 8px 24px rgba(213,118,88,.3);--g:#1F9D6B;--r:#D64550;--w:#C98A12;--sol:#6E56E0;--evm:#3F6FD8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0)}
 :root[data-theme=dark]{--bg:#18191D;--sf:#1F2024;--sf2:#26272B;--ln:#2c2d31;--tx:#F2F1EC;--mu:#8E9096;--ac:#D87558;--gl:0 8px 28px rgba(216,117,88,.28);--g:#3DDC97;--r:#FF6B6B;--w:#F5B942;--sol:#9D86FF;--evm:#5B8DEF}
@@ -42,8 +42,8 @@ button,input,select{font:inherit;color:inherit}button{cursor:pointer}:focus-visi
 .snip-help b{color:var(--tx)}
 .disc{background:var(--sf);border:1px solid var(--ln);border-radius:20px;padding:18px 18px 8px;margin-bottom:16px}
 .disc-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-.disc-head h3{margin:0;font:800 18px/1 'Inter Tight',system-ui;letter-spacing:.04em;text-transform:uppercase}
-.disc-head .flame{color:var(--g);font-size:18px}
+.disc-head h3{margin:0;font:800 18px/1 'Space Grotesk',ui-sans-serif,system-ui;letter-spacing:.04em;text-transform:uppercase;color:var(--tx)}
+.disc-head .mark{width:10px;height:10px;border-radius:2px;background:linear-gradient(135deg,var(--g),#00e5ff);box-shadow:0 0 0 3px rgba(61,220,151,.15)}
 .disc-count{color:var(--mu);font-size:13px}
 .disc-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center}
 .disc-pill{border:1px solid var(--ln);border-radius:999px;padding:6px 12px;font-size:12.5px;color:var(--mu);background:transparent}
@@ -163,8 +163,9 @@ input[type=range].amt-sl{width:100%;margin:10px 0 4px;accent-color:var(--ac);hei
 .chart-mc{font:800 clamp(28px,7vw,42px)/1.05 'Inter Tight',system-ui;letter-spacing:-.03em}
 .chart-chg{display:inline-flex;align-items:center;gap:4px;font-weight:700;font-size:14px;padding:4px 10px;border-radius:10px}
 .chart-chg.up{background:rgba(61,220,151,.14);color:var(--g)}.chart-chg.dn{background:rgba(255,107,107,.14);color:var(--r)}
-.chart-stage{position:relative;background:#12131a;border:1px solid var(--ln);border-radius:18px;overflow:hidden;min-height:320px}
+.chart-stage{position:relative;background:#111214;border:1px solid var(--ln);border-radius:18px;overflow:hidden;min-height:420px}
 .chart-stage svg{display:block;width:100%;height:auto}
+.chart-stage .tv-frame{display:block;width:100%;height:min(62vh,560px);min-height:420px;border:0;background:#111214}
 .chart-tf{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
 .chart-tf button{border:0;background:transparent;color:var(--mu);padding:8px 10px;border-radius:10px;font-weight:600;min-height:36px}
 .chart-tf button.on{background:var(--sf2);color:var(--tx)}
@@ -746,7 +747,7 @@ function sniperDiscoveryHtml(sigs,opts){
 </tr>`;
  }).join('');
  return`<div class="disc">
-<div class="disc-head"><span class="flame" aria-hidden="true">🔥</span><h3>Discovery</h3><span class="disc-count">${filtered.length} candidate${filtered.length===1?'':'s'}</span></div>
+<div class="disc-head"><span class="mark" aria-hidden="true"></span><h3>Discovery</h3><span class="disc-count">${filtered.length} candidate${filtered.length===1?'':'s'}</span></div>
 <div class="disc-filters">${pills.map(([,l,on])=>`<span class="disc-pill ${on?'on':''}">${l}</span>`).join('')}</div>
 <div class="disc-scan"><div class="scan-l"><span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>${scanning?'SCANNING':'IDLE'}</div><div class="scan-r">TRADES TODAY <b>${tradesToday} / ${maxPos}</b></div></div>
 <div class="disc-score"><label>MIN SCORE</label><input type="range" min="0" max="90" step="5" value="${min}" oninput="discMinScore=+this.value;draw()" /><span class="sv">${min}</span></div>
@@ -912,7 +913,18 @@ function fmtCompactUsd(n){
   if(a>=1)return'$'+v.toFixed(2);
   return'$'+v.toPrecision(3);
 }
+/** Official TradingView-powered pool chart (GeckoTerminal embed) — not a custom candle UI. */
+function tradingViewChartHtml(data){
+  const tv=data?.tradingView||{};
+  const src=tv.embedUrl;
+  if(!src){
+    return `<div class="chart-empty">No TradingView pool chart for this token yet.<br>Open the explorer link below, or retry after the pair indexes.</div>`;
+  }
+  const title=(data?.position?.tokenSymbol||'TOKEN')+' TradingView chart';
+  return `<iframe class="tv-frame" title="${title.replace(/"/g,'')}" src="${src}" allow="clipboard-write; fullscreen" loading="lazy" referrerpolicy="origin-when-cross-origin"></iframe>`;
+}
 function chartSvg(data){
+  // Kept unused — TradingView embed is the live chart surface.
   const candles=data.candles||[],markers=data.markers||[];
   const W=720,H=360,padL=12,padR=64,padT=18,padB=28;
   const plotW=W-padL-padR,plotH=H-padT-padB;
@@ -977,9 +989,9 @@ function chartView(){
 <div class="mu">$${sym} · ${addr?addr.slice(0,4)+'…'+addr.slice(-4):''}${tr?` · Copying ${tr.label}`:''}</div></div>
 <div style="text-align:right"><div class="chart-mc">${fmtCompactUsd(mc)}</div>${chg!=null?`<span class="chart-chg ${chgUp?'up':'dn'}">${chgUp?'↑':'↓'} ${Math.abs(chg).toFixed(1)}%</span>`:'<span class="mu">vs entry</span>'}</div>
 </div></div>
-<div class="chart-stage">${chartLoading&&!d?`<div class="chart-empty">Loading live chart…</div>`:chartErr?`<div class="chart-empty">${chartErr}<br><button class="btn sm" style="margin-top:12px" onclick="loadChart(false)">Retry</button></div>`:d?chartSvg(d):`<div class="chart-empty">Loading…</div>`}</div>
+<div class="chart-stage">${chartLoading&&!d?`<div class="chart-empty">Loading TradingView chart…</div>`:chartErr?`<div class="chart-empty">${chartErr}<br><button class="btn sm" style="margin-top:12px" onclick="loadChart(false)">Retry</button></div>`:d?tradingViewChartHtml(d):`<div class="chart-empty">Loading…</div>`}</div>
 <div class="row sp" style="flex-wrap:wrap;gap:8px"><div class="chart-tf">${tfs.map(tf=>`<button type="button" class="${chartTf===tf?'on':''}" onclick="setChartTf('${tf}')">${tf==='1d'?'1D':tf}</button>`).join('')}</div>
-<div class="chart-mark-leg"><span><i style="background:#D87558"></i>Copy trader entry</span><span><i style="background:#3DDC97"></i>Your entry</span><span><i style="background:#FF6B6B"></i>Your exit</span></div></div>
+<div class="chart-mark-leg"><span><i style="background:#D87558"></i>Copy trader entry</span><span><i style="background:#3DDC97"></i>Your entry</span><span><i style="background:#FF6B6B"></i>Your exit</span>${d?.tradingView?.openUrl?` · <a href="${d.tradingView.openUrl}" target="_blank" rel="noopener noreferrer">Open TradingView chart</a>`:''}</div></div>
 <div class="chart-side">
 <div class="k"><small>Strategy</small><b>${p?.exitStrategy||st?.exitStrategy||'—'}</b><span class="mu">TP ${st?.takeProfitPct!=null?st.takeProfitPct+'%':'—'} · SL ${st?.stopLossPct!=null?st.stopLossPct+'%':'—'}</span></div>
 <div class="k"><small>Sizing</small><b>${st?.sizingQuote!=null?Number(st.sizingQuote).toFixed(4)+' '+(st.quoteSymbol||''):'—'}</b><span class="mu">Alloc ${st?.tradeAllocationPct!=null?st.tradeAllocationPct+'%':'—'} · ${st?.firstBuyOnly?'First buy':'Every buy'}</span></div>

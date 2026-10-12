@@ -49,6 +49,47 @@ function geckoNetwork(chain: Chain): string | null {
   return NETWORK[chain] ?? null;
 }
 
+/** Resolution string for GeckoTerminal / TradingView embed query. */
+function tvResolution(tf: ChartTimeframe): string {
+  if (tf === '1m') return '1';
+  if (tf === '5m') return '5';
+  if (tf === '15m') return '15';
+  if (tf === '1h') return '60';
+  if (tf === '4h') return '240';
+  return '1D';
+}
+
+/**
+ * TradingView chart refs for a token/pool.
+ * GeckoTerminal pool embeds are TradingView Advanced Charts for that pair —
+ * we do not invent a custom candle UI.
+ */
+function buildTradingViewRefs(
+  chain: Chain,
+  tokenAddress: string,
+  pairAddress: string | null,
+  timeframe: ChartTimeframe,
+): {
+  provider: 'geckoterminal';
+  embedUrl: string | null;
+  openUrl: string | null;
+  resolution: string;
+} {
+  const network = geckoNetwork(chain);
+  const resolution = tvResolution(timeframe);
+  if (!network) {
+    return { provider: 'geckoterminal', embedUrl: null, openUrl: null, resolution };
+  }
+  const path = pairAddress
+    ? `${network}/pools/${pairAddress}`
+    : `${network}/tokens/${tokenAddress}`;
+  const embedUrl =
+    `https://www.geckoterminal.com/${path}?embed=1&info=0&swaps=0&grayscale=0` +
+    `&light_chart=0&chart_type=price&resolution=${encodeURIComponent(resolution)}&bg_color=111214`;
+  const openUrl = `https://www.geckoterminal.com/${path}`;
+  return { provider: 'geckoterminal', embedUrl, openUrl, resolution };
+}
+
 async function fetchOhlcv(
   network: string,
   tokenAddress: string,
@@ -232,6 +273,8 @@ export async function buildPositionChart(
     markers,
     candles,
     timeframe,
+    /** Official TradingView-powered embeds — no custom candle UI. */
+    tradingView: buildTradingViewRefs(chain, tokenAddress, pairAddress, timeframe),
     explorer: {
       token: `${cfg.explorerTokenBase}${tokenAddress}`,
       name: cfg.explorerName,

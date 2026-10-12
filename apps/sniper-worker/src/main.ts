@@ -103,6 +103,22 @@ if (!env.SNIPER_ENABLED) {
   );
 }
 
+if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
+  logger.error(
+    {},
+    'Sniper has no Solana WS (and could not derive from SOLANA_RPC_URL) — discovery will idle',
+  );
+} else {
+  logger.info(
+    {
+      hasWs: Boolean(env.SOLANA_WS_URL),
+      hasBackupWs: Boolean(env.SOLANA_BACKUP_WS_URL),
+      derivedFromRpc: Boolean(env.SOLANA_RPC_URL && env.SOLANA_WS_URL),
+    },
+    'Sniper Solana WS endpoint available',
+  );
+}
+
 try {
   discoveryStop = await startPumpFunDiscovery(async (event) => {
     discoveryCount += 1;
