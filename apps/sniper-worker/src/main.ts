@@ -111,6 +111,16 @@ logger.info(
   'COPYRA sniper worker starting',
 );
 
+// Only notify after a real cold start / deploy — not every supervisor respawn.
+// Read prior beat BEFORE writing heartbeats so a crash-loop restart stays quiet.
+const priorBeat = await prisma.workerHeartbeat.findUnique({
+  where: { name: SNIPER_HEARTBEAT_NAME },
+});
+const priorAgeMs = priorBeat?.beatAt
+  ? Date.now() - priorBeat.beatAt.getTime()
+  : Number.POSITIVE_INFINITY;
+const isColdStart = !priorBeat || priorAgeMs > 5 * 60_000;
+
 // Heartbeat before heavier boot work so /api/status shows the component immediately.
 void beat('starting', beatDetail({ boot: true }));
 
@@ -199,10 +209,14 @@ const heartbeatTimer = setInterval(() => {
 
 void beat('running', beatDetail({ boot: true }));
 
-telegram.send(
-  `🎯 <b>SNIPER WORKER ONLINE</b>\nMode: ${env.SNIPER_MODE}\nHost enabled: ${env.SNIPER_ENABLED ? 'yes' : 'no'}\nPump.fun program: <code>${env.PUMP_FUN_PROGRAM_ID}</code>`,
-  { kind: 'worker-online' },
-);
+logger.info({ isColdStart, priorAgeMs }, 'COPYRA sniper worker started');
+
+if (isColdStart) {
+  telegram.send(
+    `🎯 <b>SNIPER WORKER ONLINE</b>\nMode: ${env.SNIPER_MODE}\nHost enabled: ${env.SNIPER_ENABLED ? 'yes' : 'no'}\nPump.fun program: <code>${env.PUMP_FUN_PROGRAM_ID}</code>`,
+    { kind: 'sniper-worker-online' },
+  );
+}
 
 const shutdown = async () => {
   clearInterval(exitTimer);

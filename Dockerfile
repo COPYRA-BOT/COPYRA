@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # COPYRA production image for DigitalOcean App Platform.
 # Build context MUST be the repository root.
-# deploy-bust: 2026-10-12T20:49Z — FORCE api+worker+sniper after c771b59 tsc fix (HTML still stuck 19:21)
+# deploy-bust: 2026-10-12T21:33Z — sniper online Telegram cold-start only
 #
 # Speed model (BuildKit stage cache):
 #  * deps        — cached until package-lock / package.json change
