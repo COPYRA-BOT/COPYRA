@@ -102,6 +102,7 @@ export function requestSolanaForceResub(reason: string): void {
 }
 
 export async function startSolanaMonitor(): Promise<() => void> {
+  monitorBootAt = Date.now();
   let connection = solanaSubscriptionConnection();
   const subscriptions = new Map<string, number>();
   let syncing = false;
@@ -245,9 +246,13 @@ export async function startSolanaMonitor(): Promise<() => void> {
         log.info({ trader: trader.label, address: trader.address, sub: id }, 'Subscribed to trader logs');
       }
 
+      // Widen catch-up while WS has never fired / is quiet — HTTP must cover detection.
+      const wsBlind =
+        !workerActivity.lastSolanaWsEventAt ||
+        Date.now() - workerActivity.lastSolanaWsEventAt > WS_QUIET_RESUB_MS;
       const maxAgeMs =
-        Date.now() < recoveryUntil || Date.now() - bootAt < 3 * 60_000
-          ? CATCHUP_RECOVERY_AGE_MS
+        wsBlind || Date.now() < recoveryUntil || Date.now() - bootAt < 3 * 60_000
+          ? Math.max(CATCHUP_RECOVERY_AGE_MS, 10 * 60_000)
           : CATCHUP_MAX_AGE_MS;
 
       solanaMonitorStats.watching = subscriptions.size;
@@ -340,10 +345,14 @@ export async function startSolanaMonitor(): Promise<() => void> {
   };
 }
 
+/** Age since last onLogs callback. Never-fired uses monitor boot time so quietForce engages. */
+let monitorBootAt = 0;
+
 function workerActivityAgeMs(): number {
   if (!workerActivity.lastSolanaWsEventAt) {
-    // No WS event yet after boot — do not force-resub until FORCE_RESUB_MS.
-    return 0;
+    // Treat "never received a WS event" as age-since-boot — previously returned 0
+    // which blocked quietForce forever and left copy blind with a "healthy" heartbeat.
+    return monitorBootAt > 0 ? Date.now() - monitorBootAt : Number.POSITIVE_INFINITY;
   }
   return Date.now() - workerActivity.lastSolanaWsEventAt;
 }

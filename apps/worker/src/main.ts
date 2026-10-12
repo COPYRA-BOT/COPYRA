@@ -1,5 +1,6 @@
 import {
   alertOps,
+  env,
   initSentry,
   logger,
   monitorOpenPositions,
@@ -140,6 +141,16 @@ process.on('unhandledRejection', (reason) => {
   );
 });
 
+if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
+  logger.error({}, 'SOLANA_WS_URL missing — copy detection will be blind');
+  void alertOps(
+    'solana-ws-missing',
+    'Copy-trade worker started <b>without SOLANA_WS_URL</b>.\n' +
+      'Set App-Level encrypted <code>SOLANA_WS_URL</code> (and optional backup) scoped to ALL components, then Force rebuild <b>worker</b>.',
+    { awaitDelivery: true },
+  );
+}
+
 const stopSolana = await startSolanaMonitor();
 const stopEvm = await startEvmMonitor();
 workerActivity.lastSolanaSyncAt = Date.now();
@@ -233,17 +244,34 @@ const watchdogTimer = setInterval(() => {
   const syncStale = solAge > WATCHDOG_SILENCE_MS;
   const wsStale = wsAge == null || wsAge > WATCHDOG_SILENCE_MS;
   const processedStale = processedAge == null || processedAge > WATCHDOG_SILENCE_MS;
-  const solDead = watching > 0 && syncStale && wsStale && processedStale;
+  // Never-fired WS while watching is a dead monitor even if sync keeps ticking
+  // (sync alone used to hide copy blindness for hours with no Telegram alert).
+  const wsNeverFired =
+    watching > 0 && workerActivity.lastSolanaWsEventAt === 0 && solAge > 2 * 60_000;
+  const solDead =
+    watching > 0 && ((syncStale && wsStale && processedStale) || (wsNeverFired && wsStale));
 
-  if (solDead) {
+  if (solDead || wsNeverFired) {
     solDeadStreak += 1;
     // Soft recover: force WS resub only — do not invent a sync clock or the
     // dead-streak never accumulates and DO never gets a clean respawn.
-    requestSolanaForceResub(`watchdog-dead-streak-${solDeadStreak}`);
+    requestSolanaForceResub(
+      wsNeverFired ? `watchdog-ws-never-${solDeadStreak}` : `watchdog-dead-streak-${solDeadStreak}`,
+    );
     logger.error(
-      { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge, solDeadStreak },
+      { solAgeMs: solAge, watching, stats: solanaMonitorStats, processedAge, wsAge, solDeadStreak, wsNeverFired },
       'Watchdog: Solana monitor looks dead — soft recovery (force resub on next sync)',
     );
+    if (solDeadStreak === 1 || solDeadStreak % 3 === 0) {
+      void alertOps(
+        'solana-ws-blind',
+        `Copy-trade Solana WS is <b>blind</b> while watching ${watching} traders.\n` +
+          `${wsAge != null ? `Last WS event ${Math.round(wsAge / 1000)}s ago` : 'No WS events since boot'}` +
+          `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ' · nothing processed'}.\n` +
+          `Soft recovery #${solDeadStreak}. Check SOLANA_WS_URL on the <b>worker</b> component.`,
+        { cooldownSec: 10 * 60 },
+      );
+    }
     if (solDeadStreak >= WATCHDOG_DEAD_STREAK) {
       void fatalExit(
         'worker-watchdog-solana',
@@ -286,22 +314,27 @@ const watchdogTimer = setInterval(() => {
   }
 
   // Quiet market notice — sync healthy, but nothing processed for a long time.
+  // Also page when watching > 0 but NOTHING has ever been processed (WS blind).
+  const neverProcessed = watching > 0 && processedAge == null && solAge > QUIET_MARKET_MS;
   if (
     watching > 0 &&
     solAge < 60_000 &&
-    processedAge != null &&
-    processedAge > QUIET_MARKET_MS &&
+    ((processedAge != null && processedAge > QUIET_MARKET_MS) || neverProcessed) &&
     now - lastQuietNoticeAt > QUIET_MARKET_MS
   ) {
     lastQuietNoticeAt = now;
+    const ageLabel =
+      processedAge != null
+        ? `${Math.round(processedAge / 60000)}m`
+        : 'never since boot';
     logger.warn(
-      { processedAgeMs: processedAge, watching, wsAgeMs: wsAge },
-      'Solana monitor healthy but quiet — no signatures processed recently',
+      { processedAgeMs: processedAge, watching, wsAgeMs: wsAge, neverProcessed },
+      'Solana monitor quiet — no signatures processed recently',
     );
     void alertOps(
       'solana-quiet',
-      `Solana monitor is <b>healthy</b> (sync ok, watching ${watching}) but <b>no signatures processed for ${Math.round(processedAge / 60000)}m</b>.\n` +
-        `This usually means tracked wallets had no qualifying activity — not a stalled worker.\n` +
+      `Solana monitor watching ${watching} but <b>no signatures processed for ${ageLabel}</b>.\n` +
+        `${wsAge == null ? '⚠️ No WS events since boot — check SOLANA_WS_URL.\n' : ''}` +
         `Catch-up ok/err: ${solanaMonitorStats.catchUpOk}/${solanaMonitorStats.catchUpErr}.`,
       { cooldownSec: QUIET_MARKET_MS / 1000 },
     );

@@ -1,4 +1,5 @@
 import { SkipReason } from '@copyra/db';
+import { computeSniperEntryScore, SNIPER_AUTO_EXEC_MIN_SCORE } from './score.js';
 import type { SniperConfig, SniperDiscoveryEvent, SniperEnrichment, SniperQualifyResult } from './types.js';
 
 const STALE_DEFAULT_MS = 30_000;
@@ -406,11 +407,24 @@ export function qualifySniperToken(input: {
     };
   }
 
+  const entryScore = computeSniperEntryScore(enrich);
+
+  // Live auto-exec only for high-confidence Discovery scores (≥90).
+  // Lower scores still reach the Discovery list via enrichSnapshot.
+  if (config.runtimeMode === 'live' && entryScore < SNIPER_AUTO_EXEC_MIN_SCORE) {
+    return {
+      qualified: false,
+      reason: SkipReason.SNIPER_ACTIVITY,
+      detail: `Entry score ${entryScore} below auto-exec threshold ${SNIPER_AUTO_EXEC_MIN_SCORE}. Tracked in Discovery — no buy.`,
+      entryScore,
+    };
+  }
+
   let risk = 20;
-  risk += Math.min(30, (enrich.marketCapUsd / config.maxMarketCapUsd) * 20);
+  risk += Math.min(30, ((enrich.marketCapUsd ?? 0) / config.maxMarketCapUsd) * 20);
   risk += Math.min(20, enrich.topHolderPct != null ? enrich.topHolderPct * 0.4 : 10);
   risk += enrich.migrated ? 0 : 8;
   const riskScore = Math.round(Math.min(100, risk) * 10) / 10;
 
-  return { qualified: true, riskScore };
+  return { qualified: true, riskScore, entryScore };
 }

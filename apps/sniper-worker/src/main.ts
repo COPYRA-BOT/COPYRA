@@ -117,6 +117,11 @@ try {
   bootError = error instanceof Error ? error.message : String(error);
   logger.error({ err: error }, 'Sniper discovery failed to start — will keep heartbeating');
   discoveryStop = () => undefined;
+  telegram.send(
+    `🚨 <b>SNIPER DISCOVERY IDLE</b>\n${bootError}\n` +
+      `Set App-Level <code>SOLANA_WS_URL</code> / <code>SOLANA_BACKUP_WS_URL</code> on the sniper component, then Force rebuild <b>sniper</b>.`,
+    { kind: 'sniper-ws-idle' },
+  );
 }
 
 const exitTimer = setInterval(() => {

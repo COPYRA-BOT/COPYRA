@@ -103,5 +103,5 @@ export interface SniperConfig {
 }
 
 export type SniperQualifyResult =
-  | { qualified: true; riskScore: number }
-  | { qualified: false; reason: SkipReason; detail: string };
+  | { qualified: true; riskScore: number; entryScore: number }
+  | { qualified: false; reason: SkipReason; detail: string; entryScore?: number };

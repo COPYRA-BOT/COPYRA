@@ -101,7 +101,42 @@ describe('qualifySniperToken', () => {
       dailyLossSol: 0,
     });
     expect(result.qualified).toBe(true);
-    if (result.qualified) expect(result.riskScore).toBeGreaterThan(0);
+    if (result.qualified) {
+      expect(result.riskScore).toBeGreaterThan(0);
+      expect(result.entryScore).toBeGreaterThanOrEqual(90);
+    }
+  });
+
+  it('tracks but does not auto-exec when entry score is below 90 in live', () => {
+    // Passes fail-closed filters (null authorities) but quality score stays under 90.
+    const result = qualifySniperToken({
+      event: event(),
+      enrich: {
+        ...enrichOk(),
+        liquidityUsd: 10_500,
+        marketCapUsd: 60_000,
+        volume24hUsd: 3_000,
+        holderCount: 110,
+        sniperPct: 32,
+        topHolderPct: 32,
+        hasTwitter: false,
+        hasWebsite: false,
+        hasTelegram: false,
+        hasProfile: false,
+        mintAuthority: null,
+        freezeAuthority: null,
+      },
+      config: baseConfig(),
+      openSniperPositions: 0,
+      existingSniperPositionForToken: false,
+      deployedSol: 0,
+      dailyLossSol: 0,
+    });
+    expect(result.qualified).toBe(false);
+    if (!result.qualified) {
+      expect(result.detail).toMatch(/auto-exec threshold/i);
+      expect(result.entryScore).toBeLessThan(90);
+    }
   });
 
   it('rejects when market data is missing (fail closed)', () => {

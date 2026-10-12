@@ -18,12 +18,18 @@ import { buildPortfolioState } from '../engine/portfolio.js';
 import { calculatePositionSize } from '../engine/sizing.js';
 import { getStrategyConfigFor } from '../engine/settings.js';
 import { TelemetryTracker } from '../engine/telemetry.js';
+import { telegram } from '../notify/telegram.js';
 import { componentLogger } from '../obs/logger.js';
 import { executeSolanaSwap, lamportsFromSol, WRAPPED_SOL_MINT_STR } from '../solana/executor.js';
 import { LockHeldError, withLock } from '../util/redis.js';
 import { getSniperConfigFor } from './config.js';
 import { enrichSniperToken } from './enrich.js';
 import { qualifySniperToken } from './qualify.js';
+import {
+  computeSniperEntryScore,
+  discoveryStatusFor,
+  SNIPER_AUTO_EXEC_MIN_SCORE,
+} from './score.js';
 import type { SniperDiscoveryEvent } from './types.js';
 
 const log = componentLogger('sniper-execute');
@@ -132,6 +138,7 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
     const deployedSol =
       portfolio.quotePriceUsd > 0 ? portfolio.deployedUsd / portfolio.quotePriceUsd : 0;
 
+    const entryScore = computeSniperEntryScore(enrich);
     const qualification = qualifySniperToken({
       event,
       enrich,
@@ -141,6 +148,15 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
       deployedSol,
       dailyLossSol: dailyLoss,
     });
+
+    const discoveryStatus = discoveryStatusFor({
+      entryScore,
+      qualified: qualification.qualified,
+      rejected: !qualification.qualified && !/below auto-exec/i.test(
+        qualification.qualified ? '' : qualification.detail,
+      ),
+    });
+    const enrichWithScore = { ...enrich, entryScore, discoveryStatus };
 
     const signal = await prisma.sniperSignal.create({
       data: {
@@ -161,8 +177,9 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
         marketCapUsdAtSignal: enrich.marketCapUsd,
         liquidityUsdAtSignal: enrich.liquidityUsd,
         priceUsdAtSignal: enrich.priceUsd,
-        riskScore: qualification.qualified ? qualification.riskScore : null,
-        enrichSnapshot: enrich as object,
+        // Store entry score for Discovery UI SCORE column (quality, higher=better).
+        riskScore: entryScore,
+        enrichSnapshot: enrichWithScore as object,
         detectLatencyMs: Math.max(0, Date.now() - event.observedAt.getTime()),
         qualifyLatencyMs: Date.now() - started,
         qualifiedAt: new Date(),
@@ -171,10 +188,21 @@ async function processSniperForUser(userId: string, event: SniperDiscoveryEvent)
 
     if (!qualification.qualified) {
       log.info(
-        { userId, mint: event.tokenAddress, reason: qualification.reason },
+        { userId, mint: event.tokenAddress, reason: qualification.reason, entryScore, discoveryStatus },
         'Sniper rejected',
       );
       return;
+    }
+
+    if (entryScore >= SNIPER_AUTO_EXEC_MIN_SCORE) {
+      telegram.send(
+        `🎯 <b>SNIPER ENTRY SIGNAL</b>\n` +
+          `$${enrich.symbol ?? event.tokenAddress.slice(0, 6)} · score <b>${entryScore}</b>\n` +
+          `MC ${enrich.marketCapUsd != null ? `$${Math.round(enrich.marketCapUsd).toLocaleString()}` : '—'} · ` +
+          `Liq ${enrich.liquidityUsd != null ? `$${Math.round(enrich.liquidityUsd).toLocaleString()}` : '—'}\n` +
+          `<code>${event.tokenAddress}</code>`,
+        { kind: 'sniper-entry', userId },
+      );
     }
 
     if (config.runtimeMode !== 'live') {

@@ -1,6 +1,7 @@
 export * from './constants.js';
 export * from './types.js';
 export * from './qualify.js';
+export * from './score.js';
 export * from './config.js';
 export * from './enrich.js';
 export * from './discovery.js';

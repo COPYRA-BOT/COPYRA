@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-11T23:40Z (force DO deploy — sniper custody stalled)
+# last-deploy-nudge: 2026-10-12T15:25Z (copy WS blind + sniper discovery UI)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22
@@ -199,7 +199,7 @@ workers:
         value: "https://copyra.fun"
 
   # Independent launch sniper — never shares the copy-trade process.
-  # Start with SNIPER_ENABLED=false / SNIPER_MODE=monitor; flip live in App-Level envs.
+  # Requires App-Level SOLANA_WS_URL (+ prefer SOLANA_BACKUP_WS_URL for sniper isolation).
   - name: sniper
     dockerfile_path: Dockerfile
     source_dir: /

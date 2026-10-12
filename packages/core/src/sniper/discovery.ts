@@ -114,11 +114,23 @@ export async function startPumpFunDiscovery(
   onEvent: DiscoveryHandler,
   opts?: { programIds?: string[] },
 ): Promise<() => void> {
-  const wsUrl = env.SOLANA_WS_URL || env.SOLANA_BACKUP_WS_URL;
+  // Prefer backup WS when available so Pump.fun flood does not starve copy-trade
+  // primary SOLANA_WS_URL subscriptions on the same Helius key.
+  const wsUrl =
+    env.SOLANA_BACKUP_WS_URL || env.SOLANA_WS_URL || null;
   if (!wsUrl) {
-    log.warn({}, 'SNIPER discovery idle — SOLANA_WS_URL not configured');
-    return () => undefined;
+    discoveryStats.wsConnected = false;
+    const msg = 'SNIPER discovery idle — SOLANA_WS_URL / SOLANA_BACKUP_WS_URL not configured';
+    log.error({}, msg);
+    throw new Error(msg);
   }
+  log.info(
+    {
+      usingBackup: Boolean(env.SOLANA_BACKUP_WS_URL),
+      hasPrimary: Boolean(env.SOLANA_WS_URL),
+    },
+    'Sniper discovery WS endpoint selected (backup preferred for isolation)',
+  );
 
   const programs = opts?.programIds?.length
     ? opts.programIds
