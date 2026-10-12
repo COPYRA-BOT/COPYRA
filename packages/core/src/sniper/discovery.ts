@@ -304,8 +304,24 @@ export async function startPumpFunDiscovery(
       clearTimeout(openTimeout);
       connectedAt = Date.now();
       discoveryStats.wsConnected = true;
+      discoveryStats.subs = 0;
       log.info({ programs, host: discoveryStats.wsUrlHost }, 'Sniper Helius/WS logsSubscribe connected');
       subscribeAll();
+      // If subscribe ACKs never arrive, the socket is useless — rotate quickly.
+      const ackTimer = setTimeout(() => {
+        if (closed || !discoveryStats.wsConnected) return;
+        if (discoveryStats.subs > 0) return;
+        log.warn(
+          { host: discoveryStats.wsUrlHost },
+          'Sniper logsSubscribe ACK timeout — rotating endpoint',
+        );
+        try {
+          ws?.close();
+        } catch {
+          scheduleReconnect(500);
+        }
+      }, 12_000);
+      ws.once('close', () => clearTimeout(ackTimer));
       // Keepalive — some Helius idle sockets drop without a close event.
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = setInterval(() => {

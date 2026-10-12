@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-12T20:22Z (force DO roll — hung-worker supervisor + sniper WS)
+# last-deploy-nudge: 2026-10-12T20:28Z (FORCE roll — copy hung + sniper idle; HTML stuck 19:21)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22

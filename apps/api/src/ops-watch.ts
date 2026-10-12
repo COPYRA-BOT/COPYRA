@@ -112,12 +112,15 @@ export function startOpsWatch(): () => void {
       } else if (sniperDetail.wsConnected === false || sniperDetail.bootError) {
         const sniperHost =
           typeof sniperDetail.wsUrlHost === 'string' ? sniperDetail.wsUrlHost : 'unknown';
+        const hasBackup = sniperDetail.hasBackupWs === true;
+        const distinct = sniperDetail.backupDistinct === true;
         await alertOps(
           'sniper-ws-idle',
           `Sniper worker is live but discovery WS is <b>idle</b>.\n` +
             `wsConnected=${String(sniperDetail.wsConnected)} · decodeOk=${String(sniperDetail.decodeOk ?? 0)} · host=<code>${sniperHost}</code>\n` +
+            `backupWs=${hasBackup ? (distinct ? 'distinct' : 'same-as-primary') : 'MISSING'}\n` +
             `${sniperDetail.bootError ? `bootError: ${String(sniperDetail.bootError)}\n` : ''}` +
-            `Set App-Level <code>SOLANA_BACKUP_WS_URL</code> as <b>wss://</b> on a <b>separate</b> Helius/QuickNode key for sniper (isolates Pump.fun flood from copy). Primary <code>SOLANA_WS_URL</code> stays on the worker. Force rebuild <b>sniper</b>.`,
+            `Set App-Level <code>SOLANA_BACKUP_WS_URL</code> as <b>wss://</b> on a <b>separate</b> Helius/QuickNode key for sniper (isolates Pump.fun flood from copy). Primary <code>SOLANA_WS_URL</code> stays on the worker. Force rebuild <b>api + worker + sniper</b>.`,
           { cooldownSec: 30 * 60 },
         );
       }

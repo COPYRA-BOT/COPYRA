@@ -76,6 +76,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 async function heartbeat(status: string, detail: Record<string, unknown> = {}): Promise<void> {
+  // Disk first on every path — supervisor stale-kill must see life even when Prisma
+  // findUnique/upsert hangs (event-loop freeze → Telegram "worker blind/down").
+  writeWorkerStatusFile({ status, ...detail });
   // Short retries — a frozen beatAt makes ops-watch page "worker down" even when
   // monitors are alive (pool blips during Solana catch-up).
   let lastErr: unknown;

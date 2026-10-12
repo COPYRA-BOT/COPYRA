@@ -60,6 +60,21 @@ async function beat(status: string, detail: Prisma.InputJsonValue): Promise<void
 
 function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue {
   const stats = getSniperDiscoveryStats();
+  const primary = env.SOLANA_WS_URL;
+  const backup = env.SOLANA_BACKUP_WS_URL;
+  let primaryHost: string | null = null;
+  let backupHost: string | null = null;
+  try {
+    if (primary) primaryHost = new URL(primary).host;
+  } catch {
+    primaryHost = 'invalid';
+  }
+  try {
+    if (backup) backupHost = new URL(backup).host;
+  } catch {
+    backupHost = 'invalid';
+  }
+  const backupDistinct = Boolean(backup && primary && backup !== primary);
   return {
     monitor: 'sniper+exits',
     sniperEnabled: env.SNIPER_ENABLED,
@@ -76,7 +91,11 @@ function beatDetail(extra: Record<string, unknown> = {}): Prisma.InputJsonValue 
     lastNotificationAt: stats.lastNotificationAt,
     reconnects: stats.reconnects,
     hasSolanaRpc: Boolean(env.SOLANA_RPC_URL),
-    hasSolanaWs: Boolean(env.SOLANA_WS_URL || env.SOLANA_BACKUP_WS_URL),
+    hasSolanaWs: Boolean(primary || backup),
+    hasBackupWs: Boolean(backup),
+    backupDistinct,
+    primaryWsHost: primaryHost,
+    backupWsHost: backupHost,
     bootError,
     pid: process.pid,
     ...extra,
