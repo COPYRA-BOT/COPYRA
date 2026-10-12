@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # COPYRA production image for DigitalOcean App Platform.
 # Build context MUST be the repository root.
-# deploy-bust: 2026-10-12T20:28Z — FORCE full rebuild: hung copy worker + sniper WS idle (autodeploy stalled @ 19:21)
+# deploy-bust: 2026-10-12T20:49Z — FORCE api+worker+sniper after c771b59 tsc fix (HTML still stuck 19:21)
 #
 # Speed model (BuildKit stage cache):
 #  * deps        — cached until package-lock / package.json change
