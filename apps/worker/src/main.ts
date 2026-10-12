@@ -26,6 +26,10 @@ const WATCHDOG_SILENCE_MS = 8 * 60_000;
 const WATCHDOG_CHECK_MS = 30_000;
 /** Require this many consecutive dead checks before fatalExit. */
 const WATCHDOG_DEAD_STREAK = 3;
+/** Soft-only for WS-never-fired — catch-up covers detection; crash-loops degrade DO. */
+const WATCHDOG_WS_BLIND_FATAL_STREAK = 12;
+/** Never let a hung Prisma upsert freeze heartbeats (→ DO Degraded). */
+const HEARTBEAT_UPSERT_TIMEOUT_MS = 4_000;
 /** Quiet-market notice only — never respawn solely because no trades were processed. */
 const QUIET_MARKET_MS = 45 * 60_000;
 /**
@@ -55,6 +59,22 @@ function beatDetail(): Record<string, unknown> {
   };
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function heartbeat(status: string, detail: Record<string, unknown> = {}): Promise<void> {
   // Short retries — a frozen beatAt makes ops-watch page "worker down" even when
   // monitors are alive (pool blips during Solana catch-up).
@@ -65,9 +85,13 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
       // Never let a stuck/old instance overwrite a peer with a fresher sync clock
       // (that was flipping status between healthy pid and syncAge=37h → Degraded).
       if (status === 'running') {
-        const existing = await prisma.workerHeartbeat.findUnique({
-          where: { name: 'copyra-worker' },
-        });
+        const existing = await withTimeout(
+          prisma.workerHeartbeat.findUnique({
+            where: { name: 'copyra-worker' },
+          }),
+          HEARTBEAT_UPSERT_TIMEOUT_MS,
+          'heartbeat-find',
+        );
         const prior =
           existing?.detail && typeof existing.detail === 'object' && !Array.isArray(existing.detail)
             ? (existing.detail as Record<string, unknown>)
@@ -91,16 +115,20 @@ async function heartbeat(status: string, detail: Record<string, unknown> = {}): 
         }
       }
 
-      await prisma.workerHeartbeat.upsert({
-        where: { name: 'copyra-worker' },
-        create: {
-          name: 'copyra-worker',
-          status,
-          detail: detail as Prisma.InputJsonValue,
-          beatAt: new Date(),
-        },
-        update: { status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
-      });
+      await withTimeout(
+        prisma.workerHeartbeat.upsert({
+          where: { name: 'copyra-worker' },
+          create: {
+            name: 'copyra-worker',
+            status,
+            detail: detail as Prisma.InputJsonValue,
+            beatAt: new Date(),
+          },
+          update: { status, detail: detail as Prisma.InputJsonValue, beatAt: new Date() },
+        }),
+        HEARTBEAT_UPSERT_TIMEOUT_MS,
+        'heartbeat-upsert',
+      );
       writeWorkerStatusFile({ status, ...detail });
       return;
     } catch (error) {
@@ -268,11 +296,15 @@ const watchdogTimer = setInterval(() => {
         `Copy-trade Solana WS is <b>blind</b> while watching ${watching} traders.\n` +
           `${wsAge != null ? `Last WS event ${Math.round(wsAge / 1000)}s ago` : 'No WS events since boot'}` +
           `${processedAge != null ? ` · last processed ${Math.round(processedAge / 1000)}s ago` : ' · nothing processed'}.\n` +
-          `Soft recovery #${solDeadStreak}. Check SOLANA_WS_URL on the <b>worker</b> component.`,
+          `Soft recovery #${solDeadStreak}. HTTP catch-up stays on. Check SOLANA_WS_URL on the <b>worker</b> component.`,
         { cooldownSec: 10 * 60 },
       );
     }
-    if (solDeadStreak >= WATCHDOG_DEAD_STREAK) {
+    // WS-only blindness: keep soft-recovering (catch-up detects). FatalExit only when
+    // sync+ws+processed are all dead, or WS-blind streak is extreme — avoids DO Degraded
+    // from "Containers repeatedly crashing" while HTTP catch-up still works.
+    const fatalThreshold = solDead ? WATCHDOG_DEAD_STREAK : WATCHDOG_WS_BLIND_FATAL_STREAK;
+    if (solDeadStreak >= fatalThreshold) {
       void fatalExit(
         'worker-watchdog-solana',
         `Solana <b>monitor silent</b> after ${solDeadStreak} checks while watching ${watching} traders` +
