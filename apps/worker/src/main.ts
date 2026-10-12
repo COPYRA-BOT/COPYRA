@@ -228,15 +228,26 @@ const exitTimer = setInterval(() => {
 
 /** Never overlap heartbeat upserts — stacked pool waits froze beatAt for minutes. */
 let heartbeatInFlight = false;
+let heartbeatStartedAt = 0;
 const heartbeatTimer = setInterval(() => {
+  // Hard-clear a stuck latch so one hung Prisma call cannot silence beats forever.
+  if (heartbeatInFlight && heartbeatStartedAt > 0 && Date.now() - heartbeatStartedAt > 20_000) {
+    logger.warn({}, 'Heartbeat latch stuck >20s — forcing clear');
+    heartbeatInFlight = false;
+  }
   if (heartbeatInFlight) return;
   heartbeatInFlight = true;
+  heartbeatStartedAt = Date.now();
+  // Always refresh the on-disk status first so the supervisor stale-kill can see life
+  // even when Prisma upserts are slow.
+  writeWorkerStatusFile({ status: 'running', ...beatDetail() });
   void heartbeat('running', beatDetail())
     .catch((error: unknown) => {
       logger.error({ err: error }, 'Heartbeat failed');
     })
     .finally(() => {
       heartbeatInFlight = false;
+      heartbeatStartedAt = 0;
     });
 }, HEARTBEAT_MS);
 

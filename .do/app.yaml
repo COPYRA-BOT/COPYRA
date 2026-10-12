@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-12T20:20Z (force DO roll — fix Solana WS blindness / isolate sniper)
+# last-deploy-nudge: 2026-10-12T20:22Z (force DO roll — hung-worker supervisor + sniper WS)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22

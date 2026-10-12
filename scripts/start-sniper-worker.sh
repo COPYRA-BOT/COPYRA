@@ -1,6 +1,7 @@
 #!/bin/sh
 # Dedicated App Platform sniper worker — launch discovery + sniper exits + /health.
 # Independent of the copy-trade worker so CPU/locks never starve each other.
+# Hung processes are SIGKILL'd when the sniper status file goes stale.
 set -e
 
 PORT="${PORT:-${HEALTH_PORT:-8080}}"
@@ -10,6 +11,8 @@ export COPYRA_HEALTH_ROLE=sniper
 
 LOCK=/tmp/copyra-sniper-supervisor.lock
 PIDFILE=/tmp/copyra-sniper-worker.pid
+STATUS=/tmp/copyra-sniper-status.json
+STALE_SEC="${COPYRA_WORKER_STALE_SEC:-120}"
 
 echo "COPYRA sniper worker (24/7 supervisor + health :${PORT})"
 
@@ -31,6 +34,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+status_age_sec() {
+  if [ ! -f "$STATUS" ]; then
+    echo 99999
+    return
+  fi
+  mtime=$(stat -c %Y "$STATUS" 2>/dev/null || stat -f %m "$STATUS" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  echo $((now - mtime))
+}
+
 backoff=5
 while true; do
   if [ -f "$PIDFILE" ]; then
@@ -45,9 +58,23 @@ while true; do
   fi
 
   echo "COPYRA sniper worker starting..."
+  rm -f "$STATUS"
   npm run start -w @copyra/sniper-worker &
   WORKER_PID=$!
   echo "$WORKER_PID" > "$PIDFILE"
+
+  while kill -0 "$WORKER_PID" 2>/dev/null; do
+    sleep 15
+    age=$(status_age_sec)
+    if [ "$age" -gt "$STALE_SEC" ]; then
+      up_approx=$(( $(date +%s) - $(stat -c %Y "$PIDFILE" 2>/dev/null || date +%s) ))
+      if [ "$up_approx" -gt 60 ]; then
+        echo "COPYRA sniper status stale ${age}s — SIGKILL hung pid=${WORKER_PID}" >&2
+        kill -9 "$WORKER_PID" 2>/dev/null || true
+        break
+      fi
+    fi
+  done
   wait "$WORKER_PID" || true
   code=$?
   jitter=$(awk 'BEGIN{srand(); printf "%d", int(rand()*5)}' 2>/dev/null || echo 2)

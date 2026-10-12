@@ -260,8 +260,13 @@ export async function startSolanaMonitor(): Promise<() => void> {
       // Slot stream proves the WSS delivers frames (independent of trader activity).
       if (slotSubId == null && solanaMonitorStats.wsOpen) {
         try {
+          let lastSlotTouch = 0;
           slotSubId = connection.onSlotChange(() => {
-            solanaMonitorStats.lastWsSlotAt = Date.now();
+            // Throttle — slot ticks ~2.5/s; do not wake the event loop every frame.
+            const now = Date.now();
+            if (now - lastSlotTouch < 5_000) return;
+            lastSlotTouch = now;
+            solanaMonitorStats.lastWsSlotAt = now;
             solanaMonitorStats.wsOpen = true;
           });
         } catch (error) {

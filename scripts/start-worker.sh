@@ -5,6 +5,7 @@
 #
 # Single-engine guarantee: flock on this supervisor + kill previous worker PID
 # before each start so watchdog respawns never overlap two trading engines.
+# Hung processes (event-loop freeze) are SIGKILL'd when the status file goes stale.
 set -e
 
 PORT="${PORT:-${HEALTH_PORT:-8080}}"
@@ -12,6 +13,9 @@ export PORT
 
 LOCK=/tmp/copyra-worker-supervisor.lock
 PIDFILE=/tmp/copyra-worker.pid
+STATUS=/tmp/copyra-worker-status.json
+# If heartbeats/status stop updating, the Node process is hung — kill and respawn.
+STALE_SEC="${COPYRA_WORKER_STALE_SEC:-120}"
 
 echo "COPYRA dedicated copy-trade worker (24/7 supervisor + health :${PORT})"
 
@@ -35,6 +39,17 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+status_age_sec() {
+  if [ ! -f "$STATUS" ]; then
+    echo 99999
+    return
+  fi
+  # GNU stat (DO) or BSD stat fallback.
+  mtime=$(stat -c %Y "$STATUS" 2>/dev/null || stat -f %m "$STATUS" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  echo $((now - mtime))
+}
+
 backoff=5
 while true; do
   # Ensure no leftover engine from a previous crash/respawn.
@@ -50,9 +65,25 @@ while true; do
   fi
 
   echo "COPYRA worker starting..."
+  rm -f "$STATUS"
   npm run start -w @copyra/worker &
   WORKER_PID=$!
   echo "$WORKER_PID" > "$PIDFILE"
+
+  # Wait for exit OR hung status (do not block forever on a frozen Node process).
+  while kill -0 "$WORKER_PID" 2>/dev/null; do
+    sleep 15
+    age=$(status_age_sec)
+    # Grace period after boot before stale-kill.
+    if [ "$age" -gt "$STALE_SEC" ]; then
+      up_approx=$(( $(date +%s) - $(stat -c %Y "$PIDFILE" 2>/dev/null || date +%s) ))
+      if [ "$up_approx" -gt 60 ]; then
+        echo "COPYRA worker status stale ${age}s — SIGKILL hung pid=${WORKER_PID}" >&2
+        kill -9 "$WORKER_PID" 2>/dev/null || true
+        break
+      fi
+    fi
+  done
   wait "$WORKER_PID" || true
   code=$?
   # Bounded backoff with light jitter (5s → 45s) so crash loops do not thrash
