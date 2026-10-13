@@ -406,7 +406,7 @@ async function executeExit(
           amountRaw: sellRaw,
           slippageBps: config.maxSlippageBps,
           maxPriceImpactPct: config.maxPriceImpactPct,
-          quoteMaxAgeMs: Math.min(config.quoteMaxAgeMs, 2_000),
+          quoteMaxAgeMs: Math.min(config.quoteMaxAgeMs, 900),
           confirmTimeoutMs: Math.min(config.confirmTimeoutMs, 12_000),
           maxAttempts: Math.max(config.maxExecutionAttempts, 5),
           telemetry,

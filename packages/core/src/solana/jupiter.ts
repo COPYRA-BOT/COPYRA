@@ -24,8 +24,15 @@ const PRICE_CACHE_TTL_MS = 2_000;
 const PRICE_STALE_OK_MS = 15_000;
 /** After a 429, pause Pro calls briefly so buy/exit quotes recover. */
 const RATE_LIMIT_COOLDOWN_MS = 800;
-/** Hot-path HTTP budget — Pro plan; keep quote+build under the 1s execution target. */
-const JUPITER_HTTP_TIMEOUT_MS = 900;
+/** Hot-path HTTP budget — 900ms caused stop-loss QUOTE_FAILED under load. */
+const JUPITER_HTTP_TIMEOUT_MS = 1_800;
+const JUPITER_HTTP_TIMEOUT_EXIT_MS = 3_200;
+
+export type JupiterUrgency = 'normal' | 'exit';
+
+export function jupiterHttpTimeoutMs(urgency: JupiterUrgency = 'normal'): number {
+  return urgency === 'exit' ? JUPITER_HTTP_TIMEOUT_EXIT_MS : JUPITER_HTTP_TIMEOUT_MS;
+}
 
 const priceCache = new Map<string, { price: JupiterPrice; at: number }>();
 let rateLimitedUntil = 0;
@@ -118,12 +125,17 @@ export class NoRouteError extends Error {
   }
 }
 
-async function quoteFromBase(base: string, params: QuoteParams, query: URLSearchParams): Promise<QuoteResult> {
+async function quoteFromBase(
+  base: string,
+  params: QuoteParams,
+  query: URLSearchParams,
+  timeoutMs: number,
+): Promise<QuoteResult> {
   const { data, latencyMs } = await withRetry(
     () =>
       fetchJson<JupiterQuote & { error?: string }>(
         `${base}/swap/v1/quote?${query.toString()}`,
-        { headers: headers(), timeoutMs: JUPITER_HTTP_TIMEOUT_MS, label: 'jupiter/quote' },
+        { headers: headers(), timeoutMs, label: 'jupiter/quote' },
       ),
     {
       attempts: 3,
@@ -152,7 +164,11 @@ async function quoteFromBase(base: string, params: QuoteParams, query: URLSearch
   };
 }
 
-export async function getJupiterQuote(params: QuoteParams): Promise<QuoteResult> {
+export async function getJupiterQuote(
+  params: QuoteParams,
+  opts?: { urgency?: JupiterUrgency },
+): Promise<QuoteResult> {
+  const timeoutMs = jupiterHttpTimeoutMs(opts?.urgency ?? 'normal');
   const query = new URLSearchParams({
     inputMint: params.inputMint,
     outputMint: params.outputMint,
@@ -170,7 +186,7 @@ export async function getJupiterQuote(params: QuoteParams): Promise<QuoteResult>
   let lastError: unknown;
   for (const base of primaryBases()) {
     try {
-      return await quoteFromBase(base, params, query);
+      return await quoteFromBase(base, params, query, timeoutMs);
     } catch (error) {
       lastError = error;
       if (isJupiterRateLimitError(error)) {
@@ -185,7 +201,7 @@ export async function getJupiterQuote(params: QuoteParams): Promise<QuoteResult>
 
   for (const base of fallbackBases()) {
     try {
-      return await quoteFromBase(base, params, query);
+      return await quoteFromBase(base, params, query, timeoutMs);
     } catch (error) {
       lastError = error;
       if (isJupiterRateLimitError(error)) markRateLimited();
@@ -223,7 +239,11 @@ export interface SwapBuildResult {
  * explicit and auditable — the same endpoint serves both bot execution and
  * user-wallet signing in the dashboard.
  */
-export async function buildJupiterSwap(params: SwapBuildParams): Promise<SwapBuildResult> {
+export async function buildJupiterSwap(
+  params: SwapBuildParams,
+  opts?: { urgency?: JupiterUrgency },
+): Promise<SwapBuildResult> {
+  const timeoutMs = jupiterHttpTimeoutMs(opts?.urgency ?? 'normal');
   const body = {
     quoteResponse: params.quote,
     userPublicKey: params.userPublicKey,
@@ -251,7 +271,7 @@ export async function buildJupiterSwap(params: SwapBuildParams): Promise<SwapBui
           method: 'POST',
           headers: { ...headers(), 'content-type': 'application/json' },
           body: JSON.stringify(body),
-          timeoutMs: JUPITER_HTTP_TIMEOUT_MS,
+          timeoutMs,
           label: 'jupiter/swap',
         }),
       {

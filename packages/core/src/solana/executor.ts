@@ -136,11 +136,13 @@ export async function confirmSolanaTransaction(
   signature: string,
   lastValidBlockHeight: number,
   timeoutMs: number,
+  opts?: { recentBlockhash?: string },
 ): Promise<ConfirmationResult> {
   const deadline = Date.now() + timeoutMs;
   // Aggressive first polls — target confirm verdict under 1s on Helius/Alchemy.
   let pollIntervalMs = 50;
   let missPolls = 0;
+  const recentBlockhash = opts?.recentBlockhash?.trim() || null;
 
   while (Date.now() < deadline) {
     const statusResult = await solanaPool()
@@ -182,20 +184,46 @@ export async function confirmSolanaTransaction(
       // Check expiry often so dead txs fail fast and the executor can rebuild
       // (waiting a full ~60s for natural expiry was the 32–47s sell lag).
       if (missPolls === 1 || missPolls % 2 === 0) {
-        const heightResult = await solanaPool()
-          .call('getBlockHeight', (client) => client.getBlockHeight())
-          .catch(() => null);
-        if (heightResult && heightResult.value > lastValidBlockHeight) {
-          return {
-            status: TxStatus.EXPIRED,
-            slot: null,
-            confirmationStatus: null,
-            confirmations: 0,
-            error:
-              `Blockhash expired: block height ${heightResult.value} passed lastValidBlockHeight ` +
-              `${lastValidBlockHeight} and the signature was never observed. The transaction cannot land.`,
-            confirmedAt: null,
-          };
+        // Prefer RPC blockhash validity — Jupiter lastValidBlockHeight can lag
+        // the chain and falsely EXPIRE txs that are still propagating.
+        if (recentBlockhash) {
+          const validResult = await solanaPool()
+            .call('isBlockhashValid', (client) =>
+              client.isBlockhashValid(recentBlockhash, { commitment: 'confirmed' }),
+            )
+            .catch(() => null);
+          if (validResult && validResult.value.value === false) {
+            const heightResult = await solanaPool()
+              .call('getBlockHeight', (client) => client.getBlockHeight())
+              .catch(() => null);
+            const height = heightResult?.value ?? null;
+            return {
+              status: TxStatus.EXPIRED,
+              slot: null,
+              confirmationStatus: null,
+              confirmations: 0,
+              error:
+                `Blockhash expired: block height ${height ?? '?'} passed lastValidBlockHeight ` +
+                `${lastValidBlockHeight} and the signature was never observed. The transaction cannot land.`,
+              confirmedAt: null,
+            };
+          }
+        } else {
+          const heightResult = await solanaPool()
+            .call('getBlockHeight', (client) => client.getBlockHeight())
+            .catch(() => null);
+          if (heightResult && heightResult.value > lastValidBlockHeight) {
+            return {
+              status: TxStatus.EXPIRED,
+              slot: null,
+              confirmationStatus: null,
+              confirmations: 0,
+              error:
+                `Blockhash expired: block height ${heightResult.value} passed lastValidBlockHeight ` +
+                `${lastValidBlockHeight} and the signature was never observed. The transaction cannot land.`,
+              confirmedAt: null,
+            };
+          }
         }
       }
     }
@@ -344,16 +372,22 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
   );
 
   let lastError: unknown;
+  const isExit = request.urgency === 'exit';
+  const jupiterUrgency = isExit ? 'exit' : 'normal';
+  const quoteMaxAgeMs = isExit ? Math.min(request.quoteMaxAgeMs, 900) : request.quoteMaxAgeMs;
 
   for (let attempt = 1; attempt <= request.maxAttempts; attempt += 1) {
     let quote: QuoteResult;
     try {
-      quote = await getJupiterQuote({
-        inputMint: request.inputMint,
-        outputMint: request.outputMint,
-        amountRaw: request.amountRaw,
-        slippageBps: request.slippageBps,
-      });
+      quote = await getJupiterQuote(
+        {
+          inputMint: request.inputMint,
+          outputMint: request.outputMint,
+          amountRaw: request.amountRaw,
+          slippageBps: request.slippageBps,
+        },
+        { urgency: jupiterUrgency },
+      );
       telemetry.mark('quoted');
       record(
         attempt,
@@ -371,12 +405,13 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
       // and leave stop-loss exits stuck until the price has already moved further.
       const delayMs = isJupiterRateLimitError(error)
         ? Math.min(2_400, 280 * 2 ** (attempt - 1))
-        : 40 * attempt;
+        : isExit
+          ? Math.min(1_200, 120 * 2 ** (attempt - 1))
+          : 40 * attempt;
       await sleep(delayMs);
       continue;
     }
 
-    const isExit = request.urgency === 'exit';
     // --- guards, before anything is signed -------------------------------
     // Exits (TP/SL) must land even when the book is thin — refuse only extreme impact.
     const impactCeiling = isExit
@@ -392,26 +427,29 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     const quoteAgeMs = Date.now() - quote.receivedAt.getTime();
-    if (quoteAgeMs > request.quoteMaxAgeMs) {
-      record(attempt, 'guard', 'error', new QuoteStaleError(quoteAgeMs, request.quoteMaxAgeMs).message);
+    if (quoteAgeMs > quoteMaxAgeMs) {
+      record(attempt, 'guard', 'error', new QuoteStaleError(quoteAgeMs, quoteMaxAgeMs).message);
       continue; // re-quote on the next loop rather than trading on stale data
     }
 
     // --- build ------------------------------------------------------------
     let built: Awaited<ReturnType<typeof buildJupiterSwap>>;
     try {
-      built = await buildJupiterSwap({
-        quote: quote.quote,
-        userPublicKey: walletAddress,
-        wrapAndUnwrapSol: true,
-        computeUnitLimit: env.SOLANA_COMPUTE_UNIT_LIMIT,
-        // Max priority on buys and exits — meme books move in under 1s.
-        priorityFeeMicroLamports: Math.max(
-          env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS,
-          isExit ? 2_000_000 : 1_000_000,
-        ),
-        priorityLevel: 'veryHigh',
-      });
+      built = await buildJupiterSwap(
+        {
+          quote: quote.quote,
+          userPublicKey: walletAddress,
+          wrapAndUnwrapSol: true,
+          computeUnitLimit: env.SOLANA_COMPUTE_UNIT_LIMIT,
+          // Max priority on buys and exits — meme books move in under 1s.
+          priorityFeeMicroLamports: Math.max(
+            env.SOLANA_MAX_PRIORITY_FEE_MICROLAMPORTS,
+            isExit ? 2_000_000 : 1_000_000,
+          ),
+          priorityLevel: 'veryHigh',
+        },
+        { urgency: jupiterUrgency },
+      );
       telemetry.mark('built');
       record(attempt, 'build', 'ok', `lastValidBlockHeight=${built.lastValidBlockHeight}`);
     } catch (error) {
@@ -451,9 +489,27 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     }
 
     // --- pre-flight -------------------------------------------------------
-    // Skip RPC preflight on both buys and exits — Pro Jupiter + skipPreflight on
-    // send already validates; the 180ms+ preflight was eating the ≤1s budget.
-    record(attempt, 'preflight', 'ok', isExit ? 'skipped-exit-urgency' : 'skipped-speed');
+    // Skip simulateTransaction — but never broadcast a tx whose blockhash is
+    // already dead (stale Jupiter quote/swap was causing instant BLOCKHASH_EXPIRED).
+    try {
+      const validResult = await solanaPool().call('isBlockhashValid', (client) =>
+        client.isBlockhashValid(blockhash, { commitment: 'confirmed' }),
+      );
+      if (!validResult.value.value) {
+        record(attempt, 'preflight', 'error', 'blockhash expired before broadcast — re-quoting');
+        continue;
+      }
+      record(attempt, 'preflight', 'ok', isExit ? 'blockhash-live-exit' : 'blockhash-live');
+    } catch (error) {
+      record(attempt, 'preflight', 'error', describe(error));
+      if (attempt === request.maxAttempts) {
+        return failure(TxStatus.FAILED, 'PREFLIGHT_FAILED', describe(error), {
+          quotedAmountRaw: quote.quote.outAmount,
+          blockhash,
+        });
+      }
+      continue;
+    }
 
     // --- broadcast ---------------------------------------------------------
     let broadcastSignature: string;
@@ -505,12 +561,13 @@ export async function executeSolanaSwap(request: SwapRequest): Promise<Execution
     // Bound confirm wait on buys and exits — default 60s confirmTimeout was
     // holding the hot path open and making retries / metrics look slow.
     const confirmBudget = isExit
-      ? Math.min(request.confirmTimeoutMs, 8_000)
+      ? Math.min(request.confirmTimeoutMs, 6_000)
       : Math.min(request.confirmTimeoutMs, 8_000);
     const confirmation = await confirmSolanaTransaction(
       broadcastSignature,
       built.lastValidBlockHeight,
       confirmBudget,
+      { recentBlockhash: blockhash },
     );
     record(
       attempt,
