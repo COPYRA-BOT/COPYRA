@@ -203,6 +203,11 @@ export async function startPumpFunDiscovery(
   let reqId = 1;
   let urlIndex = 0;
   let connectedAt = 0;
+  /** Backoff between reconnects — thrashing Helius/QN marked DO Degraded. */
+  let reconnectBackoffMs = 1_200;
+  /** Decode fan-out cap — unbounded getParsedTransaction wedged the sniper event loop. */
+  let decodeInFlight = 0;
+  const DECODE_CONCURRENCY = 4;
   /** JSON-RPC request id → program id (while waiting for subscribe ACK). */
   const pending = new Map<number, string>();
   /** Subscription id → program id (stable mapping for notifications). */
@@ -218,20 +223,31 @@ export async function startPumpFunDiscovery(
     if (value.err) return;
     discoveryStats.wsNotifications += 1;
     discoveryStats.lastNotificationAt = new Date().toISOString();
+    // Successful traffic — reset reconnect backoff.
+    reconnectBackoffMs = 1_200;
     if (seenSig.has(value.signature)) return;
     seenSig.add(value.signature);
     if (seenSig.size > SEEN_CAP) {
       const drop = [...seenSig].slice(0, SEEN_CAP / 2);
       for (const s of drop) seenSig.delete(s);
     }
-    void extractEvent(value.signature, programId, value.logs ?? []).then((event) => {
-      if (event) {
-        discoveryStats.decodeOk += 1;
-        void onEvent(event);
-      } else {
-        discoveryStats.decodeFail += 1;
-      }
-    });
+    if (decodeInFlight >= DECODE_CONCURRENCY) {
+      discoveryStats.decodeFail += 1;
+      return;
+    }
+    decodeInFlight += 1;
+    void extractEvent(value.signature, programId, value.logs ?? [])
+      .then((event) => {
+        if (event) {
+          discoveryStats.decodeOk += 1;
+          void onEvent(event);
+        } else {
+          discoveryStats.decodeFail += 1;
+        }
+      })
+      .finally(() => {
+        decodeInFlight -= 1;
+      });
   };
 
   const subscribeAll = () => {
@@ -258,12 +274,14 @@ export async function startPumpFunDiscovery(
     }
   };
 
-  const scheduleReconnect = (delayMs: number) => {
+  const scheduleReconnect = (delayMs?: number) => {
     if (closed || reconnectTimer) return;
+    const wait = delayMs ?? reconnectBackoffMs;
+    reconnectBackoffMs = Math.min(30_000, Math.round(reconnectBackoffMs * 1.5));
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
-    }, delayMs);
+    }, wait);
   };
 
   const connect = () => {
@@ -280,6 +298,8 @@ export async function startPumpFunDiscovery(
     const wsUrl = urls[urlIndex % urls.length]!;
     urlIndex += 1;
     discoveryStats.reconnects += 1;
+    // New socket — do not inherit prior-session quiet timers (that caused reconnect death spirals).
+    connectedAt = 0;
     try {
       discoveryStats.wsUrlHost = new URL(wsUrl).host;
     } catch {
@@ -334,7 +354,7 @@ export async function startPumpFunDiscovery(
         }
       }, 25_000);
     });
-    ws.on('message', (raw) => {
+    socket.on('message', (raw) => {
       try {
         const msg = JSON.parse(String(raw)) as {
           id?: number;
@@ -351,7 +371,7 @@ export async function startPumpFunDiscovery(
             'Sniper logsSubscribe rejected — rotating endpoint',
           );
           try {
-            ws?.close();
+            socket.close();
           } catch {
             scheduleReconnect(800);
           }
@@ -362,6 +382,8 @@ export async function startPumpFunDiscovery(
           pending.delete(msg.id);
           if (programId) subToProgram.set(msg.result, programId);
           discoveryStats.subs = subToProgram.size;
+          // Subscribe ACKs prove the endpoint is good — prefer staying (slow backoff growth).
+          reconnectBackoffMs = 1_200;
           return;
         }
         if (msg.method === 'logsNotification' && msg.params?.result?.value) {
@@ -374,46 +396,50 @@ export async function startPumpFunDiscovery(
         log.warn({ err: error }, 'sniper ws message parse failed');
       }
     });
-    ws.on('close', () => {
+    socket.on('close', () => {
       clearTimeout(openTimeout);
       if (pingTimer) clearInterval(pingTimer);
       discoveryStats.wsConnected = false;
       discoveryStats.subs = 0;
       if (closed) return;
       log.warn({ host: discoveryStats.wsUrlHost }, 'Sniper WS closed — rotating reconnect');
-      scheduleReconnect(1_200);
+      scheduleReconnect();
     });
-    ws.on('error', (err) => {
+    socket.on('error', (err) => {
       log.warn({ err, host: discoveryStats.wsUrlHost }, 'Sniper WS error');
     });
   };
 
   // Pump.fun is busy — silence while "connected" means a stale socket; force rotate.
+  // IMPORTANT: only measure quiet against THIS connection's notifications. Cumulative
+  // wsNotifications + stale lastNotificationAt used to kill every reconnect after a gap.
   watchdogTimer = setInterval(() => {
     if (closed) return;
     if (!discoveryStats.wsConnected) {
-      if (!reconnectTimer) scheduleReconnect(500);
+      if (!reconnectTimer) scheduleReconnect();
       return;
     }
-    const last = discoveryStats.lastNotificationAt
+    if (connectedAt <= 0) return;
+    const lastRaw = discoveryStats.lastNotificationAt
       ? Date.parse(discoveryStats.lastNotificationAt)
       : 0;
-    const quietMs = last ? Date.now() - last : Date.now() - connectedAt;
+    const lastThisSession = lastRaw >= connectedAt ? lastRaw : 0;
+    const quietMs = lastThisSession ? Date.now() - lastThisSession : Date.now() - connectedAt;
     const forceClose = () => {
       log.warn({ quietMs, host: discoveryStats.wsUrlHost }, 'Sniper WS quiet — forcing reconnect');
       try {
         ws?.close();
       } catch {
-        scheduleReconnect(500);
+        scheduleReconnect();
       }
     };
-    // After first notification, 90s quiet is abnormal for pump.fun.
-    if (discoveryStats.wsNotifications > 0 && quietMs > 90_000) {
+    // After a notification on this socket, 90s quiet is abnormal for pump.fun.
+    if (lastThisSession > 0 && quietMs > 90_000) {
       forceClose();
       return;
     }
     // Connected but never received anything for 45s after open — rotate endpoint.
-    if (discoveryStats.wsNotifications === 0 && connectedAt > 0 && Date.now() - connectedAt > 45_000) {
+    if (lastThisSession === 0 && quietMs > 45_000) {
       forceClose();
     }
   }, 20_000);

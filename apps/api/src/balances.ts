@@ -235,12 +235,21 @@ async function walletEntry(
   }
 
   if (multi && userId) {
+    const CUSTODY_ADDR_TIMEOUT_MS = 3_500;
     let address: string | null = null;
+    let addrTimedOut = false;
     try {
-      address = await userCustodyAddress(
-        userId,
-        chain,
-        opts?.family ? { family: opts.family } : undefined,
+      address = await withTimeout(
+        userCustodyAddress(
+          userId,
+          chain,
+          opts?.family ? { family: opts.family } : undefined,
+        ),
+        CUSTODY_ADDR_TIMEOUT_MS,
+        () => {
+          addrTimedOut = true;
+          return '';
+        },
       );
     } catch (error) {
       return {
@@ -251,6 +260,25 @@ async function walletEntry(
         role: 'custody',
         family: opts?.family ?? null,
         error: error instanceof Error ? error.message : String(error),
+        native: null,
+        available: null,
+        onChainNative: null,
+        savings: null,
+      };
+    }
+    if (addrTimedOut || !address) {
+      return {
+        chain,
+        configured: false,
+        address: null,
+        userScoped: true,
+        role: 'custody',
+        family: opts?.family ?? null,
+        error: `custody-address-timeout>${CUSTODY_ADDR_TIMEOUT_MS}ms`,
+        native: null,
+        available: null,
+        onChainNative: null,
+        savings: null,
       };
     }
     return readCustodyFunds(chain, userId, address, opts);
@@ -475,7 +503,19 @@ export async function buildWorkerWalletBalances(): Promise<{
   if (workerCache && Date.now() - workerCache.at < WORKER_CACHE_MS) {
     return workerCache.value;
   }
-  const value = await fetchWorkerWalletBalances();
-  workerCache = { at: Date.now(), value };
+  // Never block dashboard snapshot more than a moment on informational bot wallets.
+  const value = await withTimeout(
+    fetchWorkerWalletBalances(),
+    4_000,
+    () =>
+      workerCache?.value ?? {
+        role: 'worker' as const,
+        solana: null,
+        evm: [] as WalletEntry[],
+      },
+  );
+  if (value.solana || value.evm.length) {
+    workerCache = { at: Date.now(), value };
+  }
   return value;
 }

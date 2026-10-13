@@ -521,7 +521,15 @@ function hydrate(snap){
    }else{
     const local=loadCustodyBal(e,scopedAddr||(e==='sniper'?null:prev?.wa));
     if(local&&applyConfirmed(local)) next.balError=true;
-    else { next.balReady=e==='sniper'?!!signedIn:false; next.balError=hadHardError; }
+    else if(scopedAddr||signedIn){
+     // Address known or session live — never stick on "Loading custody…" when RPC is slow.
+     // Paint zeros immediately; background refresh will fill real numbers.
+     next.wa=scopedAddr||next.wa;
+     next.balReady=true;
+     next.balError=hadHardError;
+    }else{
+     next.balReady=false; next.balError=hadHardError;
+    }
    }
    }
   }else{
@@ -691,9 +699,11 @@ function hydrate(snap){
  }
 }
 let refreshInFlight=null;
+let lastRefreshAt=0;
 async function refresh(){
  if(refreshInFlight)return refreshInFlight;
  refreshInFlight=(async()=>{
+  lastRefreshAt=Date.now();
   try{
    const snap=await api('GET','/api/snapshot');
    ERR=null;
@@ -853,9 +863,11 @@ function trading(e){const s=S[e],X=UI[e],cash=cashOf(e),avail=availOf(e),inv=inv
   ?`<div class="ban" style="margin-bottom:12px">${e==='sniper'?'Connect a Solana wallet (preferred) to use Sniper Mode. You can also link an EVM wallet from Account.':'Connect your wallet and start copy trading smart wallets.'}</div>`
   :(!s.balReady
    ?`<div class="ban" style="margin-bottom:12px">Loading custody balances…</div>`
+   :(s.balError&&!s.wa
+    ?`<div class="ban" style="margin-bottom:12px">Custody RPC is slow — retrying balances in the background.</div>`
    :(wrk&&typeof wrk.onChain==='number'&&wrk.onChain>0&&cash===0&&e!=='sniper'
     ?`<div class="ban" style="margin-bottom:12px">Worker key holds <b>${wrk.onChain.toFixed(X.d)} ${wrk.symbol||X.u}</b>. Deposit to custody <b>${s.wa?s.wa.slice(0,4)+'…'+s.wa.slice(-4):'address'}</b> so Trading/Savings match your funds.</div>`
-    :(e==='sniper'&&s.wa&&cash===0?`<div class="ban" style="margin-bottom:12px">Sniper custody is empty (0 ${X.u}). Deposit SOL to this sniper-only address to fund buys — independent from SOL Mode.</div>`:'')));
+    :(e==='sniper'&&s.wa&&cash===0?`<div class="ban" style="margin-bottom:12px">Sniper custody is empty (0 ${X.u}). Deposit SOL to this sniper-only address to fund buys — independent from SOL Mode.</div>`:''))));
  return `${liveBanner(e)}${wrkNote}
 <div class="grid"><div class="card"><h3>${e==='sniper'?'Sniper Trading Balance':'Trading Balance'}</h3><div class="n">${amt(cash+inv)} ${X.u}</div><div class="mu">≈ ${usdLine()}</div>
 <div class="row" style="margin:14px 0"><div class="k" style="flex:1"><small>On chain</small><b>${amt(cash)}</b></div><div class="k" style="flex:1"><small>Spendable</small><b>${amt(avail)}</b></div><div class="k" style="flex:1"><small>In Positions</small><b>${amt(inv)}</b></div></div>
@@ -1922,8 +1934,10 @@ const sysHealth=()=>{nav.classList.remove('o');const st=LIVE?.status;if(!st){ref
 document.addEventListener('keydown',e=>{if(e.key=='Escape'){if(T==='chart'&&chartId)closeChart();cl();dr.classList.remove('o');nav.classList.remove('o')}});$('#md').onclick=e=>{if(e.target.id=='md')cl()};
 if(matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light';
 paintLocalCustody();
-setInterval(()=>{refresh()},5000);
-try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{refresh()}}catch{}
+// Soft poll — avoid stampeding basic-xs API (was wedging /health → DO Degraded).
+const softRefresh=()=>{if(Date.now()-lastRefreshAt<8_000)return; refresh()};
+setInterval(()=>{softRefresh()},10_000);
+try{const ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/api/ws');ws.onmessage=()=>{softRefresh()}}catch{}
 refresh();draw();
 restoreWallets();
 </script>
