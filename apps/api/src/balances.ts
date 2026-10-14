@@ -1,4 +1,5 @@
 import {
+  deriveUserCustodyAddress,
   getTradingAvailableQuote,
   multiUserCustodyEnabled,
   tradingWalletAddress,
@@ -235,22 +236,20 @@ async function walletEntry(
   }
 
   if (multi && userId) {
-    const CUSTODY_ADDR_TIMEOUT_MS = 3_500;
-    let address: string | null = null;
-    let addrTimedOut = false;
+    // Address is deterministic — never blank the dashboard because Prisma/RPC is slow.
+    // userCustodyAddress also persists/ensures the row in the background.
+    let address: string;
     try {
-      address = await withTimeout(
-        userCustodyAddress(
-          userId,
-          chain,
-          opts?.family ? { family: opts.family } : undefined,
-        ),
-        CUSTODY_ADDR_TIMEOUT_MS,
-        () => {
-          addrTimedOut = true;
-          return '';
-        },
+      address = deriveUserCustodyAddress(
+        userId,
+        chain,
+        opts?.family ? { family: opts.family } : undefined,
       );
+      void userCustodyAddress(
+        userId,
+        chain,
+        opts?.family ? { family: opts.family } : undefined,
+      ).catch(() => undefined);
     } catch (error) {
       return {
         chain,
@@ -260,21 +259,6 @@ async function walletEntry(
         role: 'custody',
         family: opts?.family ?? null,
         error: error instanceof Error ? error.message : String(error),
-        native: null,
-        available: null,
-        onChainNative: null,
-        savings: null,
-      };
-    }
-    if (addrTimedOut || !address) {
-      return {
-        chain,
-        configured: false,
-        address: null,
-        userScoped: true,
-        role: 'custody',
-        family: opts?.family ?? null,
-        error: `custody-address-timeout>${CUSTODY_ADDR_TIMEOUT_MS}ms`,
         native: null,
         available: null,
         onChainNative: null,

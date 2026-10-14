@@ -88,14 +88,71 @@ function isSolanaFamily(family: CustodyFamily): boolean {
   return family === CustodyFamily.SOLANA || family === CustodyFamily.SNIPER;
 }
 
+/**
+ * Deterministic custody address for a user+family — no DB round-trip.
+ * Same address `ensureUserCustodyWallet` would persist. Safe for dashboard
+ * paint when Prisma is slow (withdraw still uses the signed path).
+ */
+export function deriveCustodyAddress(userId: string, family: CustodyFamily): string {
+  if (family === CustodyFamily.SOLANA) {
+    return deriveSolanaKeypair(userId).publicKey.toBase58();
+  }
+  if (family === CustodyFamily.SNIPER) {
+    return deriveSniperKeypair(userId).publicKey.toBase58();
+  }
+  return deriveEvmAccount(userId).address.toLowerCase();
+}
+
+/** Resolve family then derive address synchronously (dashboard / balance paint). */
+export function deriveUserCustodyAddress(
+  userId: string,
+  chain: Chain,
+  opts?: { family?: CustodyFamily },
+): string {
+  const family = opts?.family ?? familyForChain(chain);
+  if (family === CustodyFamily.SNIPER && chainConfig(chain).kind !== 'solana') {
+    throw new Error('Sniper custody is Solana-only.');
+  }
+  return deriveCustodyAddress(userId, family);
+}
+
+const addressMemo = new Map<string, string>();
+
+function memoKey(userId: string, family: CustodyFamily): string {
+  return `${userId}:${family}`;
+}
+
 export async function ensureUserCustodyWallet(
+  userId: string,
+  family: CustodyFamily,
+): Promise<{ address: string; family: CustodyFamily }> {
+  const cached = addressMemo.get(memoKey(userId, family));
+  if (cached) {
+    // Persist in background if the row might be missing — never block balance paint.
+    void prisma.userCustodyWallet
+      .findUnique({ where: { userId_family: { userId, family } } })
+      .then((row) => {
+        if (!row) {
+          void ensureUserCustodyWalletUncached(userId, family).catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+    return { address: cached, family };
+  }
+  return ensureUserCustodyWalletUncached(userId, family);
+}
+
+async function ensureUserCustodyWalletUncached(
   userId: string,
   family: CustodyFamily,
 ): Promise<{ address: string; family: CustodyFamily }> {
   const existing = await prisma.userCustodyWallet.findUnique({
     where: { userId_family: { userId, family } },
   });
-  if (existing) return { address: existing.address, family: existing.family };
+  if (existing) {
+    addressMemo.set(memoKey(userId, family), existing.address);
+    return { address: existing.address, family: existing.family };
+  }
 
   let address: string;
   let secretBytes: Buffer;
@@ -113,17 +170,30 @@ export async function ensureUserCustodyWallet(
     secretBytes = Buffer.from(deriveCustodySeed(userId, CustodyFamily.EVM));
   }
 
-  const row = await prisma.userCustodyWallet.create({
-    data: {
-      userId,
-      family,
-      address,
-      encryptedKeyMaterial: encryptKeyMaterial(secretBytes),
-      keyVersion: 1,
-    },
-  });
-  log.info({ userId, family, address }, 'Provisioned user custody wallet');
-  return { address: row.address, family: row.family };
+  try {
+    const row = await prisma.userCustodyWallet.create({
+      data: {
+        userId,
+        family,
+        address,
+        encryptedKeyMaterial: encryptKeyMaterial(secretBytes),
+        keyVersion: 1,
+      },
+    });
+    addressMemo.set(memoKey(userId, family), row.address);
+    log.info({ userId, family, address }, 'Provisioned user custody wallet');
+    return { address: row.address, family: row.family };
+  } catch (error) {
+    // Concurrent provision — another request won the unique race.
+    const raced = await prisma.userCustodyWallet.findUnique({
+      where: { userId_family: { userId, family } },
+    });
+    if (raced) {
+      addressMemo.set(memoKey(userId, family), raced.address);
+      return { address: raced.address, family: raced.family };
+    }
+    throw error;
+  }
 }
 
 export async function userCustodyAddress(
@@ -138,8 +208,13 @@ export async function userCustodyAddress(
   if (family === CustodyFamily.SNIPER && chainConfig(chain).kind !== 'solana') {
     throw new Error('Sniper custody is Solana-only.');
   }
-  const wallet = await ensureUserCustodyWallet(userId, family);
-  return wallet.address;
+  // Fast path: never make the dashboard wait on Prisma for a deterministic address.
+  const derived = deriveCustodyAddress(userId, family);
+  addressMemo.set(memoKey(userId, family), derived);
+  void ensureUserCustodyWallet(userId, family).catch((error) => {
+    log.warn({ err: error, userId, family }, 'Background custody wallet ensure failed');
+  });
+  return derived;
 }
 
 async function loadSolanaKeypair(

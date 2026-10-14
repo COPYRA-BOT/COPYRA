@@ -2,20 +2,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('@copyra/core', async () => {
   const actual = await vi.importActual<typeof import('@copyra/core')>('@copyra/core');
+  const addr = (_userId: string, chain: string, opts?: { family?: string }) => {
+    if (chain !== 'SOLANA') return '0xCustEvm11111111111111111111111111111111';
+    if (opts?.family === 'SNIPER') return 'CustSnip11111111111111111111111111111';
+    return 'CustSol1111111111111111111111111111111';
+  };
   return {
     ...actual,
     multiUserCustodyEnabled: vi.fn(() => true),
-    userCustodyAddress: vi.fn(
-      async (
-        _userId: string,
-        chain: string,
-        opts?: { family?: string },
-      ) => {
-        if (chain !== 'SOLANA') return '0xCustEvm11111111111111111111111111111111';
-        if (opts?.family === 'SNIPER') return 'CustSnip11111111111111111111111111111';
-        return 'CustSol1111111111111111111111111111111';
-      },
-    ),
+    deriveUserCustodyAddress: vi.fn(addr),
+    userCustodyAddress: vi.fn(async (...args: Parameters<typeof addr>) => addr(...args)),
     tradingWalletAddress: vi.fn(() => 'ExQWcDyLAcHnt6AZmdPh8MKK2dQguuNqWkwryB2oTgzv'),
     getTradingAvailableQuote: vi.fn(async (_chain: string, _userId?: string, opts?: { family?: string }) => {
       const sniper = opts?.family === 'SNIPER';

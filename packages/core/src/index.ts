@@ -21,6 +21,8 @@ export {
   multiUserCustodyEnabled,
   provisionUserCustody,
   userCustodyAddress,
+  deriveCustodyAddress,
+  deriveUserCustodyAddress,
   deriveSolanaKeypair,
   deriveSniperKeypair,
   deriveEvmAccount,

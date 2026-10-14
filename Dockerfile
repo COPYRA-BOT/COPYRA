@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # COPYRA production image for DigitalOcean App Platform.
 # Build context MUST be the repository root.
-# deploy-bust: 2026-10-13T01:35Z — Jupiter exit sells: blockhash + quote timeout
+# deploy-bust: 2026-10-14T13:50Z — custody address always derived (balances visible)
 #
 # Speed model (BuildKit stage cache):
 #  * deps        — cached until package-lock / package.json change

@@ -41,3 +41,20 @@ describe('user custody derivation', () => {
     expect(round.equals(seed)).toBe(true);
   });
 });
+
+describe('deriveCustodyAddress', () => {
+  it('matches keypair-derived addresses', async () => {
+    const { CustodyFamily } = await import('@copyra/db');
+    const { deriveCustodyAddress, deriveSolanaKeypair, deriveSniperKeypair, deriveEvmAccount } =
+      await import('./user-custody.js');
+    expect(deriveCustodyAddress('u1', CustodyFamily.SOLANA)).toBe(
+      deriveSolanaKeypair('u1').publicKey.toBase58(),
+    );
+    expect(deriveCustodyAddress('u1', CustodyFamily.SNIPER)).toBe(
+      deriveSniperKeypair('u1').publicKey.toBase58(),
+    );
+    expect(deriveCustodyAddress('u1', CustodyFamily.EVM)).toBe(
+      deriveEvmAccount('u1').address.toLowerCase(),
+    );
+  });
+});
