@@ -14,7 +14,7 @@ const EVM_CHAINS = [Chain.ETHEREUM, Chain.BASE, Chain.ARBITRUM, Chain.BSC] as co
 
 type WalletEntry = Record<string, unknown>;
 
-const BALANCE_RPC_TIMEOUT_MS = 6_000;
+const BALANCE_RPC_TIMEOUT_MS = 8_000;
 /** Serve immediately without waiting on RPC. */
 const BAL_CACHE_FRESH_MS = 8_000;
 /** Keep last confirmed custody read across blips (never invent; only replay prior success). */
