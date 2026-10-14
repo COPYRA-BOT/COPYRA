@@ -1,6 +1,6 @@
 import { Chain } from '@copyra/db';
 import { describe, expect, it } from 'vitest';
-import { AllEndpointsFailedError, RpcPool } from './pool.js';
+import { AllEndpointsFailedError, isRpcCapacityError, RpcPool } from './pool.js';
 
 describe('RpcPool', () => {
   it('fails over to the next endpoint after the primary errors', async () => {
@@ -74,5 +74,47 @@ describe('RpcPool', () => {
     const [state] = pool.health();
     expect(state?.safeUrl).toBe('https://mainnet.helius-rpc.com');
     expect(state?.safeUrl).not.toContain('should-not-appear');
+  });
+
+  it('detects Alchemy monthly capacity errors', () => {
+    expect(
+      isRpcCapacityError(
+        new Error('Monthly capacity limit exceeded. Visit https://dashboard.alchemy.com/settings/billing'),
+      ),
+    ).toBe(true);
+    expect(isRpcCapacityError(new Error('HTTP 429 Too Many Requests'))).toBe(true);
+    expect(isRpcCapacityError(new Error('nonce too low'))).toBe(false);
+  });
+
+  it('cools down capacity-exhausted primary on the first failure', async () => {
+    const pool = new RpcPool<string>(
+      {
+        chain: Chain.BSC,
+        urls: ['https://alchemy.example', 'https://public.example'],
+        failureThreshold: 3,
+        cooldownMs: 60_000,
+      },
+      (url) => url,
+    );
+
+    const result = await pool.call('getTransactionCount', async (client) => {
+      if (client.includes('alchemy')) {
+        throw new Error('Monthly capacity limit exceeded. Visit billing to upgrade');
+      }
+      return 7;
+    });
+    expect(result.value).toBe(7);
+    expect(result.endpoint).toBe('https://public.example');
+
+    const alchemy = pool.health().find((h) => h.safeUrl.includes('alchemy'));
+    expect(alchemy?.healthy).toBe(false);
+    expect(alchemy?.cooldownUntil).toBeGreaterThan(Date.now() + 10 * 60_000);
+
+    let sawAlchemy = false;
+    await pool.call('again', async (client) => {
+      if (client.includes('alchemy')) sawAlchemy = true;
+      return 8;
+    });
+    expect(sawAlchemy).toBe(false);
   });
 });

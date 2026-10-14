@@ -41,6 +41,14 @@ export class AllEndpointsFailedError extends Error {
   }
 }
 
+/** Quota / plan exhaustion — fail over immediately; retries on the same key never help. */
+export function isRpcCapacityError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /Monthly capacity limit exceeded|capacity limit exceeded|compute units?.*exceed|quota exceeded|rate limit|429|Too Many Requests|free tier|upgrade your scaling policy/i.test(
+    msg,
+  );
+}
+
 /**
  * Ordered RPC failover (spec §24).
  *
@@ -134,15 +142,25 @@ export class RpcPool<TClient> {
         return { value, endpoint: state.safeUrl, latencyMs };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        state.consecutiveFailures += 1;
+        const capacity = isRpcCapacityError(error);
+        state.consecutiveFailures += capacity ? this.#failureThreshold : 1;
         state.lastError = message;
         state.lastErrorAt = Date.now();
         if (state.consecutiveFailures >= this.#failureThreshold) {
           state.healthy = false;
-          state.cooldownUntil = Date.now() + this.#cooldownMs;
+          // Capacity/quota: longer cooldown so withdraw/balance stick on backup RPCs.
+          state.cooldownUntil = Date.now() + (capacity ? Math.max(this.#cooldownMs, 15 * 60_000) : this.#cooldownMs);
           log.warn(
-            { chain: this.chain, endpoint: state.safeUrl, failures: state.consecutiveFailures, label },
-            'RPC endpoint taken out of rotation',
+            {
+              chain: this.chain,
+              endpoint: state.safeUrl,
+              failures: state.consecutiveFailures,
+              label,
+              capacity,
+            },
+            capacity
+              ? 'RPC endpoint capacity/quota exceeded — cooling down, using fallbacks'
+              : 'RPC endpoint taken out of rotation',
           );
         }
         attempts.push({ endpoint: state.safeUrl, error: message });

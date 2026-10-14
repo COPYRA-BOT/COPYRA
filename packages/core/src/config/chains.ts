@@ -198,11 +198,13 @@ export const CHAIN_CONFIGS: Record<Chain, ChainConfig> = {
     rpcUrl: env.EVM_BSC_RPC_URL,
     wsUrl: env.EVM_BSC_WS_URL,
     wsFallbacks: [env.EVM_BSC_BACKUP_WS_URL].filter((u): u is string => Boolean(u)),
-    // Paid QuickNode backup first, then public endpoints.
+    // Paid QuickNode backup first, then public endpoints (Alchemy quota must not block withdraw).
     rpcFallbacks: [
       env.EVM_BSC_BACKUP_RPC_URL,
       'https://bsc.publicnode.com',
       'https://bsc-dataseed.binance.org',
+      'https://bsc-dataseed1.binance.org',
+      'https://rpc.ankr.com/bsc',
     ].filter((url, i, all): url is string => Boolean(url) && all.indexOf(url) === i),
     canExecute: Boolean(env.EVM_BSC_RPC_URL),
     blockTimeMs: 1_500,

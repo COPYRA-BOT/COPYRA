@@ -14,7 +14,7 @@ import {
 import { createWalletClient, encodeFunctionData, erc20Abi, getAddress, http, parseUnits } from 'viem';
 import { chainConfig, explorerTxUrl } from '../config/chains.js';
 import { confirmEvmTransaction } from '../evm/executor.js';
-import { viemChain } from '../evm/clients.js';
+import { evmPool, viemChain } from '../evm/clients.js';
 import { getNativeBalance } from '../evm/tokens.js';
 import { componentLogger } from '../obs/logger.js';
 import {
@@ -829,28 +829,53 @@ export async function withdrawToWallet(input: {
     const account = multiUserCustodyEnabled()
       ? await userEvmAccount(input.userId)
       : evmSigner.requireAccount();
-    const rpcUrl = config.rpcUrl;
-    if (!rpcUrl) throw new Error(`No RPC URL configured for ${input.chain}`);
-    const wallet = createWalletClient({
-      account,
-      chain: viemChain(input.chain),
-      transport: http(rpcUrl, { timeout: 20_000 }),
-    });
+    if (!config.rpcUrl) throw new Error(`No RPC URL configured for ${input.chain}`);
     // Withdraw USDC (ERC-20), never native BNB/ETH mistaken for the trading balance.
     const data = encodeFunctionData({
       abi: erc20Abi,
       functionName: 'transfer',
       args: [getAddress(input.toAddress), amountRaw],
     });
+    const to = getAddress(config.stableAsset);
+    const from = getAddress(walletAddress);
+    // NEVER wallet.sendTransaction on primary-only Alchemy — capacity limits block
+    // eth_getTransactionCount. Use the EVM RpcPool (backup + public BSC seeds).
     let evmHash: `0x${string}`;
     try {
-      evmHash = await wallet.sendTransaction({
-        to: getAddress(config.stableAsset),
-        data,
-        value: 0n,
+      const [nonceResult, gasPriceResult, gasResult] = await Promise.all([
+        evmPool(input.chain).call('getTransactionCount', (client) =>
+          client.getTransactionCount({ address: from, blockTag: 'pending' }),
+        ),
+        evmPool(input.chain).call('getGasPrice', (client) => client.getGasPrice()),
+        evmPool(input.chain).call('estimateGas', (client) =>
+          client.estimateGas({
+            account: from,
+            to,
+            data,
+            value: 0n,
+          }),
+        ),
+      ]);
+      // Local sign only — transport URL is unused when all fields are provided.
+      const wallet = createWalletClient({
         account,
         chain: viemChain(input.chain),
+        transport: http(config.rpcUrl, { timeout: 5_000 }),
       });
+      const signed = await wallet.signTransaction({
+        account,
+        chain: viemChain(input.chain),
+        to,
+        data,
+        value: 0n,
+        nonce: nonceResult.value,
+        gas: gasResult.value,
+        gasPrice: gasPriceResult.value,
+      });
+      const sendResult = await evmPool(input.chain).call('sendRawTransaction', (client) =>
+        client.sendRawTransaction({ serializedTransaction: signed }),
+      );
+      evmHash = sendResult.value;
       txHash = evmHash;
     } catch (sendErr) {
       const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);

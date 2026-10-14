@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # COPYRA production image for DigitalOcean App Platform.
 # Build context MUST be the repository root.
-# deploy-bust: 2026-10-14T14:01Z — FORCE api roll for custody address derive (HTML stuck 01:44)
+# deploy-bust: 2026-10-14T14:05Z — EVM withdraw failover when Alchemy capacity exceeded
 #
 # Speed model (BuildKit stage cache):
 #  * deps        — cached until package-lock / package.json change
