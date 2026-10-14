@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # COPYRA production image for DigitalOcean App Platform.
 # Build context MUST be the repository root.
-# deploy-bust: 2026-10-14T14:05Z — EVM withdraw failover when Alchemy capacity exceeded
+# deploy-bust: 2026-10-14T14:15Z — FORCE api: custody + Alchemy withdraw failover (HTML stuck 01:44)
 #
 # Speed model (BuildKit stage cache):
 #  * deps        — cached until package-lock / package.json change
