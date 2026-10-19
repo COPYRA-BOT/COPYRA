@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-19T10:05Z — PLATFORM_PAUSED holiday pause (resume next month)
+# last-deploy-nudge: 2026-10-19T10:13Z — PLATFORM_PAUSED holiday pause (resume next month)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22
