@@ -12,6 +12,21 @@ git push origin main
 git push github main
 ```
 
+### Holiday pause / resume (`PLATFORM_PAUSED`)
+
+While paused (current default in `.do/app.yaml`):
+
+- `PLATFORM_PAUSED=true` forces `TRADING_*` and `SNIPER_ENABLED` off and silences Telegram.
+- Worker + sniper `instance_count: 0` (API stays up for custody balances / withdraw).
+- Dashboard shows a paused banner via `/api/status` → `trading.platformPaused`.
+
+To **resume** (only when the operator says so):
+
+1. Set App-level (and component) `PLATFORM_PAUSED=false`.
+2. Restore `TRADING_ENABLED` / `SOL_TRADING_ENABLED` / `EVM_TRADING_ENABLED` / `SNIPER_ENABLED` as needed.
+3. Set worker + sniper `instance_count: 1` in `.do/app.yaml` (or DO UI).
+4. Push + Force rebuild **api** (and worker/sniper). Clear DB emergency stop if it still says `PLATFORM_PAUSED`.
+
 If the worker heartbeat shows `syncAge` of hours while `beatAt` is fresh, a zombie worker is stuck — DO → **worker** → **Force rebuild** (or Redeploy).
 
 ## Architecture (keeps the site up while trading runs)
