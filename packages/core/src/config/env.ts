@@ -39,6 +39,7 @@ function normalizeTradingFlags(): void {
 
   // Blank App Platform values → unset (do not coerce "" to false).
   for (const key of [
+    'PLATFORM_PAUSED',
     'TRADING_ENABLED',
     'SOL_TRADING_ENABLED',
     'EVM_TRADING_ENABLED',
@@ -47,6 +48,18 @@ function normalizeTradingFlags(): void {
     if (process.env[key] !== undefined && !isPresent(process.env[key])) {
       delete process.env[key];
     }
+  }
+
+  const paused = truthy(process.env.PLATFORM_PAUSED);
+  if (paused) {
+    // Hard holiday kill-switch — no trading, sniper, or Telegram until cleared.
+    // Custody withdraw/deposit stays available so funds are not stranded.
+    process.env.PLATFORM_PAUSED = 'true';
+    process.env.TRADING_ENABLED = 'false';
+    process.env.SOL_TRADING_ENABLED = 'false';
+    process.env.EVM_TRADING_ENABLED = 'false';
+    process.env.SNIPER_ENABLED = 'false';
+    return;
   }
 
   const sol = process.env.SOL_TRADING_ENABLED;
@@ -59,6 +72,7 @@ function normalizeTradingFlags(): void {
   }
   // DigitalOcean / UI sometimes stores TRUE / True — normalize before Zod.
   for (const key of [
+    'PLATFORM_PAUSED',
     'TRADING_ENABLED',
     'SOL_TRADING_ENABLED',
     'EVM_TRADING_ENABLED',
@@ -179,6 +193,11 @@ const schema = z.object({
   /** Optional 0x API key — used as EVM quote fallback when KyberSwap fails. */
   ZERO_EX_API_KEY: z.string().trim().optional(),
 
+  /**
+   * Holiday / maintenance kill-switch. When true: no buys/sells/sniper, no
+   * Telegram, workers may be scaled to 0. Resume by setting false + redeploy.
+   */
+  PLATFORM_PAUSED: bool,
   TRADING_ENABLED: bool,
   SOL_TRADING_ENABLED: bool,
   EVM_TRADING_ENABLED: bool,
@@ -291,6 +310,8 @@ const solanaBackupWs =
   httpRpcToWsUrl(parsed.data.SOLANA_BACKUP_RPC_URL) ||
   undefined;
 
+const platformPaused = Boolean(parsed.data.PLATFORM_PAUSED);
+
 export const env = {
   ...parsed.data,
   /** Host the HTTP server binds to. Always force a public bind in production. */
@@ -300,19 +321,26 @@ export const env = {
   /** Explicit WS, or derived from SOLANA_RPC_URL when DO only scoped RPC onto a component. */
   SOLANA_WS_URL: solanaWs,
   SOLANA_BACKUP_WS_URL: solanaBackupWs,
+  PLATFORM_PAUSED: platformPaused,
+  TRADING_ENABLED: platformPaused ? false : parsed.data.TRADING_ENABLED,
   /** Solana execution guard. Defaults to master TRADING_ENABLED when unset. */
-  SOL_TRADING_ENABLED:
-    process.env.SOL_TRADING_ENABLED === undefined
+  SOL_TRADING_ENABLED: platformPaused
+    ? false
+    : process.env.SOL_TRADING_ENABLED === undefined
       ? parsed.data.TRADING_ENABLED
       : parsed.data.SOL_TRADING_ENABLED,
   /** EVM execution guard. Defaults to master TRADING_ENABLED when unset. */
-  EVM_TRADING_ENABLED:
-    process.env.EVM_TRADING_ENABLED === undefined
+  EVM_TRADING_ENABLED: platformPaused
+    ? false
+    : process.env.EVM_TRADING_ENABLED === undefined
       ? parsed.data.TRADING_ENABLED
       : parsed.data.EVM_TRADING_ENABLED,
   /** Sniper host kill — defaults false until explicitly enabled on DO. */
-  SNIPER_ENABLED:
-    process.env.SNIPER_ENABLED === undefined ? false : parsed.data.SNIPER_ENABLED,
+  SNIPER_ENABLED: platformPaused
+    ? false
+    : process.env.SNIPER_ENABLED === undefined
+      ? false
+      : parsed.data.SNIPER_ENABLED,
 };
 export type Env = typeof env;
 

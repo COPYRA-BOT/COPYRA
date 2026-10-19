@@ -1,6 +1,7 @@
 import {
   alertOps,
   alertOpsCleared,
+  env,
   evmSigner,
   getSettings,
   logger,
@@ -32,6 +33,9 @@ let wasTradingBlocked: string | null = null;
 export function startOpsWatch(): () => void {
   const tick = async () => {
     try {
+      // Holiday pause — no ops Telegram noise (workers may be scaled to 0).
+      if (env.PLATFORM_PAUSED) return;
+
       const [hb, sniperHb, settings] = await Promise.all([
         prisma.workerHeartbeat.findUnique({ where: { name: 'copyra-worker' } }),
         prisma.workerHeartbeat.findUnique({ where: { name: 'copyra-sniper-worker' } }),

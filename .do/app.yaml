@@ -14,7 +14,7 @@
 # show Active (not Configuring) in DO → Networking → Domains.
 
 name: copyra
-# last-deploy-nudge: 2026-10-14T14:15Z (FORCE api — withdraw failover + custody; HTML still 01:44)
+# last-deploy-nudge: 2026-10-19T10:05Z — PLATFORM_PAUSED holiday pause (resume next month)
 region: nyc
 features:
   - buildpack-stack=ubuntu-22
@@ -24,14 +24,18 @@ alerts:
 
 # App-level flags — apply to api + worker (override any stale component false).
 envs:
-  - key: TRADING_ENABLED
+  # HOLIDAY PAUSE — set PLATFORM_PAUSED=false and restore trading flags to resume.
+  - key: PLATFORM_PAUSED
     value: "true"
+    scope: RUN_TIME
+  - key: TRADING_ENABLED
+    value: "false"
     scope: RUN_TIME
   - key: SOL_TRADING_ENABLED
-    value: "true"
+    value: "false"
     scope: RUN_TIME
   - key: EVM_TRADING_ENABLED
-    value: "true"
+    value: "false"
     scope: RUN_TIME
   - key: MULTI_USER_CUSTODY
     value: "true"
@@ -60,10 +64,10 @@ envs:
     scope: RUN_TIME
   # App-Level so api + sniper + worker all see the same sniper host flags.
   - key: SNIPER_ENABLED
-    value: "true"
+    value: "false"
     scope: RUN_TIME
   - key: SNIPER_MODE
-    value: "live"
+    value: "monitor"
     scope: RUN_TIME
 
 domains:
@@ -77,11 +81,6 @@ ingress:
     - match:
         path:
           prefix: /api
-      component:
-        name: api
-    - match:
-        path:
-          prefix: /health
       component:
         name: api
     - match:
@@ -127,6 +126,8 @@ services:
       # Worker runs as its own component — never start it inside the API box.
       - key: RUN_WORKER
         value: "false"
+      - key: PLATFORM_PAUSED
+        value: "true"
       - key: PUBLIC_WEB_URL
         value: "https://copyra.fun"
       - key: PUBLIC_API_URL
@@ -136,11 +137,11 @@ services:
       - key: CORS_ORIGINS
         value: "https://copyra.fun,https://www.copyra.fun,https://copyra-nl7kz.ondigitalocean.app"
       - key: TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: SOL_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: EVM_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: MULTI_USER_CUSTODY
         value: "true"
       - key: GOOGLE_CLIENT_ID
@@ -170,7 +171,8 @@ workers:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    instance_count: 1
+    # Scaled to 0 while PLATFORM_PAUSED — set instance_count: 1 when resuming.
+    instance_count: 0
     # Own vCPU/RAM — catch-up and exits cannot starve API /health.
     # basic-xs was OOM/CPU crash-looping at ~66%/67% under 14-wallet load.
     instance_size_slug: basic-s
@@ -185,12 +187,14 @@ workers:
         value: "8080"
       - key: HEALTH_PORT
         value: "8080"
+      - key: PLATFORM_PAUSED
+        value: "true"
       - key: TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: SOL_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: EVM_TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: MULTI_USER_CUSTODY
         value: "true"
       - key: PUBLIC_WEB_URL
@@ -207,7 +211,8 @@ workers:
       repo: COPYRA-BOT/COPYRA
       branch: main
       deploy_on_push: true
-    instance_count: 1
+    # Scaled to 0 while PLATFORM_PAUSED — set instance_count: 1 when resuming.
+    instance_count: 0
     instance_size_slug: basic-xs
     run_command: /app/scripts/start-sniper-worker.sh
     envs:
@@ -219,10 +224,12 @@ workers:
         value: "8080"
       - key: HEALTH_PORT
         value: "8080"
-      - key: SNIPER_ENABLED
+      - key: PLATFORM_PAUSED
         value: "true"
+      - key: SNIPER_ENABLED
+        value: "false"
       - key: SNIPER_MODE
-        value: "live"
+        value: "monitor"
       - key: SNIPER_MAX_MARKET_CAP_USD
         value: "20000000"
       - key: SNIPER_MIN_LIQUIDITY_USD
@@ -244,7 +251,7 @@ workers:
       - key: PUMP_FUN_PROGRAM_ID
         value: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
       - key: TRADING_ENABLED
-        value: "true"
+        value: "false"
       - key: MULTI_USER_CUSTODY
         value: "true"
       - key: PUBLIC_WEB_URL

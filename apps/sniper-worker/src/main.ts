@@ -131,19 +131,21 @@ try {
   logger.error({ err: error }, 'Sniper ensureSettings failed — continuing with host env only');
 }
 
-if (!env.SNIPER_ENABLED) {
+if (env.PLATFORM_PAUSED) {
+  logger.warn({}, 'PLATFORM_PAUSED — sniper discovery and exits are idle');
+} else if (!env.SNIPER_ENABLED) {
   logger.warn(
     {},
     'SNIPER_ENABLED is false — discovery still listens when engines are ON, but host will reject buys',
   );
 }
 
-if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
+if (!env.PLATFORM_PAUSED && !env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
   logger.error(
     {},
     'Sniper has no Solana WS (and could not derive from SOLANA_RPC_URL) — discovery will idle',
   );
-} else {
+} else if (!env.PLATFORM_PAUSED) {
   logger.info(
     {
       hasWs: Boolean(env.SOLANA_WS_URL),
@@ -166,28 +168,33 @@ if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
   }
 }
 
-try {
-  discoveryStop = await startPumpFunDiscovery(async (event) => {
-    discoveryCount += 1;
-    lastDiscoveryAt = new Date().toISOString();
-    try {
-      await handleSniperDiscovery(event);
-    } catch (error) {
-      logger.error({ err: error, mint: event.tokenAddress }, 'Sniper discovery handler failed');
-    }
-  });
-} catch (error) {
-  bootError = error instanceof Error ? error.message : String(error);
-  logger.error({ err: error }, 'Sniper discovery failed to start — will keep heartbeating');
+if (env.PLATFORM_PAUSED) {
   discoveryStop = () => undefined;
-  telegram.send(
-    `🚨 <b>SNIPER DISCOVERY IDLE</b>\n${bootError}\n` +
-      `Set App-Level <code>SOLANA_WS_URL</code> / <code>SOLANA_BACKUP_WS_URL</code> on the sniper component, then Force rebuild <b>sniper</b>.`,
-    { kind: 'sniper-ws-idle' },
-  );
+} else {
+  try {
+    discoveryStop = await startPumpFunDiscovery(async (event) => {
+      discoveryCount += 1;
+      lastDiscoveryAt = new Date().toISOString();
+      try {
+        await handleSniperDiscovery(event);
+      } catch (error) {
+        logger.error({ err: error, mint: event.tokenAddress }, 'Sniper discovery handler failed');
+      }
+    });
+  } catch (error) {
+    bootError = error instanceof Error ? error.message : String(error);
+    logger.error({ err: error }, 'Sniper discovery failed to start — will keep heartbeating');
+    discoveryStop = () => undefined;
+    telegram.send(
+      `🚨 <b>SNIPER DISCOVERY IDLE</b>\n${bootError}\n` +
+        `Set App-Level <code>SOLANA_WS_URL</code> / <code>SOLANA_BACKUP_WS_URL</code> on the sniper component, then Force rebuild <b>sniper</b>.`,
+      { kind: 'sniper-ws-idle' },
+    );
+  }
 }
 
 const exitTimer = setInterval(() => {
+  if (env.PLATFORM_PAUSED) return;
   if (exitInFlight) return;
   exitInFlight = true;
   void monitorOpenPositions({ strategy: TradingStrategy.SNIPER })
@@ -199,9 +206,11 @@ const exitTimer = setInterval(() => {
     });
 }, EXIT_MS);
 
-void monitorOpenPositions({ strategy: TradingStrategy.SNIPER }).catch((error: unknown) => {
-  logger.error({ err: error }, 'Sniper exit initial tick failed');
-});
+if (!env.PLATFORM_PAUSED) {
+  void monitorOpenPositions({ strategy: TradingStrategy.SNIPER }).catch((error: unknown) => {
+    logger.error({ err: error }, 'Sniper exit initial tick failed');
+  });
+}
 
 const heartbeatTimer = setInterval(() => {
   void beat('running', beatDetail());

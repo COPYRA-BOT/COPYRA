@@ -69,6 +69,41 @@ export function invalidateUserModeSettingsCache(userId?: string, mode?: TradingM
 /** Bump when re-applying live defaults (v1 failed: DB CHECK blocked takeProfitPct=0). */
 const EXEC_THROUGHPUT_FIX = 2;
 
+/** Persist host emergency stop while PLATFORM_PAUSED so UI/gates stay off. */
+async function applyPlatformPause(host: StrategySettings): Promise<StrategySettings> {
+  if (
+    host.emergencyStop &&
+    !host.tradingEnabled &&
+    host.emergencyStopReason?.includes('PLATFORM_PAUSED')
+  ) {
+    return host;
+  }
+  try {
+    const updated = await prisma.strategySettings.update({
+      where: { id: host.id },
+      data: {
+        tradingEnabled: false,
+        emergencyStop: true,
+        emergencyStopReason: 'PLATFORM_PAUSED — holiday pause until operator resumes',
+        emergencyStopAt: host.emergencyStopAt ?? new Date(),
+        updatedBy: 'platform-pause',
+      },
+    });
+    await prisma.userModeSettings.updateMany({
+      data: {
+        engine: 'STOPPED',
+        updatedBy: 'platform-pause',
+      },
+    });
+    userModeCache.clear();
+    log.warn({}, 'PLATFORM_PAUSED applied — mode engines STOPPED');
+    return updated;
+  } catch (error) {
+    log.warn({ err: error }, 'Failed to persist PLATFORM_PAUSED settings');
+    return host;
+  }
+}
+
 async function applyExecutionThroughputDefaults(host: StrategySettings): Promise<StrategySettings> {
   const ui =
     host.ui && typeof host.ui === 'object' && !Array.isArray(host.ui)
@@ -123,11 +158,17 @@ async function applyExecutionThroughputDefaults(host: StrategySettings): Promise
  */
 export async function ensureSettings(): Promise<StrategySettings> {
   const hit = settingsCache;
-  if (hit && Date.now() - hit.at < SETTINGS_CACHE_TTL_MS) return hit.row;
+  if (hit && Date.now() - hit.at < SETTINGS_CACHE_TTL_MS) {
+    if (!env.PLATFORM_PAUSED) return hit.row;
+    // Still re-apply pause flags even when cache is warm.
+  }
 
   const existing = await prisma.strategySettings.findUnique({ where: { id: 1 } });
   if (existing) {
-    const applied = await applyExecutionThroughputDefaults(existing);
+    let applied = await applyExecutionThroughputDefaults(existing);
+    if (env.PLATFORM_PAUSED) {
+      applied = await applyPlatformPause(applied);
+    }
     settingsCache = { at: Date.now(), row: applied };
     return applied;
   }

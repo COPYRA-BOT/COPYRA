@@ -172,7 +172,9 @@ process.on('unhandledRejection', (reason) => {
   );
 });
 
-if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
+if (env.PLATFORM_PAUSED) {
+  logger.warn({}, 'PLATFORM_PAUSED — copy monitors and exits are idle');
+} else if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
   logger.error({}, 'SOLANA_WS_URL missing — copy detection will be blind');
   void alertOps(
     'solana-ws-missing',
@@ -182,8 +184,8 @@ if (!env.SOLANA_WS_URL && !env.SOLANA_BACKUP_WS_URL) {
   );
 }
 
-const stopSolana = await startSolanaMonitor();
-const stopEvm = await startEvmMonitor();
+const stopSolana = env.PLATFORM_PAUSED ? () => undefined : await startSolanaMonitor();
+const stopEvm = env.PLATFORM_PAUSED ? () => undefined : await startEvmMonitor();
 workerActivity.lastSolanaSyncAt = Date.now();
 workerActivity.lastEvmTickAt = Date.now();
 
@@ -202,7 +204,7 @@ await heartbeat('running', {
 });
 logger.info({ isColdStart, priorAgeMs }, 'COPYRA worker started 24/7. Solana logs, EVM polls, TP/SL, stall watchdog live');
 
-if (isColdStart) {
+if (isColdStart && !env.PLATFORM_PAUSED) {
   telegram.send(
     '✅ <b>WORKER ONLINE</b>\nCopy-trade worker is live after deploy. Solana + EVM monitors and TP/SL watchdog are active.',
     { kind: 'worker-online' },
@@ -217,6 +219,7 @@ const MAINT_TICK_MS = 8_000;
 /** Never overlap exit ticks — slow marks must not stack pool waits. */
 let exitInFlight = false;
 const exitTimer = setInterval(() => {
+  if (env.PLATFORM_PAUSED) return;
   if (exitInFlight) return;
   exitInFlight = true;
   // COPY strategy only — sniper exits run on the dedicated sniper worker.

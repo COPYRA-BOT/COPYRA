@@ -305,6 +305,7 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
 
   const payload = jsonSafe({
     trading: {
+      platformPaused: env.PLATFORM_PAUSED,
       envGuard: env.TRADING_ENABLED,
       solTradingEnabled: env.SOL_TRADING_ENABLED,
       evmTradingEnabled: env.EVM_TRADING_ENABLED,
@@ -312,8 +313,10 @@ export async function buildLiveStatus(request?: FastifyRequest): Promise<LiveSta
       sniperMode: sniperModeLive,
       settingsEnabled: settings.tradingEnabled,
       emergencyStop: settings.emergencyStop,
-      blockedReason: tradingBlockedReason(settings, signerAvailable),
-      observeOnly: !signerAvailable,
+      blockedReason: env.PLATFORM_PAUSED
+        ? 'Platform paused until next month — trading, sniper, and Telegram are off.'
+        : tradingBlockedReason(settings, signerAvailable),
+      observeOnly: !signerAvailable || env.PLATFORM_PAUSED,
     },
     signers: {
       solana: { available: solanaSigner.available, address: solanaSigner.address },

@@ -731,6 +731,7 @@ function liveBanner(e){
  const t=LIVE?.status?.trading;
  if(ERR)return `<div class="ban live">Connection issue: ${ERR}</div>`;
  if(!LIVE)return `<div class="ban">Loading market data…</div>`;
+ if(t?.platformPaused)return `<div class="ban live">Platform paused until next month. Trading, sniper, bots, and Telegram are off. Custody balances stay readable — tell the operator when to resume.</div>`;
  if(t?.observeOnly)return `<div class="ban">Signing is offline. COPYRA still monitors wallets and will not broadcast until a signing key is available. ${t.blockedReason||''}</div>`;
  if(t?.blockedReason)return `<div class="ban live">${t.blockedReason}</div>`;
  return `<div class="ban" style="background:rgba(61,220,151,.12);color:var(--g)">Live market data. Balances, signals, and fills are read from chain RPC.</div>`;

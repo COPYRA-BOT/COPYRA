@@ -51,6 +51,8 @@ export function isAirdropTelegramNoise(text: string, kind: string): boolean {
 }
 
 export function shouldSuppressTelegramKind(kind: string): boolean {
+  // Holiday pause — silence every Telegram kind until PLATFORM_PAUSED is cleared.
+  if (env.PLATFORM_PAUSED) return true;
   if (SUPPRESSED_KINDS.has(kind)) return true;
   if (/airdrop/i.test(kind)) return true;
   if (kind.startsWith('error:POSITION_')) return true;
